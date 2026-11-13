@@ -98,11 +98,52 @@ for my $rel (keys %local) {
 if ($LIST) { print "$sha{$_}  $_\n" for sort keys %local; exit 0 }
 
 make_path($SYNC);
+my $MODE = -e "$SYNC/mode.txt" ? read_file("$SYNC/mode.txt") : '';
+$MODE =~ s/\s+//g;
+unlink "$SYNC/mode.txt";
 unlink "$SYNC/done.txt";
 finish(0, '沒有權杖（GH_PAT 是空的）') if $TOKEN eq '';
 finish(0, '沒有可上傳的檔案') unless %local;
 write_file("$TMP/h", "Authorization: Bearer $TOKEN\nAccept: application/vnd.github+json\nX-GitHub-Api-Version: 2022-11-28\nUser-Agent: note-app-sync\n");
 chmod 0600, "$TMP/h";
+
+# ---- 抓截圖模式：等模擬器那個 workflow 跑完，把 ci-shots 分支的檔案抓到 .sync/shots/ ----
+if ($MODE eq 'shots') {
+    status('等模擬器截圖');
+    my ($c0, $j0, $t0) = api('GET', "/git/ref/heads/$BRANCH");
+    need('讀取 main 分支', $c0, $j0, $t0, '200');
+    my $sha0 = $j0->{object}{sha};
+    my $limit = time + 30 * 60;
+    my $sim;
+    while (time < $limit) {
+        my ($c1, $j1, $t1) = api('GET', "/actions/runs?head_sha=$sha0&per_page=10");
+        if ($c1 eq '200' && ref $j1 eq 'HASH') {
+            ($sim) = grep { ($_->{name} // '') eq 'sim' } @{ $j1->{workflow_runs} || [] };
+            if ($sim) {
+                status("模擬器：$sim->{status}");
+                last if $sim->{status} eq 'completed';
+            }
+        }
+        sleep 15;
+    }
+    finish(0, '模擬器截圖沒有跑完') unless $sim && $sim->{status} eq 'completed';
+    $DONE{sha} = $sha0;
+    $DONE{conclusion} = $sim->{conclusion} // '';
+    my ($c2, $j2, $t2) = api('GET', '/contents/?ref=ci-shots');
+    finish(0, "讀不到截圖分支（HTTP $c2）") unless $c2 eq '200' && ref $j2 eq 'ARRAY';
+    make_path("$SYNC/shots");
+    my $got = 0;
+    for my $f (@{$j2}) {
+        next unless ($f->{type} // '') eq 'file' && $f->{download_url};
+        my $name = bytes($f->{name});
+        next if $name =~ m{[/\\]};
+        my $rc = system('curl', '-sS', '-L', '--max-time', '300', '-o', "$SYNC/shots/$name", $f->{download_url});
+        $got++ if $rc == 0;
+    }
+    $DONE{shots} = $got;
+    finish(1, "截圖抓好了（$got 個檔案）");
+}
+
 status('開始上傳');
 
 # ---- 2. GitHub 上目前的內容 ----
@@ -176,7 +217,8 @@ while (time < $deadline) {
         status('已上傳，等待雲端編譯開始');
         next;
     }
-    $run = $runs[0];
+    ($run) = grep { ($_->{name} // '') eq 'build' } @runs;      # 只等編譯那一個（另一個是模擬器截圖，比較慢）
+    $run = $runs[0] unless $run;
     status("雲端編譯中：$run->{status}（已經 " . int((time - $started) / 60) . ' 分鐘）');
     last if $run->{status} eq 'completed';
 }

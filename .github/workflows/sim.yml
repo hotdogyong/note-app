@@ -1,0 +1,79 @@
+name: sim
+
+# 在 iPad 模擬器裡啟動 App、截圖，放到分支 ci-shots，讓 Claude 自己看畫面。
+# 場景清單在 ci/scenes.txt（App 用 -selftest 場景名稱 啟動，見 Sources/SelfTest.swift）。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sim
+  cancel-in-progress: true
+
+jobs:
+  sim:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          if ! command -v xcodegen >/dev/null; then brew install xcodegen; fi
+          xcodegen generate
+
+      - name: Pick an iPad simulator
+        id: pick
+        run: |
+          xcrun simctl list devices available > devices.txt
+          head -n 80 devices.txt
+          UDID=$(grep -E "iPad" devices.txt | grep -oE "[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}" | head -n 1)
+          echo "picked: $UDID"
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build for simulator
+        run: |
+          set +e
+          xcodebuild -project NoteApp.xcodeproj -scheme NoteApp -configuration Debug -sdk iphonesimulator \
+            -destination "id=${{ steps.pick.outputs.udid }}" -derivedDataPath simbuild \
+            CODE_SIGNING_ALLOWED=NO build > simbuild.log 2>&1
+          echo "xcodebuild exit status: $?"
+          grep -E "error:" simbuild.log | head -n 40
+          tail -n 5 simbuild.log
+
+      - name: Run scenes and take screenshots
+        run: |
+          set +e
+          U="${{ steps.pick.outputs.udid }}"
+          APP=simbuild/Build/Products/Debug-iphonesimulator/NoteApp.app
+          mkdir -p shots
+          xcrun simctl boot "$U"
+          xcrun simctl bootstatus "$U" -b
+          xcrun simctl install "$U" "$APP"
+          for scene in $(cat ci/scenes.txt); do
+            xcrun simctl terminate "$U" com.yuan.noteapp >/dev/null 2>&1
+            xcrun simctl launch "$U" com.yuan.noteapp -selftest "$scene" > "shots/$scene.launch.txt" 2>&1
+            sleep 12
+            xcrun simctl io "$U" screenshot "shots/$scene.png"
+            sips -s format jpeg -s formatOptions 70 -Z 1600 "shots/$scene.png" --out "shots/$scene.jpg" >/dev/null 2>&1 && rm -f "shots/$scene.png"
+          done
+          ls -la shots
+
+      - name: Publish screenshots (branch ci-shots)
+        if: always()
+        run: |
+          mkdir -p /tmp/shots
+          cp shots/* /tmp/shots/ 2>/dev/null || true
+          cp devices.txt /tmp/shots/ 2>/dev/null || true
+          tail -n 60 simbuild.log > /tmp/shots/simbuild-tail.txt 2>/dev/null || true
+          echo "commit=$GITHUB_SHA run=$GITHUB_RUN_ID time=$(date -u +%FT%TZ)" > /tmp/shots/status.txt
+          cd /tmp/shots
+          git init -q -b ci-shots
+          git add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "screenshots for $GITHUB_SHA"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci-shots

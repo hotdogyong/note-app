@@ -155,12 +155,15 @@ final class BoardEngineTestCanvas: PKCanvasView, PKCanvasViewDelegate {
     private var placed = false
     private var stressCount = 0
     private var stressOrigin = CGPoint.zero
+    private var stressTemplates: [PKStroke] = []
 
-    /// 壓力測試（v12.9.7）：從現在畫面的左上角開始接著排假筆跡；回傳一行說明（筆數、換上去多久、存檔多久多大）
+    /// 壓力測試（v12.9.9）：把你真的寫的前幾筆複製很多份，從現在畫面的左上角開始接著排；回傳一行說明（筆數、換上去多久、存檔多久多大）
     func addStress(_ n: Int) -> String {
+        if stressTemplates.isEmpty { stressTemplates = Array(drawing.strokes.prefix(20)) }
+        if stressTemplates.isEmpty { return "請先用 Pencil 在畫面上寫幾個字，再按一次" }
         let z = max(zoomScale, 0.0001)
-        if stressCount == 0 { stressOrigin = CGPoint(x: contentOffset.x / z + 40, y: contentOffset.y / z + 120) }
-        let added = StressStrokes.make(count: n, origin: stressOrigin, startIndex: stressCount, color: UIColor.white)
+        if stressCount == 0 { stressOrigin = CGPoint(x: contentOffset.x / z + 40, y: contentOffset.y / z + 220) }
+        let added = StressStrokes.clones(of: stressTemplates, count: n, origin: stressOrigin, startIndex: stressCount)
         stressCount += n
         var d = drawing
         d.strokes.append(contentsOf: added)
@@ -253,38 +256,34 @@ final class BoardEngineTestCanvas: PKCanvasView, PKCanvasViewDelegate {
     }
 }
 
-/// 壓力測試用的假筆跡（v12.9.7）：模擬寫滿算式的頁面。一張 A4 約 1,500 筆（一行 30 個符號、每個符號 2 筆、每筆 8 個點、一頁 25 行）
+/// 壓力測試用的筆跡（v12.9.9）：拿使用者真的寫的幾筆當範本，一直複製（只換位置和大小）。
+/// v12.9.7 是自己組筆畫點，在 iPadOS 27 少了系統的隱藏數值，縮小時看得到、放大後畫不出來（跟停筆變形遇過的問題一樣）。
+/// 一張 A4 放 1,500 筆（一行 60 筆、25 行）
 enum StressStrokes {
     static let perPage = 1500
 
     /// 從 origin（頁面座標）開始，一張一張 A4 往右排、每 10 張換一列。
     /// startIndex：之前已經產生過幾筆（接著排，不會疊在一起）
-    static func make(count: Int, origin: CGPoint, startIndex: Int, color: UIColor) -> [PKStroke] {
+    static func clones(of templates: [PKStroke], count: Int, origin: CGPoint, startIndex: Int) -> [PKStroke] {
+        guard !templates.isEmpty, count > 0 else { return [] }
         var strokes: [PKStroke] = []
         strokes.reserveCapacity(count)
-        let ink = PKInk(.pen, color: color)
-        let now = Date()
-        let size = CGSize(width: 1.6, height: 1.6)
-        var seed: UInt64 = 0x9E3779B97F4A7C15 &+ UInt64(startIndex)
         for n in startIndex ..< (startIndex + count) {
+            let template = templates[n % templates.count]
+            let box = template.renderBounds
             let pageIndex = n / perPage
-            let symbol = (n % perPage) / 2
-            let line = symbol / 30
-            let column = symbol % 30
-            let x0: CGFloat = origin.x + CGFloat(pageIndex % 10) * 640 + 40 + CGFloat(column) * 17
+            let inPage = n % perPage
+            let line = inPage / 60
+            let column = inPage % 60
+            let x0: CGFloat = origin.x + CGFloat(pageIndex % 10) * 640 + 40 + CGFloat(column) * 8.5
             let y0: CGFloat = origin.y + CGFloat(pageIndex / 10) * 900 + 40 + CGFloat(line) * 30
-            var points: [PKStrokePoint] = []
-            points.reserveCapacity(8)
-            for k in 0 ..< 8 {
-                seed = seed &* 6364136223846793005 &+ 1442695040888963407
-                let rx = CGFloat((seed >> 33) % 1000) / 1000
-                seed = seed &* 6364136223846793005 &+ 1442695040888963407
-                let ry = CGFloat((seed >> 33) % 1000) / 1000
-                let location = CGPoint(x: x0 + rx * 13, y: y0 + ry * 18)
-                points.append(PKStrokePoint(location: location, timeOffset: TimeInterval(k) * 0.02, size: size,
-                                            opacity: 1, force: 1, azimuth: 0, altitude: CGFloat.pi / 2))
-            }
-            strokes.append(PKStroke(ink: ink, path: PKStrokePath(controlPoints: points, creationDate: now)))
+            let k: CGFloat = min(1, 16 / max(box.width, box.height, 1))
+            let toOrigin = CGAffineTransform(translationX: -box.minX, y: -box.minY)
+            let shrink = CGAffineTransform(scaleX: k, y: k)
+            let place = CGAffineTransform(translationX: x0, y: y0)
+            let move = toOrigin.concatenating(shrink).concatenating(place)
+            strokes.append(PKStroke(ink: template.ink, path: template.path,
+                                    transform: template.transform.concatenating(move), mask: template.mask))
         }
         return strokes
     }

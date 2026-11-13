@@ -2637,12 +2637,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 可以雙指點復原。請在測試用的白板上按
     private var stressCount = 0
     private var stressOrigin = CGPoint.zero
+    private var stressTemplates: [PKStroke] = []
 
     func addStressStrokes(_ count: Int) {
         guard isBoard, !readOnly, let pv = boardPV, let visible = boardVisibleRect() else { return }
-        if stressCount == 0 { stressOrigin = CGPoint(x: visible.minX + 40, y: visible.minY + 120) }
-        let color: UIColor = pv.page.isDarkBackground ? UIColor.white : UIColor.black
-        let added = StressStrokes.make(count: count, origin: stressOrigin, startIndex: stressCount, color: color)
+        // v12.9.9：拿真的筆跡當範本複製（自己組的筆畫點放大後畫不出來）
+        if stressTemplates.isEmpty { stressTemplates = Array(pv.canvas.drawing.strokes.prefix(20)) }
+        if stressTemplates.isEmpty {
+            showMessage("pencil", "請先用 Pencil 在白板上寫幾個字，再按一次")
+            return
+        }
+        if stressCount == 0 { stressOrigin = CGPoint(x: visible.minX + 40, y: visible.minY + 220) }
+        let added = StressStrokes.clones(of: stressTemplates, count: count, origin: stressOrigin, startIndex: stressCount)
         stressCount += count
         var drawing = pv.canvas.drawing
         drawing.strokes.append(contentsOf: added)

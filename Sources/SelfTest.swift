@@ -20,8 +20,7 @@ enum SelfTest {
                 // 白板＋筆盒選「區塊」工具：看筆盒有沒有多一顆、提示有沒有出來
                 library.openNotebook = library.addBoard(in: nil, title: "測試白板", width: 100 * 842, height: 100 * 595)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                    PenBoxModel.shared.selection = .frame
-                    PenBoxModel.shared.version += 1
+                    PenBoxModel.shared.select(.frame)
                 }
             case "notebook":
                 library.openNotebook = library.addNotebook(in: nil)

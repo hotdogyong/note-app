@@ -153,13 +153,16 @@ final class RadialMenuView: UIView {
 
     /// 手指移到 p（這個畫面的座標）：更新哪一格被選中
     func track(_ p: CGPoint) {
-        if closing { return }
+        if closing || holding { return }
         var newPick: Int?
         var onOuter = false
         if let parent = shownOuter, outerSpots.indices.contains(parent),
-           hypot(p.x - outerSpots[parent].x, p.y - outerSpots[parent].y) < 42 {
+           hypot(p.x - outerSpots[parent].x, p.y - outerSpots[parent].y) < (pickedOuter ? 62 : 42) {
             newPick = parent
             onOuter = true
+        } else if let current = picked, !pickedOuter, spots.indices.contains(current), items[current] != nil,
+                  hypot(p.x - spots[current].x, p.y - spots[current].y) < 62 {
+            newPick = current                                   // v12.10：選到的那一顆會「黏住」，手指要離開遠一點才放掉（照 GUGA）
         } else {
             for (i, spot) in spots.enumerated() where items[i] != nil && hypot(p.x - spot.x, p.y - spot.y) < 42 {
                 newPick = i
@@ -198,8 +201,18 @@ final class RadialMenuView: UIView {
         if let i = picked, let item = items[i] {
             action = pickedOuter ? item.outerAction : item.action
         }
-        close(then: action)
+        if action != nil {
+            // v12.10：選到的那一顆先亮著停一下再收（照 GUGA；以前一放開就縮回去）
+            holding = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                self?.close(then: action)
+            }
+        } else {
+            close(then: nil)
+        }
     }
+
+    private var holding = false
 
     /// 收起來（縮回按的地方）；then：收完要做的事
     func close(then action: (() -> Void)? = nil) {

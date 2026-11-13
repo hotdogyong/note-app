@@ -219,11 +219,6 @@ struct EditSnapshotSheet: View {
                 Section {
                     TextField(snapshot.reason, text: $title)
                         .font(.title3)
-                    Button {
-                        if let pasted = UIPasteboard.general.string, !pasted.isEmpty { title = pasted }
-                    } label: {
-                        Label("從剪貼簿貼上", systemImage: "doc.on.clipboard")
-                    }
                 } header: {
                     Text("標題")
                 } footer: {
@@ -232,11 +227,6 @@ struct EditSnapshotSheet: View {
                 Section {
                     TextField("例如：第三章範例 3 寫完；刪掉重複的旁頁之前", text: $note, axis: .vertical)
                         .lineLimit(3...8)
-                    Button {
-                        if let pasted = UIPasteboard.general.string, !pasted.isEmpty { note = pasted }
-                    } label: {
-                        Label("從剪貼簿貼上", systemImage: "doc.on.clipboard")
-                    }
                 } header: {
                     Text("摘要")
                 } footer: {

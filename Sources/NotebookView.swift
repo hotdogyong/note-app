@@ -2464,11 +2464,65 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         } else if preset != "width", let v = Double(preset) {
             target = CGFloat(v)
         }
+        // v12.10：連續地縮放過去（以前一下跳過去）
+        animateZoom(to: clampZoom(target)) { [weak self] in
+            guard let self = self, preset == "page" else { return }
+            self.centerFocusedPage()
+            self.finishZoom()
+        }
+    }
+
+    // MARK: 連續縮放的動畫（v12.10）：左下角的 % 用。做法跟雙指縮放一樣：過程中只把整個畫面放大縮小，最後才真的重排一次
+
+    private var zoomAnimLink: CADisplayLink?
+    private var zoomAnimStart: CFTimeInterval = 0
+    private var zoomAnimFrom: CGFloat = 1
+    private var zoomAnimTo: CGFloat = 1
+    private var zoomAnimThen: (() -> Void)?
+
+    private func animateZoom(to target: CGFloat, then: (() -> Void)? = nil) {
+        finishZoomAnimation()                                  // 上一段還沒跑完：先直接跳到終點
+        guard abs(target - zoom) > 0.005, !isPinching else {
+            then?()
+            return
+        }
         let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        pinchStartZoom = zoom
         captureZoomAnchors(at: center)
-        zoomLive(to: clampZoom(target), at: center)
-        if preset == "page" { centerFocusedPage() }
+        if isBoard {
+            startBoardPinch(at: center)
+        } else {
+            startPagePinch(at: center)
+        }
+        zoomAnimFrom = zoom
+        zoomAnimTo = target
+        zoomAnimThen = then
+        zoomAnimStart = CACurrentMediaTime()
+        let link = CADisplayLink(target: self, selector: #selector(zoomAnimStep(_:)))
+        link.add(to: RunLoop.main, forMode: RunLoop.Mode.common)
+        zoomAnimLink = link
+    }
+
+    @objc private func zoomAnimStep(_ link: CADisplayLink) {
+        let t = CGFloat(min(1, (CACurrentMediaTime() - zoomAnimStart) / 0.3))
+        let eased = 1 - pow(1 - t, 3)                          // 先快後慢
+        let ratio = zoomAnimTo / max(zoomAnimFrom, 0.0001)
+        let z = zoomAnimFrom * pow(ratio, eased)               // 照倍率走，放大和縮小感覺一樣快
+        moveBoardPinch(zoom: z, at: CGPoint(x: bounds.midX, y: bounds.midY))
+        if t >= 1 { finishZoomAnimation() }
+    }
+
+    /// 動畫跑完（或被打斷）：真的換到新的大小
+    private func finishZoomAnimation() {
+        guard let link = zoomAnimLink else { return }
+        link.invalidate()
+        zoomAnimLink = nil
+        moveBoardPinch(zoom: zoomAnimTo, at: CGPoint(x: bounds.midX, y: bounds.midY))
+        endBoardPinch()
         finishZoom()
+        let then = zoomAnimThen
+        zoomAnimThen = nil
+        then?()
     }
 
     /// 目前這一頁整張放進畫面的大小
@@ -4299,6 +4353,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     @objc private func handlePinch(_ g: UIPinchGestureRecognizer) {
         switch g.state {
         case .began:
+            finishZoomAnimation()                              // 縮放動畫跑到一半又用手指縮放：先讓動畫到終點
             isPinching = true
             if cropMode { clearCropRect() }
             pinchStartZoom = zoom
@@ -4577,11 +4632,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     func resetZoom() {
-        let center = CGPoint(x: bounds.midX, y: bounds.midY)
-        captureZoomAnchors(at: center)
-        zoomLive(to: isBoard ? boardZoom100 : 1, at: center)          // 白板：回到白板的 100%
-        finishZoom()
-        refocus()
+        // 白板：回到白板的 100%。v12.10：連續地縮放過去
+        animateZoom(to: isBoard ? boardZoom100 : 1) { [weak self] in
+            self?.refocus()
+            self?.updateBoardHUD()
+        }
     }
 
     // MARK: 新增、刪除、移動頁面

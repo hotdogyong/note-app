@@ -598,13 +598,6 @@ struct NameSheet: View {
                             onDone()
                             dismiss()
                         }
-                    Button {
-                        if let pasted = UIPasteboard.general.string, !pasted.isEmpty { text = pasted }
-                    } label: {
-                        Label("從剪貼簿貼上", systemImage: "doc.on.clipboard")
-                    }
-                } footer: {
-                    Text("在 Swift Playgrounds 裡執行時鍵盤叫不出來，是 Swift Playgrounds 的已知問題。可以先在備忘錄打好名稱、複製，再按「從剪貼簿貼上」；也可以試著用 Apple Pencil 直接手寫。")
                 }
             }
             .navigationTitle("命名")
@@ -773,15 +766,6 @@ struct FolderSheet: View {
                 .multilineTextAlignment(.center)
                 .padding(.vertical, 10)
                 .background(Capsule().stroke(Color.gray.opacity(0.4)))
-            Button {
-                pasteName()
-            } label: {
-                Label("從剪貼簿貼上", systemImage: "doc.on.clipboard")
-                    .font(.footnote)
-            }
-            Text("鍵盤叫不出來的話，可以用 Apple Pencil 直接在框裡寫。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: 460)
     }
@@ -1127,11 +1111,6 @@ struct SettingsSheet: View {
                         .navigationBarTitleDisplayMode(.inline)
                     } label: {
                         Label("停筆的預設", systemImage: "wand.and.stars")
-                    }
-                    NavigationLink {
-                        ClipboardInfoView()
-                    } label: {
-                        Label("剪貼簿內容（除錯用）", systemImage: "doc.on.clipboard")
                     }
                 } header: {
                     Text("筆記本的習慣")

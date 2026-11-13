@@ -1375,10 +1375,6 @@ enum TextPrompt {
             field.clearButtonMode = .whileEditing
         }
         alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-        alert.addAction(UIAlertAction(title: "用剪貼簿的文字", style: .default) { _ in
-            let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            done(text.isEmpty ? initial : text)
-        })
         alert.addAction(UIAlertAction(title: "確定", style: .default) { _ in
             let text = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             done(text.isEmpty ? initial : text)

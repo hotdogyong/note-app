@@ -218,8 +218,14 @@ if (($run->{conclusion} // '') eq 'success') {
     if ($c7 eq '200' && $url) {
         my $dir = "$ROOT/../安裝檔";
         make_path($dir);
-        my $rc = system('curl', '-sS', '-L', '--max-time', '600', '-o', "$dir/NoteApp.ipa", $url);
-        $DONE{ipa} = $rc == 0 ? '安裝檔/NoteApp.ipa' : "下載失敗（$rc）";
+        # 檔名帶版本號（從 ContentView.swift 的 appVersion 讀），同一版再編一次就加 -b2、-b3，不蓋掉舊的
+        my $ver = 'unknown';
+        if (-e "$ROOT/Sources/ContentView.swift" && read_file("$ROOT/Sources/ContentView.swift") =~ /let appVersion = "([^"]+)"/) { $ver = $1 }
+        my $name = "NoteApp-$ver.ipa";
+        my $k = 1;
+        while (-e "$dir/$name") { $k++; $name = "NoteApp-$ver-b$k.ipa" }
+        my $rc = system('curl', '-sS', '-L', '--max-time', '600', '-o', "$dir/$name", $url);
+        $DONE{ipa} = $rc == 0 ? "安裝檔/$name" : "下載失敗（$rc）";
     } else {
         $DONE{ipa} = "找不到安裝檔（HTTP $c7）";
     }

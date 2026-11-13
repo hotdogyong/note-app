@@ -28,7 +28,7 @@ final class LibraryModel: ObservableObject {
         Store.restoreDataFolder()                      // 資料存在自己選的資料夾的話，先找回來
         // 設定以資料夾裡的為準（v12.9）：資料夾裡的比較新就讀回來
         if Store.restoreSettingsIfNeeded() { PenBoxModel.shared.reloadFromDefaults() }
-        StorageReport.clear(StorageReport.tempURL)          // 上次匯出留下的暫存 PDF（v12.9.6）
+        StorageReport.clear(StorageReport.exportURL)        // 上次匯出留下的 PDF（v12.9.7：只清自己的子資料夾）
         var lib = Store.loadLibrary()
         if Store.needsMigration { lib = Store.migrate(lib) }   // 舊版擺在一起的檔案：整理成照資料夾擺
         library = lib

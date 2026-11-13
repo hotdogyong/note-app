@@ -829,6 +829,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             self?.checkMarkdownPageHeight(pageID: pageID, boxID: boxID)
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             self?.checkMarkdownPageHeight(pageID: pageID, boxID: boxID)
+            // v12.9.7：長頁排版可能超過 2.5 秒，再對一次（那時排好的圖應該出來了）
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            self?.checkMarkdownPageHeight(pageID: pageID, boxID: boxID)
         }
     }
 
@@ -852,6 +855,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let drawing = pageViews[pageID]?.canvas.drawing ?? Store.loadDrawing(pageID)
         if !drawing.strokes.isEmpty { needed = max(needed, drawing.bounds.maxY + 24 * k) }
         for image in page.images ?? [] { needed = max(needed, image.y + image.height + 24 * k) }
+        // v12.9.7：紙膠帶、其他文字方塊、釘在這一頁的圖釘也不能被切到
+        for tape in page.tapes ?? [] { needed = max(needed, tape.y + tape.height + 24 * k) }
+        for other in page.texts ?? [] where other.id != boxID { needed = max(needed, other.y + other.fontSize * 2 * k + 24 * k) }
+        for pin in model.notebook.pins ?? [] where pin.pageID == pageID { needed = max(needed, pin.y + 40 * k) }
         // 最短一張 A4 的比例；超過就以半張 A4 為單位長（文字刪短了也會縮回來，v12.9.3）
         let minHeight = round(spec.width * 842 / 595)
         let newHeight = max(minHeight, (needed / unit).rounded(.up) * unit)
@@ -2450,11 +2457,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard isBoard, hud.superview != nil, let page = model.notebook.rows.first?.pages.first else { return }
         positionFrameBar()
         positionPinBar()
-        let percent = Int((boardPercent * 100).rounded())
+        // v12.9.7：已經是 100%（再點一下會回原點）時，按鈕寫「原點」
+        let atFull = abs(boardPercent - 1) <= 0.01
+        let percent = atFull ? -100 : Int((boardPercent * 100).rounded())
         if percent != shownPercent {                          // 捲動時每一格都會呼叫：數字沒變就不要重設（按鈕換字會閃）
             shownPercent = percent
             UIView.performWithoutAnimation {
-                percentButton.setTitle("\(percent)%", for: .normal)
+                percentButton.setTitle(atFull ? "原點" : "\(percent)%", for: .normal)
                 percentButton.layoutIfNeeded()
             }
         }
@@ -2578,6 +2587,30 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private var boardPV: NotePageView? {
         guard isBoard, let page = model.notebook.rows.first?.pages.first else { return nil }
         return pageViews[page.id]
+    }
+
+    /// 壓力測試（v12.9.7）：在畫面左上角附近產生假筆跡（一張 A4 約 1,500 筆，接著上一次的排下去），用來量白板撐得住多少。
+    /// 可以雙指點復原。請在測試用的白板上按
+    private var stressCount = 0
+    private var stressOrigin = CGPoint.zero
+
+    func addStressStrokes(_ count: Int) {
+        guard isBoard, !readOnly, let pv = boardPV, let visible = boardVisibleRect() else { return }
+        if stressCount == 0 { stressOrigin = CGPoint(x: visible.minX + 40, y: visible.minY + 120) }
+        let color: UIColor = pv.page.isDarkBackground ? UIColor.white : UIColor.black
+        let added = StressStrokes.make(count: count, origin: stressOrigin, startIndex: stressCount, color: color)
+        stressCount += count
+        var drawing = pv.canvas.drawing
+        drawing.strokes.append(contentsOf: added)
+        let t0 = CACurrentMediaTime()
+        pv.setDrawingRecorded(drawing)
+        let t1 = CACurrentMediaTime()
+        Store.saveDrawing(drawing, pageID: pv.page.id)
+        let t2 = CACurrentMediaTime()
+        let total = drawing.strokes.count
+        let setMs = Int((t1 - t0) * 1000)
+        let saveMs = Int((t2 - t1) * 1000)
+        showMessage("flask", "共 \(total) 筆｜換上去 \(setMs) ms｜存檔 \(saveMs) ms")
     }
 
     /// 畫面上的一點（這個畫面的座標）→ 白板的頁面座標
@@ -2813,7 +2846,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         case .changed:
             guard let start = pinDragStart else { return }
             let q = CGPoint(x: start.pin.x + (p.x - start.point.x) / s, y: start.pin.y + (p.y - start.point.y) / s)
-            pv.layoutBoardMarks(overrides: [id: CGRect(x: q.x, y: q.y, width: 0, height: 0)])
+            pv.movePin(id, tip: CGPoint(x: q.x * s, y: q.y * s))    // v12.9.7：只移動這一顆（以前每一格都重排所有區塊和圖釘）
         case .ended:
             setScrolling(true)
             guard let start = pinDragStart else { return }
@@ -3389,7 +3422,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         flushAll()
         let name = (model.meta.title + "-所有區塊").replacingOccurrences(of: "/", with: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name + ".pdf")
+        let url = StorageReport.exportURL.appendingPathComponent(name + ".pdf")
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 595, height: 842))
         let frames = boardFrames
         let current = model.page(page.id) ?? page
@@ -3497,7 +3530,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
               let page = model.notebook.rows.first?.pages.first else { return }
         flushAll()
         let title = (model.meta.title + "-" + (f.name.isEmpty ? "區塊" : f.name)).replacingOccurrences(of: "/", with: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(title + ".pdf")
+        let url = StorageReport.exportURL.appendingPathComponent(title + ".pdf")
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 595, height: 842))
         do {
             try renderer.writePDF(to: url) { ctx in
@@ -3674,7 +3707,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         flushAll()
         let area: CGRect? = onlyVisible ? boardVisibleRect() : nil
         let name = model.meta.title + (onlyVisible ? "-目前畫面" : "")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name.replacingOccurrences(of: "/", with: "-") + ".pdf")
+        let url = StorageReport.exportURL.appendingPathComponent(name.replacingOccurrences(of: "/", with: "-") + ".pdf")
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 595, height: 842))
         do {
             try renderer.writePDF(to: url) { ctx in
@@ -5728,7 +5761,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         case .changedSidePages: suffix = "改過的旁頁"
         }
         let title = model.meta.title.replacingOccurrences(of: "/", with: "-")
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(title)-\(suffix).pdf")
+        let url = StorageReport.exportURL.appendingPathComponent("\(title)-\(suffix).pdf")
         let renderer = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: 595, height: 842))
         let labelStyle: [NSAttributedString.Key: Any] = [
             .font: UIFont.systemFont(ofSize: 9),

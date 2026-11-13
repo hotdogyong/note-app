@@ -138,6 +138,14 @@ struct BoardSettingsPanel: View {
                 }
                 group {
                     navRow("試用新白板引擎（實驗，不會存檔）", symbol: "flask") { open(.engineTest) }
+                    Divider()
+                    actionRow("壓力測試：產生 5,000 筆假筆跡（可復原）", symbol: "scribble.variable") {
+                        model.documentView?.addStressStrokes(5000)
+                    }
+                    Divider()
+                    actionRow("壓力測試：產生 20,000 筆假筆跡（可復原）", symbol: "scribble.variable") {
+                        model.documentView?.addStressStrokes(20000)
+                    }
                 }
             }
             .font(.body)

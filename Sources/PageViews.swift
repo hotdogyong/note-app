@@ -412,6 +412,11 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     }
 
     /// 區塊、圖釘的位置（縮放、捲動、資料改了都要重排）。overrides：拖曳中暫時用的位置
+    /// 拖曳圖釘時只移動那一顆（v12.9.7）；tip 是這個頁面視圖的座標
+    func movePin(_ id: UUID, tip: CGPoint) {
+        pinViews[id]?.place(tip: tip)
+    }
+
     func layoutBoardMarks(overrides: [UUID: CGRect] = [:]) {
         let s = bounds.width / max(page.spec.width, 1)
         guard s > 0 else { return }

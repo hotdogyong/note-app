@@ -64,6 +64,8 @@ final class BoardEngineTestHost: UIView {
     let canvas = BoardEngineTestCanvas()
     let grid = GridView()
     let percentLabel = UILabel()
+    let infoLabel = UILabel()                          // 壓力測試的結果（v12.9.7）
+    private var stressButtons: [UIButton] = []
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -80,7 +82,38 @@ final class BoardEngineTestHost: UIView {
         percentLabel.layer.cornerRadius = 20
         percentLabel.clipsToBounds = true
         addSubview(percentLabel)
+        // 壓力測試（v12.9.7）：產生假筆跡，看這個做法撐得住多少
+        for n in [5000, 20000] {
+            let b = UIButton(type: .system)
+            b.setTitle(n == 5000 ? "＋5,000 筆" : "＋20,000 筆", for: .normal)
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+            b.setTitleColor(UIColor.white, for: .normal)
+            b.backgroundColor = UIColor(white: 0.1, alpha: 0.8)
+            b.layer.cornerRadius = 20
+            b.tag = n
+            b.addTarget(self, action: #selector(stressTapped(_:)), for: .touchUpInside)
+            addSubview(b)
+            stressButtons.append(b)
+        }
+        infoLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 14, weight: .medium)
+        infoLabel.textColor = UIColor.white
+        infoLabel.backgroundColor = UIColor(white: 0.1, alpha: 0.8)
+        infoLabel.textAlignment = .center
+        infoLabel.layer.cornerRadius = 12
+        infoLabel.clipsToBounds = true
+        infoLabel.isHidden = true
+        addSubview(infoLabel)
         canvas.host = self
+    }
+
+    @objc private func stressTapped(_ sender: UIButton) {
+        let n = sender.tag
+        infoLabel.isHidden = false
+        infoLabel.text = "產生中…"
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.infoLabel.text = self.canvas.addStress(n)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -89,6 +122,10 @@ final class BoardEngineTestHost: UIView {
         super.layoutSubviews()
         canvas.frame = bounds
         percentLabel.frame = CGRect(x: 20, y: bounds.height - 80, width: 90, height: 40)
+        for (i, b) in stressButtons.enumerated() {
+            b.frame = CGRect(x: 122 + CGFloat(i) * 132, y: bounds.height - 80, width: 122, height: 40)
+        }
+        infoLabel.frame = CGRect(x: 20, y: bounds.height - 126, width: min(560, bounds.width - 40), height: 36)
         syncGrid()
     }
 
@@ -116,6 +153,28 @@ final class BoardEngineTestCanvas: PKCanvasView, PKCanvasViewDelegate {
     weak var host: BoardEngineTestHost?
     private let under = UIView()                       // 筆跡底下：假圖片（跟著縮放）
     private var placed = false
+    private var stressCount = 0
+    private var stressOrigin = CGPoint.zero
+
+    /// 壓力測試（v12.9.7）：從現在畫面的左上角開始接著排假筆跡；回傳一行說明（筆數、換上去多久、存檔多久多大）
+    func addStress(_ n: Int) -> String {
+        let z = max(zoomScale, 0.0001)
+        if stressCount == 0 { stressOrigin = CGPoint(x: contentOffset.x / z + 40, y: contentOffset.y / z + 120) }
+        let added = StressStrokes.make(count: n, origin: stressOrigin, startIndex: stressCount, color: UIColor.white)
+        stressCount += n
+        var d = drawing
+        d.strokes.append(contentsOf: added)
+        let t0 = CACurrentMediaTime()
+        drawing = d
+        let t1 = CACurrentMediaTime()
+        let data = d.dataRepresentation()
+        let t2 = CACurrentMediaTime()
+        let total = d.strokes.count
+        let setMs = Int((t1 - t0) * 1000)
+        let saveMs = Int((t2 - t1) * 1000)
+        let mb = String(format: "%.1f", Double(data.count) / 1_048_576)
+        return "共 \(total) 筆｜換上去 \(setMs) ms｜存檔 \(saveMs) ms、\(mb) MB"
+    }
 
     /// 白板的 100%：一張 A4 的寬剛好放滿畫面（跟現在的白板一樣）
     var zoom100: CGFloat { max(0.05, (bounds.width - 48) / referencePageWidth) }
@@ -191,5 +250,42 @@ final class BoardEngineTestCanvas: PKCanvasView, PKCanvasViewDelegate {
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         host?.syncGrid()
+    }
+}
+
+/// 壓力測試用的假筆跡（v12.9.7）：模擬寫滿算式的頁面。一張 A4 約 1,500 筆（一行 30 個符號、每個符號 2 筆、每筆 8 個點、一頁 25 行）
+enum StressStrokes {
+    static let perPage = 1500
+
+    /// 從 origin（頁面座標）開始，一張一張 A4 往右排、每 10 張換一列。
+    /// startIndex：之前已經產生過幾筆（接著排，不會疊在一起）
+    static func make(count: Int, origin: CGPoint, startIndex: Int, color: UIColor) -> [PKStroke] {
+        var strokes: [PKStroke] = []
+        strokes.reserveCapacity(count)
+        let ink = PKInk(.pen, color: color)
+        let now = Date()
+        let size = CGSize(width: 1.6, height: 1.6)
+        var seed: UInt64 = 0x9E3779B97F4A7C15 &+ UInt64(startIndex)
+        for n in startIndex ..< (startIndex + count) {
+            let pageIndex = n / perPage
+            let symbol = (n % perPage) / 2
+            let line = symbol / 30
+            let column = symbol % 30
+            let x0: CGFloat = origin.x + CGFloat(pageIndex % 10) * 640 + 40 + CGFloat(column) * 17
+            let y0: CGFloat = origin.y + CGFloat(pageIndex / 10) * 900 + 40 + CGFloat(line) * 30
+            var points: [PKStrokePoint] = []
+            points.reserveCapacity(8)
+            for k in 0 ..< 8 {
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                let rx = CGFloat((seed >> 33) % 1000) / 1000
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                let ry = CGFloat((seed >> 33) % 1000) / 1000
+                let location = CGPoint(x: x0 + rx * 13, y: y0 + ry * 18)
+                points.append(PKStrokePoint(location: location, timeOffset: TimeInterval(k) * 0.02, size: size,
+                                            opacity: 1, force: 1, azimuth: 0, altitude: CGFloat.pi / 2))
+            }
+            strokes.append(PKStroke(ink: ink, path: PKStrokePath(controlPoints: points, creationDate: now)))
+        }
+        return strokes
     }
 }

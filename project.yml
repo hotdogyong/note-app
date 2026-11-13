@@ -7,9 +7,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "12.9.6"
+    MARKETING_VERSION: "12.9.7"
     CURRENT_PROJECT_VERSION: "1"
-    TARGETED_DEVICE_FAMILY: "2"
     CODE_SIGNING_ALLOWED: "NO"
 targets:
   NoteApp:
@@ -22,6 +21,8 @@ targets:
       path: Support/Info.plist
       properties:
         CFBundleDisplayName: 筆記
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -41,4 +42,5 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yuan.noteapp
         PRODUCT_NAME: NoteApp
+        TARGETED_DEVICE_FAMILY: "2"
         GENERATE_INFOPLIST_FILE: "NO"

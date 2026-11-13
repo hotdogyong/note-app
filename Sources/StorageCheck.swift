@@ -90,6 +90,12 @@ struct StorageReport {
     var history: Int64?
 
     static var tempURL: URL { FileManager.default.temporaryDirectory }
+    /// 匯出的 PDF 放這裡（v12.9.7）：開 App 時只清這個子資料夾，不動暫存資料夾裡別的東西
+    static var exportURL: URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("筆記匯出", isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
     static var cachesURL: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
     }

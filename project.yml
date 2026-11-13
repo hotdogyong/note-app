@@ -1,0 +1,44 @@
+# 用 XcodeGen 產生 Xcode 專案（GitHub 的雲端 Mac 上執行；本機不需要）
+name: NoteApp
+options:
+  deploymentTarget:
+    iOS: "26.0"
+  developmentLanguage: zh-Hant
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "12.9.6"
+    CURRENT_PROJECT_VERSION: "1"
+    TARGETED_DEVICE_FAMILY: "2"
+    CODE_SIGNING_ALLOWED: "NO"
+targets:
+  NoteApp:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    scheme: {}
+    info:
+      path: Support/Info.plist
+      properties:
+        CFBundleDisplayName: 筆記
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSCameraUsageDescription: 拍照後把照片放進筆記
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.yuan.noteapp
+        PRODUCT_NAME: NoteApp
+        GENERATE_INFOPLIST_FILE: "NO"

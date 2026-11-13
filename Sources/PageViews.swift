@@ -1,0 +1,1417 @@
+import SwiftUI
+import UIKit
+import UIKit.UIGestureRecognizerSubclass
+import PencilKit
+import ObjectiveC
+import PDFKit
+import UniformTypeIdentifiers
+import WebKit
+
+// PageViews.swift：頁面：PageRowView（一列）、NoteCanvas、NotePageView（一頁）、紙膠帶、紙張與封面的畫法、拉動新增的圓圈、PDF、匯出與縮圖
+// （筆記 App 的一部分；版本號與檔案清單在 ContentView.swift 開頭）
+
+// MARK: - 6. 一列：主頁 + 旁頁，左右滑動、往左右拉新增
+
+final class PageRowView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+    let rowID: UUID
+    weak var host: NotebookView?
+    var pages: [NotePage] = []                                     // 這一列的頁面資料（由左到右）
+    private(set) var pageFrames: [CGRect] = []                     // 每一頁在這一列裡的位置
+    private(set) var ranges: [(lo: CGFloat, hi: CGFloat)] = []   // 每一頁可停留的水平範圍
+    var currentIndex = 0
+    var mainIndex = 0
+
+    private var dragStartX: CGFloat = 0
+    private var dragStartIndex = 0
+    private var pendingAdd = 0          // -1 = 左邊新增，+1 = 右邊新增
+    private var startedAtLeftEnd = false
+    private var startedAtRightEnd = false
+    private let leftPull = PullIndicator(text: "新增旁頁", width: 100)
+    private let rightPull = PullIndicator(text: "新增旁頁", width: 100)
+
+    init(rowID: UUID, host: NotebookView) {
+        self.rowID = rowID
+        self.host = host
+        super.init(frame: .zero)
+        delegate = self
+        showsHorizontalScrollIndicator = false
+        showsVerticalScrollIndicator = false
+        alwaysBounceHorizontal = true
+        alwaysBounceVertical = false
+        decelerationRate = .fast
+        delaysContentTouches = false
+        clipsToBounds = false
+        panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        addSubview(leftPull)
+        addSubview(rightPull)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    // 白板（v12.3）：這一列的左右捲動可以跟外層的上下捲動同時進行，斜著拖也可以。一般筆記本照舊（一次只捲一個方向）
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === panGestureRecognizer, let host = host, host.isBoard else { return false }
+        return host.isOuterPan(other)
+    }
+
+    // 頁面上的選取框超出這一列時，超出的部分也要能點
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if super.point(inside: point, with: event) { return true }
+        return subviews.contains { $0 is NotePageView && $0.point(inside: convert(point, to: $0), with: event) }
+    }
+
+    /// 依頁面尺寸排版；已經載入的頁面視圖順便放到正確位置
+    func layoutPages(scale s: CGFloat, margin m: CGFloat) {
+        let viewWidth = bounds.width
+        var x = m
+        var newRanges: [(lo: CGFloat, hi: CGFloat)] = []
+        var frames: [CGRect] = []
+        for page in pages {
+            let w = page.spec.width * s
+            let h = page.spec.height * s
+            let frame = CGRect(x: x, y: 0, width: w, height: h)
+            frames.append(frame)
+            if let pv = host?.loadedPageView(page.id) {
+                pv.frame = frame
+                pv.apply(scale: s)
+            }
+            var lo = x - m
+            var hi = x + w + m - viewWidth
+            if lo > hi {                         // 頁面比畫面窄：置中
+                let c = x + w / 2 - viewWidth / 2
+                lo = c
+                hi = c
+            }
+            newRanges.append((lo: lo, hi: hi))
+            x += w + 2 * m
+        }
+        ranges = newRanges
+        pageFrames = frames
+        let contentWidth = x - m
+        contentSize = CGSize(width: max(contentWidth, viewWidth), height: bounds.height)
+        let leftInset = max(0, -(ranges.first?.lo ?? 0))
+        let rightInset = max(0, (ranges.last?.hi ?? 0) + viewWidth - contentSize.width)
+        contentInset = UIEdgeInsets(top: 0, left: leftInset, bottom: 0, right: rightInset)
+        let midY = bounds.height / 2
+        if let f = ranges.first { leftPull.center = CGPoint(x: f.lo - 50, y: midY) }
+        if let l = ranges.last { rightPull.center = CGPoint(x: l.hi + viewWidth + 50, y: midY) }
+    }
+
+    func offsetFor(_ index: Int, inPage: CGFloat) -> CGFloat {
+        guard ranges.indices.contains(index) else { return 0 }
+        let r = ranges[index]
+        return min(max(r.lo + inPage, r.lo), r.hi)
+    }
+
+    func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        dragStartX = contentOffset.x
+        dragStartIndex = currentIndex
+        // 開始拖的時候，是否已經停在最左邊／最右邊那一張的邊緣
+        startedAtLeftEnd = currentIndex == 0 && abs(contentOffset.x - (ranges.first?.lo ?? 0)) < 6
+        startedAtRightEnd = currentIndex == ranges.count - 1 && abs(contentOffset.x - (ranges.last?.hi ?? 0)) < 6
+        if host?.allowsPagePull == false {                     // 白板：往左、往右拉不新增旁頁
+            startedAtLeftEnd = false
+            startedAtRightEnd = false
+        }
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard let first = ranges.first, let last = ranges.last, let host = host else { return }
+        let x = contentOffset.x
+        leftPull.progress = (isTracking && startedAtLeftEnd) ? (first.lo - x) / host.pullThreshold : 0
+        rightPull.progress = (isTracking && startedAtRightEnd) ? (x - last.hi) / host.pullThreshold : 0
+        if isDragging || isDecelerating { host.rowDidScroll(self) }
+    }
+
+    func scrollViewWillEndDragging(_ scrollView: UIScrollView, withVelocity velocity: CGPoint,
+                                   targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        guard let host = host, ranges.indices.contains(dragStartIndex),
+              let first = ranges.first, let last = ranges.last else { return }
+        let x = contentOffset.x
+        let viewWidth = bounds.width
+        pendingAdd = 0
+
+        // 先停在最邊緣、再慢慢往外拉到圓圈跑滿 → 新增旁頁；一路甩過去不算
+        let slowEnough = abs(velocity.x) < host.pullMaxVelocity
+        if startedAtLeftEnd && slowEnough && first.lo - x >= host.pullThreshold {
+            pendingAdd = -1
+            targetContentOffset.pointee.x = first.lo
+            return
+        }
+        if startedAtRightEnd && slowEnough && x - last.hi >= host.pullThreshold {
+            pendingAdd = 1
+            targetContentOffset.pointee.x = last.hi
+            return
+        }
+
+        // 換頁：從頁面邊緣開始滑才換頁；放大時在頁面中間滑，只會在這一頁內移動
+        let i = dragStartIndex
+        let r = ranges[i]
+        let proposed = targetContentOffset.pointee.x
+        var newIndex = i
+        var target = min(max(proposed, r.lo), r.hi)
+        // 靈敏度：輕輕一撥（速度 0.12）或拖過畫面寬度的 7% 就換頁
+        let startedAtLeftEdge = dragStartX <= r.lo + 8
+        let startedAtRightEdge = dragStartX >= r.hi - 8
+        let goLeft = (startedAtLeftEdge && (velocity.x < -0.12 || proposed < r.lo - viewWidth * 0.07))
+            || x < r.lo - viewWidth * 0.25
+        let goRight = (startedAtRightEdge && (velocity.x > 0.12 || proposed > r.hi + viewWidth * 0.07))
+            || x > r.hi + viewWidth * 0.25
+        if i > 0 && goLeft {
+            newIndex = i - 1
+            target = ranges[newIndex].hi
+        } else if i < ranges.count - 1 && goRight {
+            newIndex = i + 1
+            target = ranges[newIndex].lo
+        }
+        targetContentOffset.pointee.x = target
+        if newIndex != currentIndex {
+            currentIndex = newIndex
+            host.rowPageChanged(self)
+        }
+    }
+
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard pendingAdd != 0 else { return }
+        let left = pendingAdd < 0
+        pendingAdd = 0
+        Task { @MainActor [weak self] in
+            guard let self = self, let host = self.host else { return }
+            host.addSidePage(rowID: self.rowID, left: left)
+        }
+    }
+}
+
+
+// MARK: - 7. 一張頁面：方格底 + 手寫層，自動存檔
+
+final class NoteCanvas: PKCanvasView {
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
+
+    /// PencilKit 自己的復原紀錄一律忽略（筆跡被程式換掉時它會失效），改由筆記本統一記錄
+    private static let ignoredUndo: UndoManager = {
+        let manager = UndoManager()
+        manager.disableUndoRegistration()
+        return manager
+    }()
+
+    override var undoManager: UndoManager? { Self.ignoredUndo }
+
+    // PencilKit 自己的選單（插入空間、全選、貼上…）一律不要
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool { false }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window != nil else { return }
+        stripSystemMenus()
+        // PencilKit 有些東西是之後才加上去的，晚一點再清一次
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.stripSystemMenus() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.stripSystemMenus() }
+    }
+
+    // 畫布只需要 Pencil：手指的觸碰不交給 PencilKit（它的選單是手指點出來的）
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        stripSystemMenus()
+        let pencil = touches.filter { $0.type == .pencil }
+        if !pencil.isEmpty { super.touchesBegan(pencil, with: event) }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let pencil = touches.filter { $0.type == .pencil }
+        if !pencil.isEmpty { super.touchesMoved(pencil, with: event) }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let pencil = touches.filter { $0.type == .pencil }
+        if !pencil.isEmpty { super.touchesEnded(pencil, with: event) }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        let pencil = touches.filter { $0.type == .pencil }
+        if !pencil.isEmpty { super.touchesCancelled(pencil, with: event) }
+    }
+
+    // PencilKit 之後才要加上的選單功能，直接擋掉
+    override func addInteraction(_ interaction: UIInteraction) {
+        if interaction is UIEditMenuInteraction || interaction is UIContextMenuInteraction { return }
+        super.addInteraction(interaction)
+    }
+
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        if g !== drawingGestureRecognizer, g is UITapGestureRecognizer || g is UILongPressGestureRecognizer {
+            return false
+        }
+        return super.gestureRecognizerShouldBegin(g)
+    }
+
+    /// 畫布裡面（包含內部的子視圖）手指點一下、長按會跳出的選單都關掉；Pencil 書寫不受影響
+    private func stripSystemMenus() {
+        func walk(_ v: UIView) {
+            for interaction in v.interactions
+            where interaction is UIEditMenuInteraction || interaction is UIContextMenuInteraction {
+                v.removeInteraction(interaction)
+            }
+            for g in v.gestureRecognizers ?? [] where g !== drawingGestureRecognizer {
+                if g is UITapGestureRecognizer || g is UILongPressGestureRecognizer {
+                    g.isEnabled = false
+                } else if !(g is UIPanGestureRecognizer || g is UIPinchGestureRecognizer || g is UIHoverGestureRecognizer) {
+                    g.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]   // 其他不明的手勢：手指不能觸發
+                }
+            }
+            v.subviews.forEach(walk)
+        }
+        walk(self)
+    }
+}
+
+final class NotePageView: UIView, PKCanvasViewDelegate {
+    private(set) var page: NotePage
+    let canvas = NoteCanvas()
+    // PDF 頁：手寫（螢光筆以外）再畫一次在最上層、正常顯示，課本的字不會疊在你的字上面
+    private var inkOverlay: PKCanvasView?
+    weak var host: NotebookView?
+    private let grid = GridView()
+    private let pdfView = UIImageView()
+    private var renderedPixelWidth: CGFloat = 0
+    private var saveTask: Task<Void, Never>?
+    private var dirty = false
+    private(set) var strokeCountAtBegin = 0
+    private(set) var committedDrawing = PKDrawing()   // 上一次登記復原時的筆跡
+    private var silent = false
+    private var toolActive = false                     // 筆正在紙上（一次擦好幾筆也只算一步）
+    private var changedDuringTool = false
+    private(set) var toolUses = 0                      // 下筆的次數（判斷變形後有沒有又寫了新的一筆）
+
+    /// 白板的大頁面（v12.5）：畫布、格線只蓋住這一塊（頁面座標），由筆記本畫面依捲動位置更新。
+    /// PencilKit 的畫布跟整張白板一樣大的話會吃光記憶體（v12.3 只好限制白板大小和放大倍數）；
+    /// 改成畫布只跟畫面附近一樣大，用畫布自己的捲動位置對到白板上的位置，座標換算跟以前一樣
+    var canvasWindow: CGRect?
+    /// 這一頁是白板的大頁面
+    var isFlat: Bool { page.spec.flat == true }
+    /// 筆正在紙上（這時候不要移動畫布）
+    var isDrawing: Bool { toolActive }
+
+    init(page: NotePage) {
+        self.page = page
+        super.init(frame: .zero)
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = page.spec.flat == true ? 0 : 0.2       // 白板不畫陰影（整張白板的陰影很耗資源）
+        if page.spec.flat == true {
+            backgroundColor = PaperRenderer.background(page.paperStyle)   // 格線只畫畫面附近，其他地方用紙的底色
+        }
+        layer.shadowRadius = 4
+        layer.shadowOffset = CGSize(width: 0, height: 2)
+        if page.pdf != nil {
+            pdfView.backgroundColor = .white
+            pdfView.contentMode = .scaleToFill
+            addSubview(pdfView)                 // PDF 頁：背景是課本內容
+        } else {
+            grid.paper = page.paperStyle
+            grid.cover = page.cover
+            grid.pageWidth = page.spec.width
+            addSubview(grid)                    // 一般頁：紙張（或封面）
+        }
+
+        canvas.backgroundColor = .clear
+        canvas.isOpaque = false
+        canvas.drawingPolicy = .pencilOnly          // 只有 Pencil 能寫
+        canvas.overrideUserInterfaceStyle = .light  // 顏色照實顯示
+        canvas.isScrollEnabled = false
+        canvas.showsVerticalScrollIndicator = false
+        canvas.showsHorizontalScrollIndicator = false
+        canvas.bouncesZoom = false
+        canvas.contentInsetAdjustmentBehavior = .never
+        canvas.drawing = Store.loadDrawing(page.id)
+        committedDrawing = canvas.drawing
+        canvas.delegate = self
+        if page.pdf != nil {
+            // PDF 頁：筆跡用「相乘」疊在課本上，螢光筆底下的黑字不會被蓋淡
+            canvas.layer.compositingFilter = "multiplyBlendMode"
+        }
+        addSubview(canvas)
+        if page.pdf != nil {
+            let overlay = PKCanvasView()
+            overlay.isUserInteractionEnabled = false
+            overlay.backgroundColor = .clear
+            overlay.isOpaque = false
+            overlay.overrideUserInterfaceStyle = .light
+            overlay.isScrollEnabled = false
+            overlay.showsVerticalScrollIndicator = false
+            overlay.showsHorizontalScrollIndicator = false
+            overlay.contentInsetAdjustmentBehavior = .never
+            overlay.drawingGestureRecognizer.isEnabled = false
+            addSubview(overlay)
+            inkOverlay = overlay
+            syncOverlay()
+        }
+        syncImages(page.images ?? [])
+        syncTexts(page.texts ?? [])
+        syncTapes(page.tapes ?? [])
+    }
+
+    // MARK: 白板的區塊、圖釘（v12.7）
+
+    private var frameBodies: [UUID: BoardFrameBodyView] = [:]
+    private(set) var frameTitles: [UUID: BoardFrameTitleView] = [:]
+    private var frameHandle: BoardFrameHandleView?
+    private(set) var pinViews: [UUID: BoardPinView] = [:]
+    private var boardFrames: [BoardFrame] = []
+    private var boardPins: [BoardPin] = []
+    private(set) var selectedFrameID: UUID?
+    private var hiddenMarks = Set<UUID>()              // 拖曳區塊時暫時藏起來的
+
+    /// 依資料更新區塊、圖釘（新增、更新、移除）
+    func syncBoardMarks(frames: [BoardFrame], pins: [BoardPin]) {
+        boardFrames = frames
+        boardPins = pins
+        let frameIDs = Set(frames.map { $0.id })
+        for (id, view) in frameBodies where !frameIDs.contains(id) {
+            view.removeFromSuperview()
+            frameBodies[id] = nil
+        }
+        for (id, view) in frameTitles where !frameIDs.contains(id) {
+            view.removeFromSuperview()
+            frameTitles[id] = nil
+        }
+        for f in frames {
+            if frameBodies[f.id] == nil {
+                let body = BoardFrameBodyView()
+                insertSubview(body, aboveSubview: grid)               // 在筆跡、圖片下面
+                frameBodies[f.id] = body
+            }
+            if frameTitles[f.id] == nil {
+                let title = BoardFrameTitleView(frameID: f.id)
+                title.host = host
+                addSubview(title)                                     // 在筆跡上面（才點得到）
+                frameTitles[f.id] = title
+            }
+            frameBodies[f.id]?.colorIndex = f.color
+            frameBodies[f.id]?.collapsed = f.isCollapsed
+            frameTitles[f.id]?.configure(name: f.name, color: f.color, locked: f.isLocked, collapsed: f.isCollapsed)
+        }
+        let pinIDs = Set(pins.map { $0.id })
+        for (id, view) in pinViews where !pinIDs.contains(id) {
+            view.removeFromSuperview()
+            pinViews[id] = nil
+        }
+        for p in pins {
+            let view: BoardPinView
+            if let existing = pinViews[p.id] {
+                view = existing
+            } else {
+                view = BoardPinView(pinID: p.id)
+                view.host = host
+                addSubview(view)
+                pinViews[p.id] = view
+            }
+            view.configure(p)
+        }
+        if let id = selectedFrameID, !frameIDs.contains(id) { selectedFrameID = nil }
+        layoutBoardMarks()
+    }
+
+    /// 區塊、圖釘的位置（縮放、捲動、資料改了都要重排）。overrides：拖曳中暫時用的位置
+    func layoutBoardMarks(overrides: [UUID: CGRect] = [:]) {
+        let s = bounds.width / max(page.spec.width, 1)
+        guard s > 0 else { return }
+        for f in boardFrames {
+            let r = overrides[f.id] ?? f.rect
+            let body = CGRect(x: r.minX * s, y: r.minY * s, width: r.width * s, height: r.height * s)
+            if let view = frameBodies[f.id] {
+                view.frame = body
+                view.selected = f.id == selectedFrameID
+                view.isHidden = hiddenMarks.contains(f.id)
+            }
+            if let title = frameTitles[f.id] {
+                let w = title.fittingWidth(max: max(body.width, 60))
+                title.frame = CGRect(x: body.minX, y: body.minY - 34, width: w, height: 30)
+                title.isHidden = hiddenMarks.contains(f.id)
+                bringSubviewToFront(title)
+            }
+        }
+        for p in boardPins {
+            guard let view = pinViews[p.id] else { continue }
+            view.place(tip: overrides[p.id].map { CGPoint(x: $0.minX * s, y: $0.minY * s) } ?? CGPoint(x: p.x * s, y: p.y * s))
+            view.isHidden = p.isHidden || hiddenMarks.contains(p.id)
+            bringSubviewToFront(view)
+        }
+        // 選取中的區塊：右下角的把手
+        if let id = selectedFrameID, let f = boardFrames.first(where: { $0.id == id }), !hiddenMarks.contains(id) {
+            let r = overrides[id] ?? f.rect
+            if frameHandle?.frameID != id {
+                frameHandle?.removeFromSuperview()
+                let handle = BoardFrameHandleView(frameID: id)
+                handle.host = host
+                addSubview(handle)
+                frameHandle = handle
+            }
+            frameHandle?.center = CGPoint(x: r.maxX * s, y: r.maxY * s)
+            if let handle = frameHandle { bringSubviewToFront(handle) }
+        } else {
+            frameHandle?.removeFromSuperview()
+            frameHandle = nil
+        }
+    }
+
+    func setSelectedFrame(_ id: UUID?) {
+        selectedFrameID = id
+        layoutBoardMarks()
+    }
+
+    /// 拖曳區塊時：暫時藏起來的區塊、圖釘
+    func setHiddenMarks(_ ids: Set<UUID>) {
+        hiddenMarks = ids
+        layoutBoardMarks()
+    }
+
+    // MARK: 紙膠帶
+
+    private(set) var tapeViews: [UUID: TapeView] = [:]
+
+    func syncTapes(_ tapes: [TapeBox]) {
+        let ids = Set(tapes.map { $0.id })
+        for (id, view) in tapeViews where !ids.contains(id) {
+            view.removeFromSuperview()
+            tapeViews[id] = nil
+        }
+        for t in tapes {
+            let view: TapeView
+            if let existing = tapeViews[t.id] {
+                view = existing
+            } else {
+                view = TapeView()
+                tapeViews[t.id] = view
+                addSubview(view)
+            }
+            view.box = t
+            view.revealed = host?.isTapeRevealed(t.id) ?? false
+            bringSubviewToFront(view)                    // 蓋在筆跡、圖片、文字上面
+        }
+        layoutTapes()
+        for case let editor as SelectionEditorView in subviews { bringSubviewToFront(editor) }
+        for case let editor as ImageEditorView in subviews { bringSubviewToFront(editor) }
+    }
+
+    func layoutTapes() {
+        let s = bounds.width / max(page.spec.width, 1)
+        guard s > 0 else { return }
+        for view in tapeViews.values {
+            let t = view.box
+            view.frame = CGRect(x: t.x * s, y: t.y * s, width: t.width * s, height: t.height * s)
+        }
+    }
+
+    /// 打開、遮住的狀態（記在筆記本畫面，不存檔：每次打開筆記本都是遮住的）
+    func refreshTapeStates() {
+        for (id, view) in tapeViews { view.revealed = host?.isTapeRevealed(id) ?? false }
+    }
+
+    // MARK: 圖片
+
+    private(set) var imageViews: [UUID: UIImageView] = [:]
+    private var imageBoxes: [UUID: ImageBox] = [:]
+
+    /// 依資料更新這一頁的圖片（新增、更新、移除、上下層）
+    func syncImages(_ boxes: [ImageBox]) {
+        let ids = Set(boxes.map { $0.id })
+        for (id, view) in imageViews where !ids.contains(id) {
+            view.removeFromSuperview()
+            imageViews[id] = nil
+            imageBoxes[id] = nil
+        }
+        for box in boxes {
+            let view: UIImageView
+            if let existing = imageViews[box.id] {
+                view = existing
+            } else {
+                view = UIImageView()
+                view.isUserInteractionEnabled = false        // 不攔觸控：Pencil 照常可以在圖片上寫
+                view.contentMode = .scaleToFill
+                view.image = Store.loadImage(box.file, pageID: page.id)
+                imageViews[box.id] = view
+            }
+            let layerChanged = imageBoxes[box.id]?.above != box.above || view.superview == nil
+            imageBoxes[box.id] = box
+            if layerChanged {
+                view.removeFromSuperview()
+                if box.above {
+                    insertSubview(view, aboveSubview: inkOverlay ?? canvas)
+                } else {
+                    insertSubview(view, belowSubview: canvas)
+                }
+            }
+            placeImage(view, box)
+        }
+    }
+
+    /// 只更新位置大小（拖曳中用，不寫檔）
+    func layoutImage(_ box: ImageBox) {
+        guard let view = imageViews[box.id] else { return }
+        imageBoxes[box.id] = box
+        placeImage(view, box)
+    }
+
+    private func placeImage(_ view: UIImageView, _ box: ImageBox) {
+        let s = bounds.width / max(page.spec.width, 1)
+        guard s > 0 else { return }
+        view.transform = .identity
+        let badgeTag = 4242
+        if box.isMini {
+            // 縮成小圖（v12.8.3）：圓角、白框、右下角一個放大的小記號；點了彈出大圖
+            let r = box.miniRect
+            view.bounds = CGRect(x: 0, y: 0, width: r.width * s, height: r.height * s)
+            view.center = CGPoint(x: r.midX * s, y: r.midY * s)
+            view.layer.cornerRadius = min(8, r.width * s * 0.15)
+            view.layer.borderWidth = 1.5
+            view.layer.borderColor = UIColor(white: 1, alpha: 0.85).cgColor
+            view.clipsToBounds = true
+            let badge = (view.viewWithTag(badgeTag) as? UIImageView) ?? UIImageView()
+            if badge.superview == nil {
+                badge.tag = badgeTag
+                badge.image = UIImage(systemName: "arrow.up.left.and.arrow.down.right.circle.fill")
+                badge.tintColor = UIColor.white
+                badge.backgroundColor = UIColor(white: 0, alpha: 0.45)
+                badge.layer.cornerRadius = 8
+                badge.clipsToBounds = true
+                view.addSubview(badge)
+            }
+            let side = min(16, view.bounds.width * 0.4)
+            badge.frame = CGRect(x: view.bounds.width - side - 2, y: view.bounds.height - side - 2, width: side, height: side)
+            badge.layer.cornerRadius = side / 2
+            return
+        }
+        view.viewWithTag(badgeTag)?.removeFromSuperview()
+        view.layer.cornerRadius = 0
+        view.layer.borderWidth = 0
+        view.clipsToBounds = false
+        view.bounds = CGRect(x: 0, y: 0, width: box.width * s, height: box.height * s)
+        view.center = CGPoint(x: (box.x + box.width / 2) * s, y: (box.y + box.height / 2) * s)
+        view.transform = CGAffineTransform(rotationAngle: box.rotation)
+    }
+
+    /// 變更範本：換紙張或封面
+    func updatePaper(_ newPage: NotePage) {
+        page.paper = newPage.paper
+        page.cover = newPage.cover
+        grid.paper = page.paperStyle
+        grid.cover = page.cover
+        if isFlat { backgroundColor = PaperRenderer.background(page.paperStyle) }   // 白板換底色（v12.8）
+    }
+
+    // MARK: 文字方塊
+
+    private(set) var textViews: [UUID: TextBoxView] = [:]
+
+    /// 依資料更新這一頁的文字方塊（新增、更新、移除）
+    func syncTexts(_ texts: [TextBox]) {
+        let ids = Set(texts.map { $0.id })
+        for (id, view) in textViews where !ids.contains(id) {
+            view.removeFromSuperview()
+            textViews[id] = nil
+        }
+        let s = bounds.width / max(page.spec.width, 1)
+        for t in texts {
+            if let view = textViews[t.id] {
+                if view.box != t { view.update(t) }
+            } else {
+                let view = TextBoxView(box: t, pageID: page.id, pageWidth: page.spec.width,
+                                       pageHeight: page.spec.height)
+                view.wrapWidth = textWrapWidth(page.spec)            // 白板：換行的寬度不照整張白板算
+                if let editor = subviews.first(where: { $0 is SelectionEditorView }) {
+                    insertSubview(view, belowSubview: editor)
+                } else {
+                    addSubview(view)
+                }
+                textViews[t.id] = view
+                if s > 0 { view.apply(scale: s) }
+            }
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 依縮放倍率排版；筆跡維持頁面座標，所以縮放後依然清晰
+    func apply(scale s: CGFloat) {
+        if page.pdf != nil { pdfView.frame = bounds }
+        layoutCanvasWindow(scale: s)
+        if !isFlat { layer.shadowPath = UIBezierPath(rect: bounds).cgPath }
+        for view in textViews.values { view.apply(scale: s) }
+        for (id, view) in imageViews {
+            if let box = imageBoxes[id] { placeImage(view, box) }
+        }
+        layoutTapes()
+        layoutBoardMarks()
+        host?.positionTextBar()
+        for case let editor as SelectionEditorView in subviews {
+            editor.frame = bounds
+            editor.setNeedsLayout()
+        }
+        // 圖片的選取框也要跟著重排（v12.1：以前放大縮小時，框會留在原本的位置）
+        for case let editor as ImageEditorView in subviews {
+            editor.frame = bounds
+            editor.setNeedsLayout()
+        }
+    }
+
+    /// 畫布（和格線）放在哪裡（v12.5）。一般頁：蓋住整頁。
+    /// 白板：只蓋住 canvasWindow 那一塊；畫布的捲動位置等於它在頁面上的位置，所以畫布裡的座標跟整頁時一模一樣
+    func layoutCanvasWindow(scale s: CGFloat) {
+        let full = bounds
+        var area = full
+        if isFlat {
+            if let w = canvasWindow {
+                area = CGRect(x: w.minX * s, y: w.minY * s, width: w.width * s, height: w.height * s).intersection(full)
+            } else {
+                area = CGRect(x: 0, y: 0, width: 1, height: 1)         // 還不知道畫面在哪：先不畫，等筆記本畫面告訴我
+            }
+            if area.isNull || area.width < 1 || area.height < 1 { area = CGRect(x: 0, y: 0, width: 1, height: 1) }
+            // 保險：畫布最多是畫面的 2.6 倍大（放大到一半、位置還沒更新時，不會一下子變得很大）
+            let screen = host?.bounds.size ?? CGSize(width: 1200, height: 900)
+            let maxW = max(screen.width, 300) * 2.6
+            let maxH = max(screen.height, 300) * 2.6
+            if area.width > maxW || area.height > maxH {
+                let w = min(area.width, maxW)
+                let h = min(area.height, maxH)
+                area = CGRect(x: area.midX - w / 2, y: area.midY - h / 2, width: w, height: h)
+            }
+            area = area.integral
+        }
+        placeCanvas(canvas, in: area, full: full, scale: s)
+        if let overlay = inkOverlay { placeCanvas(overlay, in: area, full: full, scale: s) }
+        layoutPinchInk()
+        if isFlat {
+            // 格線：對齊格子（格線的起點跟整頁時一樣）
+            let step = max(PaperRenderer.gridUnit * s, 0.5)
+            let gx = floor(area.minX / step) * step
+            let gy = floor(area.minY / step) * step
+            grid.stepScale = s
+            grid.frame = CGRect(x: gx, y: gy, width: area.maxX - gx, height: area.maxY - gy)
+        } else {
+            grid.stepScale = nil
+            grid.frame = full
+        }
+    }
+
+    // MARK: 白板縮放中（v12.8.3）：畫布外面的筆跡用一張低解析度的圖補；格線先鋪大一點
+
+    private var pinchInkView: UIImageView?
+    private var pinchInkRegion: CGRect?
+
+    /// 筆跡圖放在畫布底下（頁面座標的 region）；畫布那一塊在圖上已經是空的（畫布自己畫的比較清楚）
+    func showPinchInk(_ image: UIImage, region: CGRect) {
+        let v = pinchInkView ?? UIImageView()
+        v.isUserInteractionEnabled = false
+        v.contentMode = .scaleToFill
+        v.image = image
+        v.layer.removeAllAnimations()
+        v.alpha = 1
+        if v.superview == nil { insertSubview(v, belowSubview: canvas) }
+        pinchInkView = v
+        pinchInkRegion = region
+        layoutPinchInk()
+    }
+
+    func layoutPinchInk() {
+        guard let v = pinchInkView, v.superview != nil, let region = pinchInkRegion else { return }
+        let s = bounds.width / max(page.spec.width, 1)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        v.frame = CGRect(x: region.minX * s, y: region.minY * s, width: region.width * s, height: region.height * s)
+        // v12.8.7：以前用遮罩把畫布那一塊挖空，遮罩蓋在幾萬點大的圖上，每一格都要另外算一次，縮放很卡；
+        // 改成畫圖時就把那一塊清掉（見 NotebookView.startBoardPinch）
+        CATransaction.commit()
+    }
+
+    /// 放手後過一下再淡出拿掉（等畫布換好位置、畫好）
+    func hidePinchInk(after delay: Double) {
+        guard let v = pinchInkView else { return }
+        UIView.animate(withDuration: 0.25, delay: delay, options: [], animations: {
+            v.alpha = 0
+        }, completion: { _ in
+            if v.alpha == 0 { v.removeFromSuperview() }
+        })
+    }
+
+    /// 縮放中：格線先鋪到 area（頁面座標）那麼大，縮小時外圍也有格線
+    func pinchGrid(area: CGRect) {
+        guard isFlat else { return }
+        let s = bounds.width / max(page.spec.width, 1)
+        let r = CGRect(x: area.minX * s, y: area.minY * s, width: area.width * s, height: area.height * s).intersection(bounds)
+        guard !r.isNull, r.width > 1, r.height > 1 else { return }
+        let step = max(PaperRenderer.gridUnit * s, 0.5)
+        let gx = floor(r.minX / step) * step
+        let gy = floor(r.minY / step) * step
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        grid.frame = CGRect(x: gx, y: gy, width: r.maxX - gx, height: r.maxY - gy)
+        grid.layoutIfNeeded()
+        CATransaction.commit()
+    }
+
+    /// 縮放中：畫面上的格子變小就跟著淡出（跟放手後的規則一樣：小於 9 點變淡、小於 5 點不畫）
+    func pinchGridFade(_ f: CGFloat) {
+        guard isFlat else { return }
+        let step = PaperRenderer.gridUnit * bounds.width / max(page.spec.width, 1)
+        let base = min(max((step - 5) / 4, 0), 1)
+        let now = min(max((step * f - 5) / 4, 0), 1)
+        grid.alpha = base > 0.01 ? min(now / base, 1) : 0
+    }
+
+    func endPinchGrid() {
+        grid.alpha = 1
+    }
+
+    /// 一張畫布放在 area（這一頁的座標）；畫布裡的內容大小是整頁，捲動位置對到 area 的左上角
+    private func placeCanvas(_ view: PKCanvasView, in area: CGRect, full: CGRect, scale s: CGFloat) {
+        if abs(view.zoomScale - s) > 0.0001 || view.minimumZoomScale != s || view.maximumZoomScale != s {
+            view.minimumZoomScale = s
+            view.maximumZoomScale = s
+            view.zoomScale = s
+        }
+        view.pinchGestureRecognizer?.isEnabled = false
+        view.frame = area
+        view.contentSize = full.size
+        view.contentOffset = area.origin
+    }
+
+    /// PDF 背景依目前大小重畫（放大後才清楚）；一般頁不用做事
+    func refreshBackground() {
+        guard let pdf = page.pdf, bounds.width > 0 else { return }
+        let screenScale = window?.screen.scale ?? 2
+        let wanted = min(bounds.width * screenScale, 2400)
+        guard abs(wanted - renderedPixelWidth) > renderedPixelWidth * 0.25 || renderedPixelWidth == 0 else { return }
+        renderedPixelWidth = wanted
+        pdfView.image = PDFStore.image(pdf, aspect: page.spec.height / max(page.spec.width, 1), pixelWidth: wanted)
+    }
+
+    func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        host?.dismissShapeEditor()                     // 開始寫下一筆：結束調整
+        host?.endTextSelection()
+        strokeCountAtBegin = canvasView.drawing.strokes.count
+        toolUses += 1
+        toolActive = true
+        changedDuringTool = false
+    }
+
+    func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        let usedMarker = (canvasView.tool as? PKInkingTool).map { isHighlighterInk($0.inkType, $0.color) } ?? false
+        toolActive = false
+        if changedDuringTool {                         // 這一次下筆的所有變化合成一步
+            changedDuringTool = false
+            host?.recordUndo(pageID: page.id, old: committedDrawing)
+            committedDrawing = canvasView.drawing
+        }
+        let before = strokeCountAtBegin
+        let usedInk = canvasView.tool is PKInkingTool
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)   // 等這一筆存進畫布
+            if usedMarker {
+                self?.host?.finishMarkerStroke(on: self, countBefore: before)
+            } else if usedInk {
+                self?.host?.finishPenStroke(on: self, countBefore: before)       // 停住過：換成標準圖形；虛線筆：切段
+            }
+        }
+    }
+
+    /// 筆跡一變就登記一步復原（不管是寫字、擦掉，還是選取框、變形、貼上造成的）
+    /// 最上層只放手寫（不含螢光筆）
+    private func syncOverlay() {
+        guard let overlay = inkOverlay else { return }
+        overlay.drawing = PKDrawing(strokes: canvas.drawing.strokes.filter { !isHighlighter($0) })
+    }
+
+    func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+        syncOverlay()
+        scheduleSave()
+        guard !silent else { return }
+        if toolActive {                                // 筆還在紙上：等放開再一起登記
+            changedDuringTool = true
+            return
+        }
+        host?.recordUndo(pageID: page.id, old: committedDrawing)
+        committedDrawing = canvasView.drawing
+    }
+
+    // 選取框可能超出頁面：超出的部分也要能點
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        if super.point(inside: point, with: event) { return true }
+        return subviews.contains { v in
+            (v is SelectionEditorView || v is ImageEditorView) && v.point(inside: convert(point, to: v), with: event)
+        }
+    }
+
+    /// 程式改筆跡並登記一步復原；undoTo 可以指定復原要回到哪個狀態
+    func setDrawingRecorded(_ drawing: PKDrawing, undoTo old: PKDrawing? = nil) {
+        let previous = old ?? committedDrawing
+        silent = true
+        canvas.drawing = drawing
+        silent = false
+        committedDrawing = drawing
+        toolActive = false                             // 正在畫的那一筆被中斷了（例如變形）
+        changedDuringTool = false
+        host?.recordUndo(pageID: page.id, old: previous)
+    }
+
+    /// 換掉筆跡但不登記復原（拖曳中途、整理順序、復原本身）。
+    /// updateBaseline = true：之後的復原以這個狀態為準
+    func replaceSilently(_ drawing: PKDrawing, updateBaseline: Bool) {
+        silent = true
+        canvas.drawing = drawing
+        silent = false
+        if updateBaseline {
+            committedDrawing = drawing
+            changedDuringTool = false
+        }
+    }
+
+    // 停筆 0.6 秒後自動存檔
+    private func scheduleSave() {
+        dirty = true
+        saveTask?.cancel()
+        saveTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flush()
+        }
+    }
+
+    func flush() {
+        guard dirty else { return }
+        dirty = false
+        Store.saveDrawing(canvas.drawing, pageID: page.id)
+        ActivityLog.touch(pageID: page.id)                     // 修改紀錄（v12.9.5）
+    }
+
+    func discard() {
+        saveTask?.cancel()
+        dirty = false
+    }
+}
+
+/// 深色方格：每條線是一個細長的圖層，放大後線條粗細不變、也不吃記憶體
+// MARK: - 文字方塊
+
+/// 一條紙膠帶：遮住時是灰色，打開時只剩虛線框
+final class TapeView: UIView {
+    var box = TapeBox()
+    var revealed = false { didSet { updateLook() } }
+    private let border = CAShapeLayer()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false                   // 點擊由筆記本判斷
+        layer.cornerRadius = 4
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOffset = CGSize(width: 0, height: 1)
+        layer.shadowRadius = 2
+        border.fillColor = nil
+        border.strokeColor = UIColor(white: 0.55, alpha: 1).cgColor
+        border.lineWidth = 1.5
+        border.lineDashPattern = [6, 4]
+        layer.addSublayer(border)
+        updateLook()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        border.path = UIBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), cornerRadius: 4).cgPath
+    }
+
+    private func updateLook() {
+        backgroundColor = revealed ? UIColor.clear : UIColor(red: 0.66, green: 0.68, blue: 0.71, alpha: 1)
+        border.isHidden = !revealed
+        layer.shadowOpacity = revealed ? 0 : 0.18
+    }
+}
+
+
+/// 頁面的紙張：用重複圖層畫格線、點、橫線（放大縮小都不會吃太多記憶體）
+final class GridView: UIView {
+    var paper = PaperStyle() { didSet { setNeedsLayout() } }
+    var cover: Int? { didSet { setNeedsLayout() } }
+    var pageWidth: CGFloat = referencePageWidth { didSet { setNeedsLayout() } }   // 頁面實際寬度：格子大小照實際尺寸
+    /// 白板（v12.5）：格線只畫一塊，格子大小不能用這一塊的寬度算，直接給縮放倍率
+    var stepScale: CGFloat? { didSet { if stepScale != oldValue { setNeedsLayout() } } }
+    private var coverLines: [CALayer] = []
+
+    private let columnsRep = CAReplicatorLayer()     // 直線（往右重複）
+    private let vLine = CALayer()
+    private let rowsRep = CAReplicatorLayer()        // 橫線（往下重複）
+    private let hLine = CALayer()
+    private let dotRowsRep = CAReplicatorLayer()     // 點：一排往下重複
+    private let dotColsRep = CAReplicatorLayer()     //     一個點往右重複
+    private let dot = CALayer()
+    private let spine = CALayer()                    // 封面左邊的深色帶子
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        columnsRep.addSublayer(vLine)
+        rowsRep.addSublayer(hLine)
+        dotColsRep.addSublayer(dot)
+        dotRowsRep.addSublayer(dotColsRep)
+        layer.addSublayer(columnsRep)
+        layer.addSublayer(rowsRep)
+        layer.addSublayer(dotRowsRep)
+        layer.addSublayer(spine)
+        for _ in 0..<6 {
+            let line = CALayer()
+            layer.addSublayer(line)
+            coverLines.append(line)
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let w = bounds.width
+        let h = bounds.height
+        guard w > 0, h > 0 else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        // 封面
+        let showCover = cover != nil
+        let template = coverTemplate(cover ?? 0)
+        backgroundColor = showCover ? uiColor(hex: template.color) : PaperRenderer.background(paper)
+        spine.isHidden = !showCover
+        spine.backgroundColor = template.spine.map { uiColor(hex: $0).cgColor } ?? UIColor(white: 0, alpha: 0.22).cgColor
+        spine.frame = CGRect(x: w * 0.08, y: 0, width: w * 0.035, height: h)
+        let decoColor: UIColor = coverIsLight(template) ? UIColor(white: 0, alpha: 0.15) : UIColor(white: 1, alpha: 0.25)
+        let k = stepScale ?? (w / max(pageWidth, 1))           // 頁面座標 → 畫面
+        for (i, line) in coverLines.enumerated() {
+            line.isHidden = !(showCover && template.lines)
+            line.backgroundColor = decoColor.cgColor
+            line.frame = PaperRenderer.coverLineRect(i, width: w, height: h, thickness: max(0.6, k))
+        }
+
+        let pattern = showCover ? 0 : paper.pattern
+        let lineColor = PaperRenderer.lineColor(paper).cgColor
+        let lw = max(0.5, 0.5 * k)
+        let gridStep = PaperRenderer.gridUnit * k               // 格子實際大小固定（A3 會比 A4 多格）
+        // 縮得很小時格線淡出（v12.5）：格子在畫面上小於 9 點開始變淡，小於 5 點就不畫（不然整片都是線）
+        let fade = Float(min(max((gridStep - 5) / 4, 0), 1))
+        columnsRep.opacity = fade
+        rowsRep.opacity = fade
+        dotRowsRep.opacity = fade
+        if fade == 0 {
+            columnsRep.isHidden = true
+            rowsRep.isHidden = true
+            dotRowsRep.isHidden = true
+            return
+        }
+        columnsRep.isHidden = pattern != 2
+        rowsRep.isHidden = !(pattern == 2 || pattern == 3 || pattern == 4)
+        dotRowsRep.isHidden = pattern != 1
+
+        // 方格的直線
+        vLine.backgroundColor = lineColor
+        vLine.frame = CGRect(x: 0, y: 0, width: lw, height: h)
+        columnsRep.frame = bounds
+        columnsRep.instanceCount = Int(w / gridStep) + 1
+        columnsRep.instanceTransform = CATransform3DMakeTranslation(gridStep, 0, 0)
+
+        // 橫線：方格每一格；直線紙留上方空白
+        let rowStep: CGFloat
+        let top: CGFloat
+        if pattern == 3 {
+            rowStep = PaperRenderer.narrowLine * k
+            top = rowStep * 3
+        } else if pattern == 4 {
+            rowStep = PaperRenderer.wideLine * k
+            top = rowStep * 2
+        } else {
+            rowStep = gridStep
+            top = 0
+        }
+        let topGap = stepScale == nil ? top : 0                // 白板只畫一塊：不留上方空白
+        hLine.backgroundColor = lineColor
+        hLine.frame = CGRect(x: 0, y: topGap, width: w, height: lw)
+        rowsRep.frame = bounds
+        rowsRep.instanceCount = max(Int((h - topGap) / rowStep) + 1, 1)
+        rowsRep.instanceTransform = CATransform3DMakeTranslation(0, rowStep, 0)
+
+        // 點狀紙
+        let r = max(0.9, gridStep * 0.06)
+        dot.backgroundColor = PaperRenderer.dotColor(paper).cgColor
+        dot.cornerRadius = r
+        dot.frame = CGRect(x: gridStep - r, y: gridStep - r, width: r * 2, height: r * 2)
+        dotColsRep.frame = bounds
+        dotColsRep.instanceCount = max(Int(w / gridStep) - 1, 1)
+        dotColsRep.instanceTransform = CATransform3DMakeTranslation(gridStep, 0, 0)
+        dotRowsRep.frame = bounds
+        dotRowsRep.instanceCount = max(Int(h / gridStep) - 1, 1)
+        dotRowsRep.instanceTransform = CATransform3DMakeTranslation(0, gridStep, 0)
+    }
+}
+
+/// 紙張、封面的畫法（匯出 PDF、縮圖、新建畫面的預覽用）
+@MainActor
+enum PaperRenderer {
+    /// 格子、橫線的實際間距（頁面座標；A4 寬約 30 格，約 7 公釐）
+    static let gridUnit: CGFloat = referencePageWidth / 30
+    static let narrowLine: CGFloat = referencePageWidth / 30
+    static let wideLine: CGFloat = referencePageWidth / 22
+
+    /// 封面右邊的橫線：上面兩條、下面四條
+    static func coverLineRect(_ i: Int, width w: CGFloat, height h: CGFloat, thickness: CGFloat) -> CGRect {
+        let ys: [CGFloat] = [0.10, 0.13, 0.62, 0.66, 0.70, 0.74]
+        let y = h * ys[min(max(i, 0), ys.count - 1)]
+        return CGRect(x: w * 0.55, y: y, width: w * 0.45, height: thickness)
+    }
+
+    static func background(_ paper: PaperStyle) -> UIColor {
+        switch paper.color {
+        case 1: return UIColor.white
+        case 2: return UIColor(red: 0.99, green: 0.97, blue: 0.89, alpha: 1)
+        default: return UIColor(white: 0.19, alpha: 1)
+        }
+    }
+
+    static func lineColor(_ paper: PaperStyle) -> UIColor {
+        paper.isDark ? UIColor(white: 0.32, alpha: 1) : UIColor(red: 0.78, green: 0.81, blue: 0.86, alpha: 1)
+    }
+
+    static func dotColor(_ paper: PaperStyle) -> UIColor {
+        paper.isDark ? UIColor(white: 0.45, alpha: 1) : UIColor(white: 0.62, alpha: 1)
+    }
+
+    /// 畫進目前的繪圖區（UIGraphicsImageRenderer、PDF 匯出裡都能用）；pageWidth：頁面實際寬度
+    static func draw(_ paper: PaperStyle, cover: Int?, in rect: CGRect, pageWidth: CGFloat) {
+        let w = rect.width
+        let k = w / max(pageWidth, 1)
+        if let c = cover {
+            let t = coverTemplate(c)
+            uiColor(hex: t.color).setFill()
+            UIRectFill(rect)
+            let spineColor: UIColor = t.spine.map { uiColor(hex: $0) } ?? UIColor(white: 0, alpha: 0.22)
+            spineColor.setFill()
+            UIRectFill(CGRect(x: rect.minX + w * 0.08, y: rect.minY, width: w * 0.035, height: rect.height))
+            if t.lines {
+                let deco: UIColor = coverIsLight(t) ? UIColor(white: 0, alpha: 0.15) : UIColor(white: 1, alpha: 0.25)
+                deco.setFill()
+                for i in 0..<6 {
+                    UIRectFill(coverLineRect(i, width: w, height: rect.height, thickness: max(0.5, k))
+                        .offsetBy(dx: rect.minX, dy: rect.minY))
+                }
+            }
+            return
+        }
+        background(paper).setFill()
+        UIRectFill(rect)
+        let lw = max(0.3, 0.5 * k)
+        let step = gridUnit * k
+        // v12.9.1 修閃退：白板的縮圖（整張 100×100 張 A4 縮成 200 點寬）每一格不到 0.1 點，
+        // 點狀紙會一次做出幾百萬個小圓，記憶體吃光，主畫面一畫封面就閃退。
+        // 現在：只畫看得到的範圍（畫布裁切的那一塊），格子小於 3 點或數量太多就不畫紋理（反正看不出來）
+        var area = rect
+        if let clip = UIGraphicsGetCurrentContext()?.boundingBoxOfClipPath {
+            area = rect.intersection(clip)
+        }
+        guard !area.isNull, area.width > 0, area.height > 0, step >= 3,
+              (area.width / step) * (area.height / step) <= 40_000 else { return }
+        // 從看得到的範圍開始畫，但格子仍對齊整頁的原點
+        func first(_ lo: CGFloat, _ origin: CGFloat, _ s: CGFloat) -> CGFloat {
+            origin + max(0, ((lo - origin) / s).rounded(.down)) * s
+        }
+        let path = UIBezierPath()
+        switch paper.pattern {
+        case 1:
+            let r = max(0.5, step * 0.06)
+            var y = max(rect.minY + step, first(area.minY, rect.minY, step))
+            while y < min(rect.maxY - 1, area.maxY + step) {
+                var x = max(rect.minX + step, first(area.minX, rect.minX, step))
+                while x < min(rect.maxX - 1, area.maxX + step) {
+                    path.append(UIBezierPath(ovalIn: CGRect(x: x - r, y: y - r, width: r * 2, height: r * 2)))
+                    x += step
+                }
+                y += step
+            }
+            dotColor(paper).setFill()
+            path.fill()
+            return
+        case 2:
+            var x = first(area.minX, rect.minX, step)
+            while x <= min(rect.maxX, area.maxX + step) {
+                path.move(to: CGPoint(x: x, y: area.minY))
+                path.addLine(to: CGPoint(x: x, y: area.maxY))
+                x += step
+            }
+            var y = first(area.minY, rect.minY, step)
+            while y <= min(rect.maxY, area.maxY + step) {
+                path.move(to: CGPoint(x: area.minX, y: y))
+                path.addLine(to: CGPoint(x: area.maxX, y: y))
+                y += step
+            }
+        case 3, 4:
+            let rowStep = (paper.pattern == 3 ? narrowLine : wideLine) * k
+            let y0 = rect.minY + rowStep * (paper.pattern == 3 ? 3 : 2)
+            var y = max(y0, y0 + ((area.minY - y0) / rowStep).rounded(.down) * rowStep)
+            while y <= min(rect.maxY, area.maxY + rowStep) {
+                path.move(to: CGPoint(x: area.minX, y: y))
+                path.addLine(to: CGPoint(x: area.maxX, y: y))
+                y += rowStep
+            }
+        default:
+            return
+        }
+        lineColor(paper).setStroke()
+        path.lineWidth = lw
+        path.stroke()
+    }
+
+    /// 小預覽圖（新建筆記本畫面用）
+    static func preview(_ paper: PaperStyle, cover: Int?, size: CGSize, pageWidth: CGFloat) -> UIImage {
+        UIGraphicsImageRenderer(size: size).image { _ in
+            draw(paper, cover: cover, in: CGRect(origin: .zero, size: size), pageWidth: pageWidth)
+        }
+    }
+
+    /// 「無封面」的預覽：淺灰虛線框
+    static func noCover(size: CGSize) -> UIImage {
+        UIGraphicsImageRenderer(size: size).image { _ in
+            let rect = CGRect(origin: .zero, size: size).insetBy(dx: 2, dy: 2)
+            UIColor(white: 0.97, alpha: 1).setFill()
+            UIRectFill(rect)
+            let path = UIBezierPath(roundedRect: rect, cornerRadius: 6)
+            path.lineWidth = 2
+            path.setLineDash([6, 5], count: 2, phase: 0)
+            UIColor(white: 0.78, alpha: 1).setStroke()
+            path.stroke()
+        }
+    }
+}
+
+
+// MARK: - 9. 小元件：拉動新增的圓圈、概覽縮圖
+
+final class PullIndicator: UIView {
+    private let ring = CAShapeLayer()
+    private let track = CAShapeLayer()
+    private let icon = UIImageView(image: UIImage(systemName: "plus"))
+    private let label = UILabel()
+    private let text: String
+
+    var progress: CGFloat = 0 {
+        didSet {
+            let p = min(max(progress, 0), 1)
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            ring.strokeEnd = p
+            CATransaction.commit()
+            alpha = p > 0.02 ? 1 : 0
+            let full = p >= 1
+            icon.tintColor = full ? .systemBlue : .gray
+            label.text = full ? "放開以新增" : text
+        }
+    }
+
+    init(text: String, width: CGFloat) {
+        self.text = text
+        super.init(frame: CGRect(x: 0, y: 0, width: width, height: 84))
+        isUserInteractionEnabled = false
+        alpha = 0
+        let circle = UIBezierPath(arcCenter: CGPoint(x: width / 2, y: 26), radius: 20,
+                                  startAngle: -.pi / 2, endAngle: 1.5 * .pi, clockwise: true)
+        for shape in [track, ring] {
+            shape.path = circle.cgPath
+            shape.fillColor = UIColor.clear.cgColor
+            shape.lineWidth = 3
+            shape.lineCap = .round
+            layer.addSublayer(shape)
+        }
+        track.strokeColor = UIColor(white: 0.75, alpha: 1).cgColor
+        ring.strokeColor = UIColor.systemBlue.cgColor
+        ring.strokeEnd = 0
+        icon.frame = CGRect(x: width / 2 - 11, y: 15, width: 22, height: 22)
+        icon.contentMode = .scaleAspectFit
+        icon.tintColor = .gray
+        addSubview(icon)
+        label.frame = CGRect(x: 0, y: 54, width: width, height: 22)
+        label.textAlignment = .center
+        label.font = .systemFont(ofSize: 13)
+        label.textColor = .gray
+        label.text = text
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+}
+
+/// 打開過的 PDF 留在記憶體裡，不用每次重讀
+@MainActor
+enum PDFStore {
+    private static var cache: [String: PDFDocument] = [:]
+
+    static func document(_ file: String) -> PDFDocument? {
+        if let doc = cache[file] { return doc }
+        guard let doc = PDFDocument(url: Store.pdfURL(file)) else { return nil }
+        cache[file] = doc
+        return doc
+    }
+
+    static func page(_ ref: PDFRef) -> PDFPage? {
+        if let doc = cache[ref.file] { return doc.page(at: ref.index) }
+        guard let doc = PDFDocument(url: Store.pdfURL(ref.file)) else { return nil }
+        cache[ref.file] = doc
+        return doc.page(at: ref.index)
+    }
+
+    /// PDF 那一頁的圖片；pixelWidth 是想要的像素寬度（PDFKit 會自動處理頁面方向）
+    static func image(_ ref: PDFRef, aspect: CGFloat, pixelWidth: CGFloat) -> UIImage? {
+        guard let page = page(ref) else { return nil }
+        let w = max(pixelWidth, 1)
+        return page.thumbnail(of: CGSize(width: w, height: w * aspect), for: .mediaBox)
+    }
+
+    /// 把 PDF 的某一頁畫進 rect（白底）
+    static func draw(_ ref: PDFRef, in cg: CGContext, rect: CGRect, pixelWidth: CGFloat) {
+        UIColor.white.setFill()
+        cg.fill(rect)
+        image(ref, aspect: rect.height / max(rect.width, 1), pixelWidth: pixelWidth)?.draw(in: rect)
+    }
+}
+
+/// 畫一整張頁面（背景 + 筆跡），給概覽縮圖和匯出 PDF 用
+@MainActor
+enum PageRenderer {
+    static func drawGrid(in cg: CGContext, rect: CGRect) {
+        UIColor(white: 0.19, alpha: 1).setFill()
+        cg.fill(rect)
+        let step = rect.width / 30
+        let grid = UIBezierPath()
+        var x = rect.minX
+        while x <= rect.maxX {
+            grid.move(to: CGPoint(x: x, y: rect.minY))
+            grid.addLine(to: CGPoint(x: x, y: rect.maxY))
+            x += step
+        }
+        var y = rect.minY
+        while y <= rect.maxY {
+            grid.move(to: CGPoint(x: rect.minX, y: y))
+            grid.addLine(to: CGPoint(x: rect.maxX, y: y))
+            y += step
+        }
+        UIColor(white: 0.32, alpha: 1).setStroke()
+        grid.lineWidth = 0.5
+        grid.stroke()
+    }
+
+    /// region：只需要頁面上的這一塊（頁面座標；截圖、白板匯出用）。筆跡只畫這一塊，不然白板會畫出一張超大的圖
+    static func draw(_ page: NotePage, in cg: CGContext, rect: CGRect, inkScale: CGFloat,
+                     drawing override: PKDrawing? = nil, region: CGRect? = nil) {
+        if let pdf = page.pdf {
+            PDFStore.draw(pdf, in: cg, rect: rect, pixelWidth: page.spec.width * inkScale)
+        } else {
+            PaperRenderer.draw(page.paperStyle, cover: page.cover, in: rect, pageWidth: page.spec.width)
+        }
+        drawImages(page, rect: rect, above: false)
+        let drawing = override ?? Store.loadDrawing(page.id)
+        if !drawing.strokes.isEmpty {
+            let fullPage = CGRect(x: 0, y: 0, width: page.spec.width, height: page.spec.height)
+            let area = (region ?? fullPage).intersection(fullPage)
+            if !area.isNull, area.width > 0, area.height > 0 {
+                var ink = UIImage()
+                UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+                    ink = drawing.image(from: area, scale: inkScale)
+                }
+                let k = rect.width / max(page.spec.width, 1)
+                let target = CGRect(x: rect.minX + area.minX * k, y: rect.minY + area.minY * k,
+                                    width: area.width * k, height: area.height * k)
+                if page.pdf != nil {
+                    ink.draw(in: target, blendMode: .multiply, alpha: 1)
+                } else {
+                    ink.draw(in: target)
+                }
+            }
+        }
+        drawImages(page, rect: rect, above: true)
+        drawTexts(page, rect: rect)
+    }
+
+    /// 圖片（匯出、縮圖、截圖用）
+    static func drawImages(_ page: NotePage, rect: CGRect, above: Bool) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        let k = rect.width / max(page.spec.width, 1)
+        for box in page.images ?? [] where box.above == above {
+            guard let image = Store.loadImage(box.file, pageID: page.id) else { continue }
+            if box.isMini {                                       // 縮成小圖：匯出、縮圖也畫小圖
+                let r = box.miniRect
+                let target = CGRect(x: rect.minX + r.minX * k, y: rect.minY + r.minY * k, width: r.width * k, height: r.height * k)
+                let clip = UIBezierPath(roundedRect: target, cornerRadius: min(8 * k, target.width * 0.15))
+                ctx.saveGState()
+                clip.addClip()
+                image.draw(in: target)
+                ctx.restoreGState()
+                UIColor(white: 1, alpha: 0.85).setStroke()
+                clip.lineWidth = max(1.5 * k, 0.5)
+                clip.stroke()
+                continue
+            }
+            ctx.saveGState()
+            ctx.translateBy(x: rect.minX + (box.x + box.width / 2) * k, y: rect.minY + (box.y + box.height / 2) * k)
+            ctx.rotate(by: box.rotation)
+            image.draw(in: CGRect(x: -box.width * k / 2, y: -box.height * k / 2, width: box.width * k, height: box.height * k))
+            ctx.restoreGState()
+        }
+    }
+
+    /// 截圖：把頁面的某一塊（頁面座標）畫成一張圖
+    static func renderCrop(_ page: NotePage, crop: CGRect) -> UIImage {
+        let scale: CGFloat = max(1.5, min(3, 2000 / max(page.spec.width, 1)))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: crop.size, format: format).image { ctx in
+            ctx.cgContext.translateBy(x: -crop.minX, y: -crop.minY)
+            draw(page, in: ctx.cgContext, rect: CGRect(x: 0, y: 0, width: page.spec.width, height: page.spec.height),
+                 inkScale: scale, region: crop)
+        }
+    }
+
+    /// 文字方塊（匯出、縮圖用）
+    static func drawTexts(_ page: NotePage, rect: CGRect) {
+        let k = rect.width / max(page.spec.width, 1)
+        for t in page.texts ?? [] where !t.text.isEmpty {
+            // 數學式：有排好的圖片就畫圖片
+            if MathRenderer.needsRender(t),
+               let image = MathRenderer.shared.cached(MathRenderer.request(for: t, pageWidth: textWrapWidth(page.spec))) {
+                let f = MathRenderer.scaleFactor
+                image.draw(in: CGRect(x: rect.minX + (t.x + TextBoxView.insetX) * k,
+                                      y: rect.minY + (t.y + TextBoxView.insetY) * k,
+                                      width: image.size.width / f * k, height: image.size.height / f * k))
+                continue
+            }
+            let para = NSMutableParagraphStyle()
+            para.alignment = TextBoxView.alignment(t.align)
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: TextBoxView.font(for: t, scale: k),
+                .foregroundColor: t.color,
+                .paragraphStyle: para
+            ]
+            let box = CGRect(x: rect.minX + (t.x + TextBoxView.insetX) * k,
+                             y: rect.minY + (t.y + TextBoxView.insetY) * k,
+                             width: (t.width + 2) * k, height: 100_000)
+            (t.text as NSString).draw(with: box, options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                      attributes: attributes, context: nil)
+        }
+    }
+}
+
+@MainActor
+enum Thumbnail {
+    static func image(for page: NotePage, width: CGFloat, drawing: PKDrawing? = nil) -> UIImage {
+        let size = CGSize(width: width, height: width * page.spec.height / max(page.spec.width, 1))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 2
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            PageRenderer.draw(page, in: ctx.cgContext, rect: CGRect(origin: .zero, size: size),
+                              inkScale: width / max(page.spec.width, 1) * 2, drawing: drawing)
+        }
+    }
+}

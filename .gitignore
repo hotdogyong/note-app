@@ -1,0 +1,10 @@
+.DS_Store
+build/
+*.xcodeproj
+Support/
+Payload/
+*.ipa
+build.log
+errors.txt
+tail.txt
+.sync/

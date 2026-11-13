@@ -380,7 +380,7 @@ final class BoardPinView: BoardMarkView {
         let tap = UITapGestureRecognizer(target: self, action: #selector(tapped))
         addGestureRecognizer(tap)
         let drag = UILongPressGestureRecognizer(target: self, action: #selector(dragged(_:)))
-        drag.minimumPressDuration = 0.3
+        drag.minimumPressDuration = 0.15                   // v12.9.8：0.3 → 0.15
         drag.allowableMovement = CGFloat.greatestFiniteMagnitude
         drag.delegate = yield
         addGestureRecognizer(drag)

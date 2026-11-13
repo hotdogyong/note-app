@@ -196,7 +196,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
 
         selectPress.addTarget(self, action: #selector(handleSelectPress(_:)))
-        selectPress.minimumPressDuration = 0.4
+        selectPress.minimumPressDuration = 0.25          // v12.9.8：0.4 → 0.25（使用者：按下去到跳出來要短一點）
         selectPress.allowedTouchTypes = Self.fingerOnly
         selectPress.cancelsTouchesInView = false
         selectPress.delegate = self
@@ -243,7 +243,43 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
         NotificationCenter.default.addObserver(self, selector: #selector(flushAll),
                                                name: UIApplication.willResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardFrameChanged(_:)),
+                                               name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         rebuild()
+    }
+
+    // MARK: 鍵盤（v12.9.8：正式安裝後鍵盤叫得出來了）
+
+    /// 鍵盤蓋住畫面下面多少
+    private(set) var keyboardOverlap: CGFloat = 0
+
+    @objc private func keyboardFrameChanged(_ note: Notification) {
+        guard let value = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue,
+              let screen = window?.screen else { return }
+        let end = value.cgRectValue
+        let screenHeight = screen.bounds.height
+        let overlap: CGFloat = end.minY >= screenHeight ? 0 : max(0, screenHeight - end.minY)
+        guard abs(overlap - keyboardOverlap) > 0.5 else { return }
+        keyboardOverlap = overlap
+        outer.contentInset.bottom = bottomInset + overlap      // 下面多留一塊，最後一頁的字也捲得上來
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            self?.revealActiveText()
+            self?.positionTextBar()
+        }
+    }
+
+    /// 正在打字的地方被鍵盤蓋住：往上捲到看得到
+    private func revealActiveText() {
+        guard keyboardOverlap > 0, let tv = activeText, tv.textView.isFirstResponder else { return }
+        var r = tv.convert(tv.contentRect, to: self)
+        if let range = tv.textView.selectedTextRange {
+            let caret = tv.textView.caretRect(for: range.end)
+            if !caret.isNull, !caret.isInfinite { r = tv.textView.convert(caret, to: self) }
+        }
+        let limit = bounds.height - keyboardOverlap - 28
+        let delta = r.maxY - limit
+        guard delta > 0 else { return }
+        outer.setContentOffset(CGPoint(x: outer.contentOffset.x, y: outer.contentOffset.y + delta), animated: true)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -1095,6 +1131,12 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     /// 文字工具列放在方塊下面（下面放不下就放上面）
+    /// 畫面下面被擋住多少（v12.9.8）：筆盒停在下面時約 110 點。選取框、文字方塊的工具列用它決定要不要改放上面
+    var bottomObstruction: CGFloat {
+        let box = PenBoxModel.shared
+        return (box.dock == .bottom && !box.minimized) ? 110 : 0
+    }
+
     func positionTextBar() {
         guard let tv = activeText, textBar.superview != nil else { return }
         let r = tv.convert(tv.contentRect, to: self)
@@ -1106,8 +1148,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             if y < 8 { y = r.maxY + 12 }
         } else {
             y = r.maxY + 12
-            if y + size.height > bounds.height - 8 { y = r.minY - 12 - size.height }
+            if y + size.height > bounds.height - 8 - bottomObstruction { y = r.minY - 12 - size.height }
         }
+        // v12.9.8：鍵盤出來時不要被鍵盤蓋住
+        if keyboardOverlap > 0 { y = min(y, bounds.height - keyboardOverlap - size.height - 8) }
         let x = min(max(r.midX - size.width / 2, 8), max(8, bounds.width - size.width - 8))
         textBar.frame = CGRect(x: x, y: max(8, y), width: size.width, height: size.height)
     }
@@ -2840,7 +2884,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         case .began:
             guard let pin = boardPins.first(where: { $0.id == id }) else { return }
             hidePinBar()
-            pinDragStart = (p, pin)
+            // v12.9.8：以「水滴的正中間」當作抓住的點，所以一開始拖，圖釘就吸到手指正下方。
+            // 以前用開始拖那一刻手指的位置：按住的那段時間手指已經移開了，圖釘就一直跟手指隔著那段距離
+            let anchor = CGPoint(x: pin.x * s, y: pin.y * s - BoardPinView.markerSize.height / 2)
+            pinDragStart = (anchor, pin)
+            pv.movePin(id, tip: CGPoint(x: pin.x * s + p.x - anchor.x, y: pin.y * s + p.y - anchor.y))
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             setScrolling(false)
         case .changed:

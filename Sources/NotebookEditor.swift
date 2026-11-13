@@ -1036,7 +1036,7 @@ struct NotebookEditorView: View {
     /// 一個膠囊（v12.8.7：符號粗一點；iOS 26 以上用系統的玻璃，跟以前系統工具列的樣子一樣）
     @ViewBuilder
     private func toolCapsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        let row = HStack(spacing: 22) {
+        let row = HStack(spacing: model.isBoard ? 22 : 30) {      // v12.9.8：筆記本的按鈕比較多，間隔拉開
             content()
         }
         .font(.system(size: 19, weight: .semibold))
@@ -1159,6 +1159,7 @@ struct NotebookEditorView: View {
                         .frame(width: geo.size.width, height: geo.size.height, alignment: penBox.alignment)
                 }
                 .coordinateSpace(name: "penbox")
+                .ignoresSafeArea(.keyboard)                    // v12.9.8：鍵盤出來時筆盒留在原地，不要被推上去蓋住文字工具列
             }
             .overlay(alignment: .topLeading) {
                 // 左邊的面板：縮略圖、書籤、大綱

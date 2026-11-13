@@ -139,14 +139,14 @@ final class RadialMenuView: UIView {
             circle.center = dot.center
             circle.transform = CGAffineTransform(scaleX: 0.2, y: 0.2)
             circle.alpha = 0
-            UIView.animate(withDuration: 0.2, delay: 0, options: [.curveLinear, .allowUserInteraction], animations: {
+            UIView.animate(withDuration: 0.11, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: {   // v12.9.8：0.2 → 0.11
                 circle.center = target
                 circle.transform = CGAffineTransform.identity
                 circle.alpha = 1
             }, completion: nil)
         }
         dot.transform = CGAffineTransform(scaleX: 0.3, y: 0.3)
-        UIView.animate(withDuration: 0.2) { self.dot.transform = CGAffineTransform.identity }
+        UIView.animate(withDuration: 0.11) { self.dot.transform = CGAffineTransform.identity }
     }
 
     /// 手指移到 p（這個畫面的座標）：更新哪一格被選中
@@ -183,7 +183,7 @@ final class RadialMenuView: UIView {
         outerCircle.isHidden = false
         outerCircle.center = start
         outerCircle.alpha = 0
-        UIView.animate(withDuration: 0.16, delay: 0, options: [.curveLinear, .allowUserInteraction], animations: {
+        UIView.animate(withDuration: 0.09, delay: 0, options: [.curveEaseOut, .allowUserInteraction], animations: {
             self.outerCircle.center = self.outerSpots[parent]
             self.outerCircle.alpha = 1
         }, completion: nil)

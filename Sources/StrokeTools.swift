@@ -651,8 +651,10 @@ enum DashMaker {
 @MainActor
 enum StrokeHitTest {
     static func index(at p: CGPoint, in drawing: PKDrawing, tolerance: CGFloat) -> Int? {
-        for i in drawing.strokes.indices.reversed() {
-            let stroke = drawing.strokes[i]
+        // v12.9.8：strokes 只拿一次。以前迴圈裡每一圈都重新拿整份（筆跡多時是筆數的平方，幾千筆就要等好幾秒，長按很慢才有反應）
+        let strokes = drawing.strokes
+        for i in strokes.indices.reversed() {
+            let stroke = strokes[i]
             guard stroke.renderBounds.insetBy(dx: -tolerance, dy: -tolerance).contains(p) else { continue }
             for point in stroke.path.interpolatedPoints(by: .distance(2)) {
                 let location = point.location.applying(stroke.transform)
@@ -1120,6 +1122,11 @@ final class SelectionEditorView: UIView, UIGestureRecognizerDelegate {
         let barSize = CGSize(width: 300, height: 44)
         var y = maxY + 40
         if y + barSize.height > bounds.height - 4 { y = minY - 40 - barSize.height }
+        // v12.9.8：會被下面的筆盒（或畫面底）擋住時，改放在框的上面
+        if let host = host {
+            let bottomInHost = convert(CGPoint(x: 0, y: y + barSize.height), to: host).y
+            if bottomInHost > host.bounds.height - 8 - host.bottomObstruction { y = minY - 40 - barSize.height }
+        }
         let x = min(max((minX + maxX) / 2 - barSize.width / 2, 4), max(4, bounds.width - barSize.width - 4))
         bar.frame = CGRect(x: x, y: max(4, y), width: barSize.width, height: barSize.height)
         let w = barSize.width / CGFloat(max(barButtons.count, 1))

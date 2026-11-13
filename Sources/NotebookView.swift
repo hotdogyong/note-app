@@ -774,7 +774,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             return
         }
         hideTapeDelete()
-        if frameMode {                                         // 按了「新區塊」又不想拉了：手指點一下取消
+        if frameMode, !frameToolOn {                           // 按了「新區塊」又不想拉了：手指點一下取消（筆盒的區塊工具不算）
             endFrameMode()
             showMessage("rectangle.dashed", "取消新區塊")
             return
@@ -1493,6 +1493,28 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         pasteImage(Self.downscaled(image, maxSide: 2400), at: insertLocation)
     }
 
+    /// 一次匯入很多張（v12.10）：白板上排成格狀（一列最多 4 張），筆記本裡一張一張稍微錯開
+    func insertPickedImages(_ images: [UIImage]) {
+        guard !images.isEmpty else {
+            showMessage("exclamationmark.triangle", "沒有讀到圖片")
+            return
+        }
+        let base = insertLocation ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        let columns = min(images.count, 4)
+        for (i, image) in images.enumerated() {
+            var p = base
+            if isBoard {
+                p.x += (CGFloat(i % columns) - CGFloat(columns - 1) / 2) * 500 * scale
+                p.y += CGFloat(i / columns) * 660 * scale
+            } else {
+                p.x += CGFloat(i) * 36
+                p.y += CGFloat(i) * 36
+            }
+            pasteImage(Self.downscaled(image, maxSide: 2400), at: p)
+        }
+        showMessage("photo.on.rectangle", "已匯入 \(images.count) 張")
+    }
+
     /// 長邊超過 maxSide 像素就等比例縮小（順便把照片的方向轉正）
     static func downscaled(_ image: UIImage, maxSide: CGFloat) -> UIImage {
         let w = image.size.width * image.scale
@@ -2001,7 +2023,25 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard bounds.width > 0, abs(bounds.width - lastWidth) > 0.5 else { return }
         let first = lastWidth == 0
         lastWidth = bounds.width
+        // v12.10：寬度變了（轉向、分割畫面、滑去別的 App 時系統用別的大小拍縮圖）會整份重排。
+        // 以前重排後捲動位置的數字不變，但每一頁的高度變了，回來就停在別頁（使用者：滑去別的 App 再回來，從第三頁跳回第二頁）。
+        // 現在先記住「畫面最上面是哪一列的幾分之幾」，重排後回到同一個地方
+        var anchor: (row: UUID, fraction: CGFloat)?
+        if !first, !isBoard {
+            let top = outer.contentOffset.y
+            for row in model.notebook.rows {
+                guard let f = rowViews[row.id]?.frame, f.height > 0 else { continue }
+                if f.maxY > top {
+                    anchor = (row.id, (top - f.minY) / f.height)
+                    break
+                }
+            }
+        }
         layoutDocument()
+        if let a = anchor, let f = rowViews[a.row]?.frame {
+            let maxY = max(0, outer.contentSize.height + outer.contentInset.bottom - outer.bounds.height)
+            outer.contentOffset.y = min(max(f.minY + a.fraction * f.height, 0), maxY)
+        }
         for rv in rowViews.values where !rv.ranges.isEmpty {
             if first { rv.currentIndex = rv.mainIndex }
             let inPage = rv.currentIndex == rv.mainIndex ? sharedInPageX : 0
@@ -3013,8 +3053,20 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private let frameBar = BoardMarkView()                     // 選取區塊時的工具列
 
     /// 右上角 ＋ →「新區塊」：接下來用 Pencil 拉一個方框
+    /// 筆盒選著「區塊」工具（v12.10）：可以連續拉方框，不問名稱；換別的工具才停
+    private var frameToolOn: Bool { PenBoxModel.shared.selection == .frame }
+
+    /// 筆盒換到別的工具：離開拉方框的狀態
+    func leaveFrameTool() {
+        guard frameMode else { return }
+        frameMode = false
+        framePan.isEnabled = false
+        framePreview.path = nil
+        applyCanvasDrawingAllowed()
+    }
+
     func startFrameMode() {
-        guard isBoard, !readOnly else { return }
+        guard isBoard, !readOnly, !frameMode else { return }
         deselectFrame()
         endTextSelection()
         dismissShapeEditor()
@@ -3025,9 +3077,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     private func endFrameMode() {
+        framePreview.path = nil
+        if frameToolOn, isBoard, !readOnly { return }          // 區塊工具選著：留在拉方框的狀態
         frameMode = false
         framePan.isEnabled = false
-        framePreview.path = nil
         applyCanvasDrawingAllowed()
     }
 
@@ -3110,6 +3163,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             }
             let rect = CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y)
             let n = boardFrames.count + 1
+            if frameToolOn {                                   // 筆盒的區塊工具：不問名稱，直接建立（點標題可以改名）
+                var frames = boardFrames
+                frames.append(BoardFrame(name: "區塊 \(n)", x: rect.minX, y: rect.minY, width: rect.width, height: rect.height,
+                                         color: (n - 1) % BoardFrame.palette.count))
+                setBoardMarks(frames: frames, pins: boardPins)
+                return
+            }
             TextPrompt.show(title: "區塊的名稱", initial: "區塊 \(n)") { [weak self] text in
                 guard let self = self else { return }
                 var frames = self.boardFrames
@@ -5211,6 +5271,12 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             showMessage("scissors", "白板沒有旁頁：截圖請用「拷貝」，再長按空白處貼上")
             return
         }
+        // v12.10：沒有課本 PDF 的頁（格線紙上的筆記）不貼圖片，直接把框裡的筆跡、文字方塊、圖片搬一份過去
+        if let r = cropResult, let page = model.page(r.pageID), page.pdf == nil, r.rect.width > 1, r.rect.height > 1,
+           let loc = model.location(of: page.id) {
+            cropInkToSidePage(source: page, rect: r.rect, row: model.notebook.rows[loc.row], left: left)
+            return
+        }
         guard let result = croppedImage(), let loc = model.location(of: result.page.id) else { return }
         let row = model.notebook.rows[loc.row]
         let main = row.pages[row.mainIndex]
@@ -5236,6 +5302,59 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         box.height = h
         model.setImages([box], pageID: newID)
         pageViews[newID]?.syncImages([box])
+    }
+
+    /// 剪刀框到的是筆記（v12.10）：新旁頁用同一種紙，把框裡的筆跡、文字方塊、圖片複製過去。
+    /// 往左上角靠，但只移動「整數格」，所以新頁上的字跟格線的相對位置和原本一樣（貼圖片的話格線會對不上）
+    private func cropInkToSidePage(source: NotePage, rect: CGRect, row: PageRow, left: Bool) {
+        flushAll()
+        let drawing = pageViews[source.id]?.canvas.drawing ?? Store.loadDrawing(source.id)
+        let picked = drawing.strokes.filter { rect.contains(CGPoint(x: $0.renderBounds.midX, y: $0.renderBounds.midY)) }
+        let texts = (source.texts ?? []).filter { rect.contains(CGPoint(x: $0.x, y: $0.y)) }
+        let images = (source.images ?? []).filter { rect.contains(CGPoint(x: $0.x + $0.width / 2, y: $0.y + $0.height / 2)) }
+        guard !picked.isEmpty || !texts.isEmpty || !images.isEmpty else {
+            showMessage("scissors", "框裡沒有筆跡")
+            return
+        }
+        let newPage = NotePage(spec: source.spec, paper: source.paper)
+        clearCropRect()
+        guard let newID = insertSidePage(rowID: row.id, at: left ? 0 : row.pages.count, page: newPage, jump: false) else { return }
+        let unitX = PaperRenderer.gridUnit
+        let unitY = source.paperStyle.pattern == 4 ? PaperRenderer.wideLine : PaperRenderer.gridUnit
+        let dx = -floor(max(0, rect.minX - unitX) / unitX) * unitX
+        let dy = -floor(max(0, rect.minY - unitY) / unitY) * unitY
+        let move = CGAffineTransform(translationX: dx, y: dy)
+        let moved = PKDrawing(strokes: picked.map {
+            PKStroke(ink: $0.ink, path: $0.path, transform: $0.transform.concatenating(move), mask: $0.mask)
+        })
+        Store.saveDrawing(moved, pageID: newID)
+        pageViews[newID]?.replaceSilently(moved, updateBaseline: true)
+        if !texts.isEmpty {
+            var copies = texts
+            for i in copies.indices {
+                copies[i].id = UUID()
+                copies[i].x += dx
+                copies[i].y += dy
+            }
+            model.setTexts(copies, pageID: newID)
+            pageViews[newID]?.syncTexts(copies)
+        }
+        if !images.isEmpty {
+            var copies: [ImageBox] = []
+            for box in images {
+                guard let image = Store.loadImage(box.file, pageID: source.id),
+                      let file = Store.saveImage(image, pageID: newID) else { continue }
+                var copy = box
+                copy.id = UUID()
+                copy.file = file
+                copy.x += dx
+                copy.y += dy
+                copies.append(copy)
+            }
+            model.setImages(copies, pageID: newID)
+            pageViews[newID]?.syncImages(copies)
+        }
+        showMessage(left ? "arrow.left.square" : "arrow.right.square", left ? "筆跡已貼到最左邊的新旁頁" : "筆跡已貼到最右邊的新旁頁")
     }
 
     /// 新增旁頁：插在某一張（index）的左邊或右邊（在右 1 往左新增，新頁插在主頁和右 1 中間）

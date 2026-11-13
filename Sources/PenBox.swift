@@ -145,6 +145,7 @@ enum PenSelection: Codable, Hashable {
     case eraser
     case lasso
     case tape               // 紙膠帶
+    case frame              // 區塊（只有白板；v12.10）：選了之後用 Pencil 拉方框
     case apple              // 正在用 Apple 的工具列
 }
 
@@ -198,6 +199,7 @@ final class PenBoxModel: ObservableObject {
     @Published var dock: PenDock
     @Published var collapsed: Bool
     @Published var minimized = false              // 縮成角落的小圓鈕
+    @Published var onBoard = false                // 現在開的是白板（v12.10）：筆盒多一顆「區塊」工具
     @Published var corner = PenCorner.bottomTrailing
     @Published var lassoRectangle = false         // 套索：徒手或矩形
     @Published var lassoHandwriting = true        // 套索要不要選到手寫（螢光筆以外的筆跡）
@@ -391,7 +393,7 @@ final class PenBoxModel: ObservableObject {
         notebookID = id
         loadLasso(for: id)                                     // 這本自己的套索選項（v12.9）
         if let data = UserDefaults.standard.data(forKey: Self.selectionKey(id)),
-           let saved = try? JSONDecoder().decode(PenSelection.self, from: data), saved != PenSelection.apple {
+           let saved = try? JSONDecoder().decode(PenSelection.self, from: data), saved != PenSelection.apple, saved != PenSelection.frame {
             selection = saved
         }
         fixSelection()
@@ -649,6 +651,7 @@ final class PenBoxModel: ObservableObject {
         case .eraser: return ("eraser", nil)
         case .lasso: return ("lasso", nil)
         case .tape: return ("bandage", nil)
+        case .frame: return ("rectangle.dashed", nil)
         case .apple: return ("applepencil", nil)
         }
     }
@@ -684,7 +687,7 @@ final class PenBoxModel: ObservableObject {
                 return PKEraserTool(eraserPartial ? .bitmap : .vector, width: eraserWidth)   // 兩種都照設定的大小
             }
             return PKEraserTool(eraserPartial ? .bitmap : .vector)
-        case .lasso, .tape, .apple:
+        case .lasso, .tape, .frame, .apple:
             return nil              // 套索、紙膠帶由筆記本自己處理；Apple 工具列的工具不去動
         }
     }
@@ -764,6 +767,7 @@ struct PenBoxView: View {
                     eraserButton
                     lassoButton
                     toolButton(.tape, symbol: "bandage")
+                    if box.onBoard { toolButton(.frame, symbol: "rectangle.dashed") }
                     groupDivider
                     widthButton
                     penGroup
@@ -774,6 +778,7 @@ struct PenBoxView: View {
                     eraserButton
                     lassoButton
                     toolButton(.tape, symbol: "bandage")          // 紙膠帶
+                    if box.onBoard { toolButton(.frame, symbol: "rectangle.dashed") }   // 區塊（白板）
                 }
             }
         }

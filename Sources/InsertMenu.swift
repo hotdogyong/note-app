@@ -16,6 +16,8 @@ enum InsertKind: Equatable {
     case photos        // 相簿
     case camera        // 相機
     case files         // 「檔案」App
+    case photosMany    // 相簿，一次選很多張（v12.10）
+    case filesMany     // 「檔案」App，一次選很多個
 }
 
 /// 長按空白處跳出的一圈按鈕（仿 GUGA）。
@@ -263,6 +265,7 @@ final class RadialMenuView: UIView {
 struct InsertPickers: ViewModifier {
     @ObservedObject var model: NotebookModel
     @State private var photoItem: PhotosPickerItem?
+    @State private var photoItems: [PhotosPickerItem] = []     // 一次選很多張（v12.10）
 
     private func showing(_ kind: InsertKind) -> Binding<Bool> {
         Binding(get: { model.insertRequest == kind },
@@ -288,6 +291,45 @@ struct InsertPickers: ViewModifier {
                 }
                 .ignoresSafeArea()
             }
+            // 一次選很多張（v12.10）。同一個畫面掛兩個同類的選取畫面只有一個會作用，所以掛在背景的透明畫面上
+            .background(
+                Color.clear
+                    .photosPicker(isPresented: showing(InsertKind.photosMany), selection: $photoItems,
+                                  maxSelectionCount: 40, matching: PHPickerFilter.images)
+                    .onChange(of: photoItems) { _, items in
+                        guard !items.isEmpty else { return }
+                        loadPhotos(items)
+                    }
+            )
+            .background(
+                Color.clear
+                    .fileImporter(isPresented: showing(InsertKind.filesMany), allowedContentTypes: [UTType.image],
+                                  allowsMultipleSelection: true) { result in
+                        if case .success(let urls) = result { loadFiles(urls) }
+                    }
+            )
+    }
+
+    private func loadPhotos(_ items: [PhotosPickerItem]) {
+        Task { @MainActor in
+            var images: [UIImage] = []
+            for item in items {
+                let data = try? await item.loadTransferable(type: Data.self)
+                if let data = data, let image = UIImage(data: data) { images.append(image) }
+            }
+            photoItems = []
+            model.documentView?.insertPickedImages(images)
+        }
+    }
+
+    private func loadFiles(_ urls: [URL]) {
+        var images: [UIImage] = []
+        for url in urls {
+            let accessing = url.startAccessingSecurityScopedResource()
+            if let data = try? Data(contentsOf: url), let image = UIImage(data: data) { images.append(image) }
+            if accessing { url.stopAccessingSecurityScopedResource() }
+        }
+        model.documentView?.insertPickedImages(images)
     }
 
     /// 相簿選到的照片：讀成圖片後貼上

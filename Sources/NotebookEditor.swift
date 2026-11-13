@@ -1235,6 +1235,7 @@ struct NotebookEditorView: View {
             }
             .modifier(InsertPickers(model: model))               // 相簿、相機、檔案的選取畫面（v12.3）
             .onAppear {
+                penBox.onBoard = model.isBoard
                 penBox.enterNotebook(model.meta.id)              // 這本筆記本自己的筆（v12.3）
                 applyPenBoxTool()
                 let lib = library
@@ -1262,6 +1263,13 @@ struct NotebookEditorView: View {
 
     private func applyPenBoxTool() {
         guard let doc = model.documentView else { return }
+        if penBox.selection == .frame {                        // 區塊工具（v12.10）
+            doc.setTapeMode(false)
+            doc.setLassoMode(false)
+            doc.startFrameMode()
+            return
+        }
+        doc.leaveFrameTool()
         if penBox.selection == .lasso {
             doc.setTapeMode(false)
             doc.setLassoMode(true)
@@ -1857,6 +1865,16 @@ struct BoardToolbarButtons: View {
                     model.documentView?.insertFromToolbar(InsertKind.files)
                 } label: {
                     Label("檔案裡的圖片", systemImage: "folder")
+                }
+                Button {
+                    model.documentView?.insertFromToolbar(InsertKind.photosMany)
+                } label: {
+                    Label("相簿的照片（一次選很多張）", systemImage: "photo.on.rectangle.angled")
+                }
+                Button {
+                    model.documentView?.insertFromToolbar(InsertKind.filesMany)
+                } label: {
+                    Label("檔案裡的圖片（一次選很多個）", systemImage: "folder.badge.plus")
                 }
             }
             Section("下一版") {

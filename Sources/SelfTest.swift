@@ -22,6 +22,12 @@ enum SelfTest {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                     PenBoxModel.shared.select(.frame)
                 }
+            case "tiles":
+                // 分區儲存的基本工具：拆開、存檔、讀回來對不對（結果用一個視窗顯示，截圖看）
+                let text = BoardTiles.selfCheck(count: 6000)
+                let alert = UIAlertController(title: "分區儲存自動測試", message: text, preferredStyle: .alert)
+                let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+                scene?.keyWindow?.rootViewController?.present(alert, animated: false)
             case "notebook":
                 library.openNotebook = library.addNotebook(in: nil)
             case "markdown":

@@ -884,7 +884,12 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     func flush() {
         guard dirty else { return }
         dirty = false
-        Store.saveDrawing(canvas.drawing, pageID: page.id)
+        let drawing = canvas.drawing
+        if drawing.strokes.count > 1500 {
+            Store.saveDrawingLater(drawing, pageID: page.id)   // v12.10.1：筆跡多（存一次要很久）就丟到背景存，寫字不會卡
+        } else {
+            Store.saveDrawing(drawing, pageID: page.id)
+        }
         ActivityLog.touch(pageID: page.id)                     // 修改紀錄（v12.9.5）
     }
 

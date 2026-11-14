@@ -2754,7 +2754,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let total = drawing.strokes.count
         let setMs = Int((t1 - t0) * 1000)
         let saveMs = Int((t2 - t1) * 1000)
-        showMessage("flask", "共 \(total) 筆｜換上去 \(setMs) ms｜存檔 \(saveMs) ms")
+        let points = stressTemplates.reduce(0) { $0 + $1.path.count } / max(stressTemplates.count, 1)
+        showMessage("flask", "共 \(total) 筆（每筆約 \(points) 點）｜換上去 \(setMs) ms｜存檔 \(saveMs) ms")
     }
 
     /// 畫面上的一點（這個畫面的座標）→ 白板的頁面座標
@@ -5020,6 +5021,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         for pv in pageViews.values { pv.flush() }
         if positionRestored, isBoard { saveBoardView() }       // 白板：記住現在的位置和縮放
         Store.backupSettings()                                 // 設定在資料位置留一份備份（v12.4）
+        Store.finishPendingSaves()                             // 背景的筆跡存檔等它做完（v12.10.1）
         ActivityLog.saveNow()                                  // 修改紀錄（v12.9.5）
         if positionRestored, model.notebook.lastPage != savedLastPage {
             savedLastPage = model.notebook.lastPage

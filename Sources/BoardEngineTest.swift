@@ -60,7 +60,9 @@ struct BoardEngineTestRepresentable: UIViewRepresentable {
 
 /// 外框（v12.8.9）：底色、格線（只跟畫面一樣大，照縮放和捲動位置畫）、畫布、左下角的百分比。
 /// v12.8.8 的格線跟整張白板一樣大（幾千條線、每條幾萬點長），iPad 的畫面系統吃不消，整台當掉回到鎖定畫面
-final class BoardEngineTestHost: UIView {
+/// v12.10.1：畫布的 delegate 改由這個外框來當。以前畫布把自己設成自己的 delegate，
+/// PencilKit 一開始寫字就會「通知 delegate → delegate 是自己 → 再通知…」無限繞下去，App 直接閃退（使用者的當機紀錄）
+final class BoardEngineTestHost: UIView, PKCanvasViewDelegate {
     let canvas = BoardEngineTestCanvas()
     let grid = GridView()
     let percentLabel = UILabel()
@@ -104,6 +106,15 @@ final class BoardEngineTestHost: UIView {
         infoLabel.isHidden = true
         addSubview(infoLabel)
         canvas.host = self
+        canvas.delegate = self
+    }
+
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        canvas.syncUnder()
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        syncGrid()
     }
 
     @objc private func stressTapped(_ sender: UIButton) {
@@ -147,7 +158,7 @@ final class BoardEngineTestHost: UIView {
 }
 
 /// PKCanvasView 自己就是捲動畫面：手指捲動、雙指縮放都是系統做的
-final class BoardEngineTestCanvas: PKCanvasView, PKCanvasViewDelegate {
+final class BoardEngineTestCanvas: PKCanvasView {
     static let boardSize = CGSize(width: 100 * 842, height: 100 * 595)
     let toolPicker = PKToolPicker()
     weak var host: BoardEngineTestHost?
@@ -184,7 +195,6 @@ final class BoardEngineTestCanvas: PKCanvasView, PKCanvasViewDelegate {
 
     init() {
         super.init(frame: .zero)
-        delegate = self
         drawingPolicy = .pencilOnly
         backgroundColor = UIColor.clear                    // 透明：底下那一層（格線、圖片）才看得到
         isOpaque = false
@@ -242,18 +252,11 @@ final class BoardEngineTestCanvas: PKCanvasView, PKCanvasViewDelegate {
     }
 
     /// 底下那一層跟著縮放（只是改一個 transform，GPU 做，不重畫）；格線（在外框）跟著捲動、縮放
-    private func syncUnder() {
+    func syncUnder() {
         under.transform = CGAffineTransform(scaleX: zoomScale, y: zoomScale)
         host?.syncGrid()
     }
 
-    func scrollViewDidZoom(_ scrollView: UIScrollView) {
-        syncUnder()
-    }
-
-    func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        host?.syncGrid()
-    }
 }
 
 /// 壓力測試用的筆跡（v12.9.9）：拿使用者真的寫的幾筆當範本，一直複製（只換位置和大小）。

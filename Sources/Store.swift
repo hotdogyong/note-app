@@ -208,6 +208,10 @@ enum Store {
     }
 
     static func loadDrawing(_ pageID: UUID) -> PKDrawing {
+        saveLock.lock()
+        let waiting = pendingSaves[pageID]?.drawing            // 還在排隊存檔的那一份比檔案新
+        saveLock.unlock()
+        if let waiting = waiting { return waiting }
         // 新位置找不到就找舊位置（整理到一半出問題也讀得到）
         for url in [drawingURL(pageID), legacyDrawingURL(pageID)] {
             if let data = try? Data(contentsOf: url), let drawing = try? PKDrawing(data: data) { return drawing }
@@ -215,10 +219,49 @@ enum Store {
         return PKDrawing()
     }
 
+    // 存檔都排進同一條佇列（v12.10.1）。使用者實測：白板 1 萬筆整份存一次要 4.9 秒，以前每次停筆都在主執行緒存，畫面就卡住。
+    // 筆跡多的頁改成丟到背景存（saveDrawingLater）；同一頁只留最新的一份；還沒寫進檔案的，loadDrawing 會先拿記憶體裡這一份
+    private static let saveQueue = DispatchQueue(label: "note.drawing.save", qos: .utility)
+    private static let saveLock = NSLock()
+    nonisolated(unsafe) private static var pendingSaves: [UUID: (generation: Int, drawing: PKDrawing)] = [:]
+    nonisolated(unsafe) private static var saveGeneration = 0
+
+    private static func queueSave(_ drawing: PKDrawing, pageID: UUID) {
+        saveLock.lock()
+        saveGeneration += 1
+        pendingSaves[pageID] = (saveGeneration, drawing)
+        saveLock.unlock()
+    }
+
+    private static func writePending(_ pageID: UUID, to url: URL) {
+        saveLock.lock()
+        let job = pendingSaves[pageID]
+        saveLock.unlock()
+        guard let job = job else { return }
+        ensureDir(url.deletingLastPathComponent())
+        try? job.drawing.dataRepresentation().write(to: url, options: .atomic)
+        saveLock.lock()
+        if pendingSaves[pageID]?.generation == job.generation { pendingSaves[pageID] = nil }   // 寫的這段時間沒有更新的才拿掉
+        saveLock.unlock()
+    }
+
+    /// 馬上存好才回來（頁面不大、或一定要立刻寫進檔案的時候）
     static func saveDrawing(_ drawing: PKDrawing, pageID: UUID) {
         let url = drawingURL(pageID)
-        ensureDir(url.deletingLastPathComponent())
-        try? drawing.dataRepresentation().write(to: url, options: .atomic)
+        queueSave(drawing, pageID: pageID)
+        saveQueue.sync { writePending(pageID, to: url) }
+    }
+
+    /// 丟到背景存（筆跡很多的頁）；要確定都寫完用 finishPendingSaves()
+    static func saveDrawingLater(_ drawing: PKDrawing, pageID: UUID) {
+        let url = drawingURL(pageID)
+        queueSave(drawing, pageID: pageID)
+        saveQueue.async { writePending(pageID, to: url) }
+    }
+
+    /// 等背景的存檔都做完（離開筆記本、App 進背景、要複製筆跡檔之前）
+    static func finishPendingSaves() {
+        saveQueue.sync { }
     }
 
     // MARK: 歷史版本

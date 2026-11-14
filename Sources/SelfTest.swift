@@ -12,7 +12,10 @@ import PDFKit
 enum SelfTest {
     static var scene: String? { UserDefaults.standard.string(forKey: "selftest") }
 
+    static weak var library: LibraryModel?
+
     static func run(_ library: LibraryModel) {
+        Self.library = library
         guard let scene = scene, scene != "home" else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             switch scene {
@@ -78,6 +81,9 @@ enum SelfTest {
             case "boardimage":
                 // 白板貼圖的大小（v12.11.1）：打開後貼三張（橫的、直的、很小的），回報各佔幾格（NotebookView.selfTestImages）
                 library.openNotebook = library.addBoard(in: nil, title: "貼圖測試白板", width: 100 * 842, height: 100 * 595)
+            case "cards":
+                // 白板上的筆記本（v12.12.0）：打開白板後放兩張卡片、開兩個浮動視窗（notebookOpened 裡做）
+                library.openNotebook = library.addBoard(in: nil, title: "卡片測試白板", width: 100 * 842, height: 100 * 595)
             case "manypens":
                 // 筆盒超過 10 支筆（v12.11.0）：筆的那一段固定長度、用滑的
                 library.openNotebook = library.addNotebook(in: nil)
@@ -94,6 +100,20 @@ enum SelfTest {
 
     /// 筆記本／白板打開、回到上次位置之後（NotebookView 呼叫）：需要在開著的畫面上做事的場景
     static func notebookOpened(_ view: NotebookView) {
+        if scene == "cards", view.model.isBoard, let library = library {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                let first = library.addNotebook(inBoard: view.model.meta, title: "第一章 筆記")
+                let second = library.addNotebook(inBoard: view.model.meta, title: "例題本")
+                view.placeCard(for: first, at: CGPoint(x: view.bounds.width * 0.2, y: view.bounds.height * 0.3))
+                view.placeCard(for: second, at: CGPoint(x: view.bounds.width * 0.2, y: view.bounds.height * 0.62))
+                view.model.openCard(first.id)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
+                    view?.model.openCard(second.id)
+                }
+            }
+            return
+        }
         guard scene == "tiledboard" || scene == "boardimage" else { return }
         let images = scene == "boardimage"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak view] in

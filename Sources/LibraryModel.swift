@@ -161,9 +161,33 @@ final class LibraryModel: ObservableObject {
             guard let i = library.notebooks.firstIndex(where: { $0.id == id }) else { return }
             let old = Store.notebookDir(id)
             library.notebooks[i].deletedAt = Date()
+            // 刪的是白板：家在它裡面的筆記本放回首頁（跟白板同一個資料夾），不會跟著不見（v12.12.0）
+            for j in library.notebooks.indices where library.notebooks[j].boardID == id { library.notebooks[j].boardID = nil }
             save()
             Store.moveDirectory(from: old, to: Store.notebookDir(id))
         }
+    }
+
+    // MARK: 白板裡的筆記本（v12.12.0）
+
+    /// 在白板裡新建筆記本：檔案放在白板所在的資料夾，但首頁不列出來
+    func addNotebook(inBoard board: NotebookMeta, title: String, data: NotebookData = NotebookData()) -> NotebookMeta {
+        let meta = addNotebook(in: board.folderID, title: title, data: data)
+        setBoardHome(meta.id, board: board.id)
+        return notebook(meta.id) ?? meta
+    }
+
+    /// 改一本筆記本的家：board 有值＝在那張白板裡（首頁不列）；nil＝回到首頁
+    func setBoardHome(_ id: UUID, board: UUID?) {
+        guard let i = library.notebooks.firstIndex(where: { $0.id == id }) else { return }
+        library.notebooks[i].boardID = board
+        save()
+    }
+
+    /// 家在這張白板裡的筆記本
+    func boardFiles(_ boardID: UUID) -> [NotebookMeta] {
+        library.notebooks.filter { $0.boardID == boardID && $0.deletedAt == nil }
+            .sorted { (a: NotebookMeta, b: NotebookMeta) -> Bool in a.title < b.title }
     }
 
     /// 復原：放回原本的資料夾；原本的資料夾也被刪了，就放回最外層；同名的話自動加「 2」
@@ -312,7 +336,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func notebooks(in folder: UUID?) -> [NotebookMeta] {
-        library.notebooks.filter { $0.folderID == folder }.sorted { $0.modified > $1.modified }
+        library.notebooks.filter { $0.folderID == folder && $0.boardID == nil }.sorted { $0.modified > $1.modified }
     }
 
     func addFolder(in parent: UUID?, name: String = "未命名資料夾", colorIndex: Int? = nil) -> NoteFolder {
@@ -360,7 +384,8 @@ final class LibraryModel: ObservableObject {
                 placed.append((id: f.id, ref: ItemRef.folder(f.id)))
             }
         }
-        for n in library.notebooks where n.folderID == folder && n.deletedAt == nil {
+        // 家在白板裡的筆記本（boardID 有值，v12.12.0）首頁不列
+        for n in library.notebooks where n.folderID == folder && n.deletedAt == nil && n.boardID == nil {
             if position[n.id] == nil {
                 newNotebooks.append(n)
             } else {
@@ -765,13 +790,18 @@ final class LibraryModel: ObservableObject {
 
     /// 匯入 PDF：每一頁 PDF 變成一張主頁（尺寸跟 PDF 一樣）
     func importPDF(from url: URL, into folder: UUID?) -> Bool {
+        importPDFNotebook(from: url, into: folder) != nil
+    }
+
+    /// 匯入 PDF，回傳做好的筆記本（白板上匯入 PDF 用；v12.12.0）
+    func importPDFNotebook(from url: URL, into folder: UUID?) -> NotebookMeta? {
         let title = url.deletingPathExtension().lastPathComponent
         let meta = addNotebook(in: folder, title: title, data: NotebookData(rows: []))
         guard let file = Store.importPDF(from: url, notebook: meta.id),
               let document = PDFDocument(url: Store.pdfURL(file)),
               document.pageCount > 0 else {
             deleteNotebook(meta.id)
-            return false
+            return nil
         }
         var rows: [PageRow] = []
         for i in 0..<document.pageCount {
@@ -784,7 +814,7 @@ final class LibraryModel: ObservableObject {
             rows.append(row)
         }
         Store.saveNotebook(NotebookData(rows: rows), id: meta.id)
-        return true
+        return meta
     }
 
     func renameFolder(_ id: UUID, to name: String) {

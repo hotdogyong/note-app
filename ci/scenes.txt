@@ -1,6 +1,5 @@
 board
-tilestore
-tiledboard
+cards
+home
 outline
-pdfoutline
-boardimage
+tilestore

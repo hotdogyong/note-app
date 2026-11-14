@@ -777,6 +777,12 @@ final class NotebookModel: ObservableObject {
     @Published var canPaste = false
     @Published var insertRequest: InsertKind?          // 要打開哪個選取畫面（相簿、相機、檔案；v12.3）
     @Published var shareFile: ExportFile?              // 要分享出去的檔案（白板區塊的匯出；v12.7）
+    @Published var cardRequest: CardRequest?           // 白板：要放一張筆記本的卡片（v12.12.0；BoardCards.swift）
+    @Published var cardOpen: CardOpen?                 // 白板：點了卡片，要開那一本的浮動視窗
+
+    func openCard(_ id: UUID) {
+        cardOpen = CardOpen(notebookID: id, stamp: (cardOpen?.stamp ?? 0) + 1)
+    }
 
     /// 這是白板（只有一張大頁面）
     var isBoard: Bool { notebook.board ?? false }
@@ -1059,16 +1065,24 @@ struct NotebookEditorView: View {
     @State private var showFrames = false                   // 白板的區塊清單
     @AppStorage("tabsCollapsed") private var tabsCollapsed = false      // 分頁那一排收起來（v12.8.4）
     private let onClose: (() -> Void)?
+    /// 內嵌模式（v12.12.0）：開在白板的浮動視窗裡。沒有分頁那一排、沒有自己的筆盒（用白板的），不鋪滿螢幕
+    private let embedded: Bool
+    // 白板上開著的浮動視窗（v12.12.0）
+    @State private var windows: [BoardWindow] = []
+    @State private var windowsTucked = false
+    @State private var showCardPicker = false
+    @State private var showCardPDF = false
 
-    init(meta: NotebookMeta, onClose: (() -> Void)? = nil) {
+    init(meta: NotebookMeta, onClose: (() -> Void)? = nil, embedded: Bool = false) {
         _model = StateObject(wrappedValue: NotebookModel(meta: meta))
         self.onClose = onClose
+        self.embedded = embedded
     }
 
     /// 分頁下面那一排工具（v12.8.4，以前在系統的工具列裡）
     private var toolRow: some View {
-        HStack(spacing: 12) {
-            if tabsCollapsed {
+        HStack(spacing: embedded ? 8 : 12) {
+            if tabsCollapsed && !embedded {
                 closeAndTitle                                      // 分頁收起來時：左上「× │ 名稱」（照 GUGA）
             }
             if !model.isBoard {
@@ -1078,8 +1092,8 @@ struct NotebookEditorView: View {
             toolCapsule { trailingTools }
         }
         .tint(Color.primary)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
+        .padding(.horizontal, embedded ? 8 : 16)
+        .padding(.vertical, embedded ? 4 : 6)
         .background {
             if !model.isBoard {
                 Color.black.ignoresSafeArea(edges: .top)      // 筆記本：黑色的工具列（跟以前系統的一樣）；白板：浮在白板上
@@ -1090,12 +1104,12 @@ struct NotebookEditorView: View {
     /// 一個膠囊（v12.8.7：符號粗一點；iOS 26 以上用系統的玻璃，跟以前系統工具列的樣子一樣）
     @ViewBuilder
     private func toolCapsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        let row = HStack(spacing: model.isBoard ? 22 : 30) {      // v12.9.8：筆記本的按鈕比較多，間隔拉開
+        let row = HStack(spacing: embedded ? 15 : (model.isBoard ? 22 : 30)) {      // v12.9.8：筆記本的按鈕比較多，間隔拉開
             content()
         }
-        .font(.system(size: 19, weight: .semibold))
-        .padding(.horizontal, 18)
-        .frame(height: 46)
+        .font(.system(size: embedded ? 16 : 19, weight: .semibold))
+        .padding(.horizontal, embedded ? 12 : 18)
+        .frame(height: embedded ? 38 : 46)
         row.modifier(GlassCapsule())
     }
 
@@ -1205,15 +1219,47 @@ struct NotebookEditorView: View {
     var body: some View {
         DocumentRepresentable(model: model)
             // 白板（v12.8）：白板一路鋪到最上面，工具列浮在白板上（上面不要有一條黑色）
-            .ignoresSafeArea(edges: model.isBoard ? Edge.Set.all : Edge.Set.bottom)
+            .ignoresSafeArea(edges: embedded ? Edge.Set() : (model.isBoard ? Edge.Set.all : Edge.Set.bottom))
             .overlay {
-                // 筆盒：拖把手可以停靠在上下左右
-                GeometryReader { geo in
-                    PenBoxView(box: penBox, containerSize: geo.size)
-                        .frame(width: geo.size.width, height: geo.size.height, alignment: penBox.alignment)
+                // 白板上的浮動視窗（v12.12.0）：在白板上面、筆盒下面
+                if model.isBoard && !embedded {
+                    BoardWindowsLayer(windows: $windows, tucked: $windowsTucked,
+                                      close: { closeWindow($0) },
+                                      openAsTab: { window in
+                                          closeWindow(window)
+                                          library.openRequest = window.meta
+                                      },
+                                      renameCard: { window in
+                                          TextPrompt.show(title: "卡片上的標題", initial: window.meta.title) { text in
+                                              model.documentView?.updateCards(for: window.meta, caption: text)
+                                          }
+                                      },
+                                      moveHome: { window in
+                                          library.setBoardHome(window.meta.id, board: nil)
+                                          model.documentView?.showMessage("house", "「\(window.meta.title)」搬到首頁了，卡片還是連得到")
+                                      },
+                                      isInBoard: { library.notebook($0.meta.id)?.boardID != nil })
+                        .fileImporter(isPresented: $showCardPDF, allowedContentTypes: [.pdf]) { result in
+                            guard case .success(let url) = result else { return }
+                            guard let created = library.importPDFNotebook(from: url, into: model.meta.folderID) else {
+                                model.documentView?.showMessage("exclamationmark.triangle", "這份 PDF 讀不進來")
+                                return
+                            }
+                            library.setBoardHome(created.id, board: model.meta.id)
+                            model.documentView?.placeCard(for: created)
+                        }
                 }
-                .coordinateSpace(name: "penbox")
-                .ignoresSafeArea(.keyboard)                    // v12.9.8：鍵盤出來時筆盒留在原地，不要被推上去蓋住文字工具列
+            }
+            .overlay {
+                // 筆盒：拖把手可以停靠在上下左右（浮動視窗裡不放：用白板的那一個）
+                if !embedded {
+                    GeometryReader { geo in
+                        PenBoxView(box: penBox, containerSize: geo.size)
+                            .frame(width: geo.size.width, height: geo.size.height, alignment: penBox.alignment)
+                    }
+                    .coordinateSpace(name: "penbox")
+                    .ignoresSafeArea(.keyboard)                    // v12.9.8：鍵盤出來時筆盒留在原地，不要被推上去蓋住文字工具列
+                }
             }
             .overlay(alignment: .topLeading) {
                 // 左邊的面板：縮略圖、書籤、大綱
@@ -1234,7 +1280,7 @@ struct NotebookEditorView: View {
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    if !tabsCollapsed { NotebookTabBar() }      // 分頁那一排可以收起來（︿）
+                    if !tabsCollapsed && !embedded { NotebookTabBar() }      // 分頁那一排可以收起來（︿）；浮動視窗裡沒有
                     toolRow
                 }
                 .background(
@@ -1292,8 +1338,10 @@ struct NotebookEditorView: View {
                 if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
                 }
-                penBox.onBoard = model.isBoard
-                penBox.enterNotebook(model.meta.id)              // 這本筆記本自己的筆（v12.3）
+                if !embedded {                                   // 浮動視窗裡：筆盒是白板的，不要換成這一本的筆
+                    penBox.onBoard = model.isBoard
+                    penBox.enterNotebook(model.meta.id)          // 這本筆記本自己的筆（v12.3）
+                }
                 applyPenBoxTool()
                 let lib = library
                 let title = model.meta.title
@@ -1313,13 +1361,71 @@ struct NotebookEditorView: View {
             }
             .onDisappear {
                 model.documentView?.flushAll()
-                penBox.leaveNotebook(model.meta.id)
+                if !embedded { penBox.leaveNotebook(model.meta.id) }
                 if model.meta.deletedAt == nil { library.touchNotebook(model.meta.id) }
             }
+            // 白板上放筆記本（v12.12.0）
+            .onChange(of: model.cardRequest) { _, request in
+                guard let request = request else { return }
+                model.cardRequest = nil
+                handleCardRequest(request)
+            }
+            .onChange(of: model.cardOpen) { _, open in
+                if let open = open { openWindow(open.notebookID) }
+            }
+            .sheet(isPresented: $showCardPicker) {
+                CardNotebookPicker(library: library, boardID: model.meta.id) { meta in
+                    model.documentView?.placeCard(for: meta)
+                }
+            }
+    }
+
+    // MARK: 白板上的筆記本（v12.12.0）
+
+    private func handleCardRequest(_ request: CardRequest) {
+        switch request {
+        case .newNotebook:
+            TextPrompt.show(title: "新筆記本的名稱（放在這張白板裡）", initial: "未命名筆記本") { text in
+                let created = library.addNotebook(inBoard: model.meta, title: text)
+                model.documentView?.placeCard(for: created)
+                openWindow(created.id)
+            }
+        case .importExisting:
+            showCardPicker = true
+        case .importPDF:
+            showCardPDF = true
+        }
+    }
+
+    /// 開一本的浮動視窗（已經開著就拿到最上面）。最多同時 3 個，超過就收掉最早開的
+    private func openWindow(_ id: UUID) {
+        guard id != model.meta.id else { return }
+        guard let meta = library.notebook(id), meta.deletedAt == nil else {
+            model.documentView?.showMessage("questionmark.folder", "找不到這本筆記本（可能被刪掉了）")
+            return
+        }
+        windowsTucked = false
+        if let i = windows.firstIndex(where: { $0.meta.id == id }) {
+            let existing = windows.remove(at: i)
+            windows.append(existing)
+            return
+        }
+        if windows.count >= 3 { closeWindow(windows[0]) }
+        windows.append(BoardWindow(meta: meta, frame: nil))
+    }
+
+    /// 關掉浮動視窗：裡面的筆記本會自己存檔；白板上那張卡片的封面換成最新的
+    private func closeWindow(_ window: BoardWindow) {
+        windows.removeAll { $0.id == window.id }
+        let meta = library.notebook(window.meta.id) ?? window.meta
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {       // 等那一本存好
+            model.documentView?.updateCards(for: meta, caption: nil)
+        }
     }
 
     private func applyPenBoxTool() {
         guard let doc = model.documentView else { return }
+        if penBox.selection == .frame && !model.isBoard { return }   // 浮動視窗裡的筆記本：區塊工具是白板的，不理它（v12.12.0）
         if penBox.selection == .frame {                        // 區塊工具（v12.10）
             doc.setTapeMode(false)
             doc.setLassoMode(false)
@@ -2191,15 +2297,24 @@ struct BoardToolbarButtons: View {
                     Label("檔案裡的圖片（一次選很多個）", systemImage: "folder.badge.plus")
                 }
             }
+            Section("筆記本（變成白板上的一張卡片，點了開浮動視窗）") {
+                Button {
+                    model.documentView?.requestCard(CardRequest.newNotebook)
+                } label: {
+                    Label("新筆記本（放在這張白板裡）", systemImage: "book.closed")
+                }
+                Button {
+                    model.documentView?.requestCard(CardRequest.importExisting)
+                } label: {
+                    Label("現有的筆記本", systemImage: "square.and.arrow.down")
+                }
+                Button {
+                    model.documentView?.requestCard(CardRequest.importPDF)
+                } label: {
+                    Label("匯入 PDF（放在這張白板裡）", systemImage: "doc.richtext")
+                }
+            }
             Section("下一版") {
-                Button {} label: {
-                    Label("新筆記本／匯入筆記本", systemImage: "book.closed")
-                }
-                .disabled(true)
-                Button {} label: {
-                    Label("匯入 PDF", systemImage: "doc.richtext")
-                }
-                .disabled(true)
                 Button {} label: {
                     Label("子白板", systemImage: "rectangle.on.rectangle.angled")
                 }

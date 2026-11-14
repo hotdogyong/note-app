@@ -235,6 +235,8 @@ struct ImageBox: Codable, Hashable, Identifiable {
     var above = false               // false：在筆跡下面（預設，像貼在紙上）；true：蓋在筆跡上面
     var locked: Bool? = nil         // 固定：不能移動、縮放、旋轉（v11.17）
     var mini: Bool? = nil           // 縮成小圖（v12.8.3）：頁面上只顯示一個小縮圖，點了彈出大圖
+    var link: UUID? = nil           // 白板上的筆記本卡片（v12.12.0）：連到哪一本筆記本；圖是封面＋標題（BoardCards.swift）
+    var caption: String? = nil      // 卡片上的標題（預設是筆記本的名稱，可以另外改）
 
     var isLocked: Bool { locked ?? false }
     var isMini: Bool { mini ?? false }
@@ -443,6 +445,7 @@ struct NotebookMeta: Codable, Hashable, Identifiable {
     var dirName: String? = nil        // 在資料位置裡的資料夾名稱
     var deletedAt: Date? = nil        // 有值：在「最近刪除」裡
     var isBoard: Bool? = nil          // true：白板（首頁顯示用；真正的依據是 NotebookData.board）
+    var boardID: UUID? = nil          // 有值：這本的「家」在那張白板裡（v12.12.0），首頁不列出來；檔案還是放在 folderID 那個資料夾
 }
 
 /// 匯出旁頁的順序

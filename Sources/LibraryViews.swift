@@ -23,6 +23,7 @@ struct LibraryView: View {
     @State private var showImporter = false
     @State private var importFailed = false
     @State private var folderEdit: FolderEdit?        // 新資料夾／編輯資料夾的視窗
+    @State private var boardFiles: NotebookMeta?      // 「白板裡的檔案」要看哪一張白板（v12.12.0）
     @State private var showNewNotebook = false
     @State private var showSettings = false
     @State private var dragging: UUID?                // 長按拖曳中的項目
@@ -362,6 +363,9 @@ struct LibraryView: View {
                     saveFolder(edit, name: name, color: color)
                 }
             }
+            .sheet(item: $boardFiles) { board in
+                BoardFilesSheet(library: library, board: board)
+            }
     }
 
     private var sheetsB: some View {
@@ -475,6 +479,16 @@ struct LibraryView: View {
                 }
             } label: {
                 Label("名稱與顏色", systemImage: "paintpalette")
+            }
+        }
+        if case .notebook(let id) = ref, let meta = library.notebook(id), meta.isBoard == true {
+            Button {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 350_000_000)     // 等選單收起來
+                    boardFiles = meta
+                }
+            } label: {
+                Label("白板裡的檔案（\(library.boardFiles(id).count)）", systemImage: "books.vertical")
             }
         }
         Button {

@@ -815,6 +815,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         // 點到圖片：選取它（可以移動、縮放、旋轉）；縮成小圖的：彈出大圖（v12.8.3）
         if let hit = imageHit(at: p) {
+            // 白板上的筆記本卡片（v12.12.0）：點一下開浮動視窗；要搬、要拉大小先長按選取
+            if let link = hit.1.link, imageEditor?.box.id != hit.1.id {
+                endTextSelection()
+                endImageSelection()
+                model.openCard(link)
+                return
+            }
             if hit.1.isMini {
                 endTextSelection()
                 endImageSelection()
@@ -1366,6 +1373,14 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             showTapeDelete(at: p, pageID: hit.0.page.id, id: hit.1.id)
             return
         }
+        // 長按白板上的筆記本卡片（v12.12.0）：選取它（跟圖片一樣可以搬、拉大小、刪除）；點一下是開浮動視窗
+        if let hit = imageHit(at: p), hit.1.link != nil {
+            hidePasteButton()
+            endTextSelection()
+            dismissShapeEditor()
+            selectImage(hit.1, on: hit.0)
+            return
+        }
         if let hit = stroke(at: p) {
             // 手指長按任何一筆（v12.3；以前只有螢光筆）：選取它。直的線用兩端點的直線模式，其他用四角框
             hidePasteButton()
@@ -1407,9 +1422,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         items.append(RadialMenuView.Item(symbol: "mic.fill", title: "錄音", tint: UIColor.black, action: later("錄音")))
         if isBoard {
             items.append(RadialMenuView.Item(symbol: "book.closed.fill", title: "新筆記本", tint: UIColor.brown,
-                                             action: later("在白板上放筆記本"),
+                                             action: { [weak self] in self?.model.cardRequest = CardRequest.newNotebook },
                                              outerSymbol: "square.and.arrow.down.fill", outerTitle: "匯入現有的",
-                                             outerTint: UIColor.brown, outerAction: later("匯入現有的筆記本")))
+                                             outerTint: UIColor.brown,
+                                             outerAction: { [weak self] in self?.model.cardRequest = CardRequest.importExisting }))
         } else {
             items.append(nil)                                       // 筆記本裡：新筆記本那一格空著
         }
@@ -1467,6 +1483,63 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     func insertFromToolbar(_ kind: InsertKind) {
         insertLocation = CGPoint(x: bounds.midX, y: bounds.midY)
         requestInsert(kind)
+    }
+
+    // MARK: 白板上的筆記本卡片（v12.12.0；說明在 BoardCards.swift）
+
+    /// 右上角 ＋ 選的：卡片放在畫面中間
+    func requestCard(_ request: CardRequest) {
+        guard isBoard, !readOnly else { return }
+        insertLocation = CGPoint(x: bounds.midX, y: bounds.midY)
+        model.cardRequest = request
+    }
+
+    /// 在白板上放一張筆記本的卡片：一張帶連結的圖片（封面＋標題），放在剛剛長按的位置（或畫面中間）。可以復原
+    func placeCard(for meta: NotebookMeta, at viewPoint: CGPoint? = nil) {
+        guard isBoard, !readOnly, let pv = boardPV else { return }
+        let id = pv.page.id
+        let image = CardCover.image(for: meta, caption: meta.title)
+        guard let file = Store.saveImage(image, pageID: id) else { return }
+        let w = PaperRenderer.gridUnit * 7                       // 卡片寬 7 格
+        let h = w * image.size.height / max(image.size.width, 1)
+        var box = ImageBox(file: file)
+        box.width = w
+        box.height = h
+        box.link = meta.id
+        box.caption = meta.title
+        let vp = viewPoint ?? insertLocation ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        let s = pv.bounds.width / max(pv.page.spec.width, 1)
+        let local = pv.convert(vp, from: self)
+        box.x = min(max(local.x / max(s, 0.0001) - w / 2, 0), max(pv.page.spec.width - w, 0))
+        box.y = min(max(local.y / max(s, 0.0001) - h / 2, 0), max(pv.page.spec.height - h, 0))
+        endTextSelection()
+        dismissShapeEditor()
+        endImageSelection()
+        let before = model.images(of: id)
+        model.setImages(before + [box], pageID: id)
+        pv.syncImages(model.images(of: id))
+        history.registerUndo(withTarget: self) { notebook in
+            notebook.restoreImages(pageID: id, to: before)
+        }
+    }
+
+    /// 連到這一本的卡片：封面換成最新的。caption 有值：順便改卡片上的標題
+    func updateCards(for meta: NotebookMeta, caption: String?) {
+        guard isBoard, let pv = boardPV else { return }
+        let id = pv.page.id
+        var images = model.images(of: id)
+        var touched = false
+        for i in images.indices where images[i].link == meta.id {
+            if let caption = caption { images[i].caption = caption }
+            let image = CardCover.image(for: meta, caption: images[i].caption ?? meta.title)
+            Store.overwriteImage(image, file: images[i].file, pageID: id)
+            pv.imageViews[images[i].id]?.image = image
+            touched = true
+        }
+        guard touched, caption != nil else { return }
+        if imageEditor != nil { endImageSelection() }
+        model.setImages(images, pageID: id)
+        pv.syncImages(images)
     }
 
     private func requestInsert(_ kind: InsertKind) {

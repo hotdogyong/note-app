@@ -479,6 +479,14 @@ enum Store {
         return name
     }
 
+    /// 同一個檔名換成新的圖（白板卡片的封面更新；v12.12.0）
+    static func overwriteImage(_ image: UIImage, file: String, pageID: UUID) {
+        let data: Data? = file.hasSuffix(".png") ? image.pngData() : image.jpegData(compressionQuality: 0.9)
+        guard let bytes = data else { return }
+        try? bytes.write(to: imagesDir(pageID).appendingPathComponent(file), options: .atomic)
+        imageCache[file] = image
+    }
+
     static func loadImage(_ file: String, pageID: UUID) -> UIImage? {
         if let image = imageCache[file] { return image }
         let url = imagesDir(pageID).appendingPathComponent(file)

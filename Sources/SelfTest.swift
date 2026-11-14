@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import PencilKit
+import PDFKit
 
 // SelfTest.swift：自動測試用的場景（v12.9.9）
 // GitHub 的雲端 Mac 會在 iPad 模擬器裡用「-selftest 場景名稱」啟動 App，等 20 秒後截圖，
@@ -67,6 +68,16 @@ enum SelfTest {
                     Store.saveNotebook(data, id: meta.id)
                 }
                 library.openNotebook = meta
+            case "pdfoutline":
+                // PDF 自帶的目錄（v12.11.1）：做一份有三層目錄的 PDF 匯入；面板打開後自動「在 1.2 那一列按改名」，
+                // 應該整份搬進我的大綱、層級照舊、那一項改了名、下面不再列 PDF 的目錄
+                if let url = makeOutlinePDF(), library.importPDF(from: url, into: nil),
+                   let meta = library.library.notebooks.first(where: { $0.title.hasPrefix("目錄測試") }) {
+                    library.openNotebook = meta
+                }
+            case "boardimage":
+                // 白板貼圖的大小（v12.11.1）：打開後貼三張（橫的、直的、很小的），回報各佔幾格（NotebookView.selfTestImages）
+                library.openNotebook = library.addBoard(in: nil, title: "貼圖測試白板", width: 100 * 842, height: 100 * 595)
             case "manypens":
                 // 筆盒超過 10 支筆（v12.11.0）：筆的那一段固定長度、用滑的
                 library.openNotebook = library.addNotebook(in: nil)
@@ -83,11 +94,57 @@ enum SelfTest {
 
     /// 筆記本／白板打開、回到上次位置之後（NotebookView 呼叫）：需要在開著的畫面上做事的場景
     static func notebookOpened(_ view: NotebookView) {
-        guard scene == "tiledboard" else { return }
+        guard scene == "tiledboard" || scene == "boardimage" else { return }
+        let images = scene == "boardimage"
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak view] in
             guard let view = view else { return }
-            show(view.selfTestTiles())
+            show(images ? view.selfTestImages() : view.selfTestTiles())
         }
+    }
+
+    /// 一張純色的測試圖，上面寫著尺寸
+    static func testImage(_ width: CGFloat, _ height: CGFloat, _ color: UIColor) -> UIImage {
+        let size = CGSize(width: width, height: height)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
+            color.setFill()
+            ctx.fill(CGRect(origin: CGPoint.zero, size: size))
+            let text = "\(Int(width))×\(Int(height))" as NSString
+            text.draw(at: CGPoint(x: width * 0.08, y: height * 0.08),
+                      withAttributes: [.font: UIFont.boldSystemFont(ofSize: min(width, height) * 0.16),
+                                       .foregroundColor: UIColor.black])
+        }
+    }
+
+    /// 一份 6 頁、有三層目錄的 PDF（放在暫存資料夾）
+    private static func makeOutlinePDF() -> URL? {
+        let doc = PDFDocument()
+        let size = CGSize(width: 595, height: 842)
+        for _ in 0 ..< 6 {
+            guard let page = PDFPage(image: testImage(size.width, size.height, UIColor.white)) else { return nil }
+            doc.insert(page, at: doc.pageCount)
+        }
+        let root = PDFOutline()
+        doc.outlineRoot = root
+        func add(_ title: String, _ index: Int, to parent: PDFOutline) -> PDFOutline {
+            let item = PDFOutline()
+            item.label = title
+            if let page = doc.page(at: index) {
+                item.destination = PDFDestination(page: page, at: CGPoint(x: 0, y: size.height))
+            }
+            parent.insertChild(item, at: parent.numberOfChildren)
+            return item
+        }
+        let book = add("Electricity and Magnetism", 0, to: root)
+        _ = add("Preface", 1, to: book)
+        let chapter = add("1 Electrostatics", 2, to: book)
+        _ = add("1.1 Electric charge", 2, to: chapter)
+        _ = add("1.2 Conservation of charge", 3, to: chapter)
+        _ = add("2 The electric potential", 4, to: book)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("目錄測試.pdf")
+        try? FileManager.default.removeItem(at: url)
+        return doc.write(to: url) ? url : nil
     }
 
     /// 把結果直接寫在畫面上方（截圖看）

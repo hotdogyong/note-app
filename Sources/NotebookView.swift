@@ -2799,6 +2799,21 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
     }
 
+    /// 自動測試（boardimage 場景）：一次貼三張圖（橫的、直的、很小的），回報每一張在白板上佔幾格
+    func selfTestImages() -> String {
+        guard let pv = boardPV else { return "沒有白板" }
+        insertPickedImages([SelfTest.testImage(1600, 900, UIColor.systemTeal),
+                            SelfTest.testImage(900, 1600, UIColor.systemOrange),
+                            SelfTest.testImage(100, 60, UIColor.systemPink)])
+        let unit = PaperRenderer.gridUnit
+        var lines: [String] = []
+        for box in model.images(of: pv.page.id) {
+            lines.append(String(format: "寬 %.1f 格 × 高 %.1f 格", Double(box.width / unit), Double(box.height / unit)))
+        }
+        lines.append("（應該是：橫的 10.0 × 5.6、直的 5.6 × 10.0、小的 5.0 × 3.0 不放大）")
+        return lines.joined(separator: "\n")
+    }
+
     /// 自動測試（tiledboard 場景）：在開著的白板上關、開分區，加筆跡存檔，再復原；回報每一步畫布上和檔案裡的筆數
     func selfTestTiles() -> String {
         guard let pv = boardPV else { return "沒有白板" }

@@ -1289,7 +1289,7 @@ struct NotebookEditorView: View {
             }
             .modifier(InsertPickers(model: model))               // 相簿、相機、檔案的選取畫面（v12.3）
             .onAppear {
-                if SelfTest.scene == "outline" {                 // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
+                if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
                 }
                 penBox.onBoard = model.isBoard
@@ -1606,6 +1606,13 @@ struct NotePanel: View {
             if SelfTest.scene == "outline" {                     // 自動測試：直接看大綱，第一項滑開
                 tab = 2
                 openOutline = model.notebook.outline?.first?.id
+            }
+            if SelfTest.scene == "pdfoutline" {                  // 自動測試：等於在 PDF 目錄的「1.2」那一列按改名
+                tab = 2
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                    guard let target = pdfOutline.first(where: { $0.title.hasPrefix("1.2") }) else { return }
+                    editPDFLine(target.id) { model.renameOutline($0.id, to: "1.2（搬過來之後改了名）") }
+                }
             }
         }
         .confirmationDialog(deleteTitle, isPresented: $showDelete, titleVisibility: .visible) {

@@ -1,2 +1,5 @@
+tilestore
+tiledboard
 tiles
 board
+notebook

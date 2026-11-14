@@ -137,6 +137,15 @@ struct BoardSettingsPanel: View {
                     navRow("白板歷史版本", symbol: "clock.arrow.circlepath") { open(.history) }
                 }
                 group {
+                    toggleRow("分區儲存（實驗）", symbol: "square.grid.3x3", isOn: tiledBinding)
+                    Text(tiledNote)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.bottom, 10)
+                        .id(tick)
+                }
+                group {
                     navRow("試用新白板引擎（實驗，不會存檔）", symbol: "flask") { open(.engineTest) }
                     Divider()
                     actionRow("壓力測試：先寫幾個字，再按這裡複製成 5,000 筆（可復原）", symbol: "scribble.variable") {
@@ -178,6 +187,22 @@ struct BoardSettingsPanel: View {
             model.documentView?.zoomLockSetting = value
             tick += 1
         })
+    }
+
+    /// 分區儲存（v12.11.0）
+    private var tiledBinding: Binding<Bool> {
+        Binding(get: {
+            _ = tick
+            return model.documentView?.boardTiled ?? false
+        }, set: { value in
+            model.documentView?.setBoardTiled(value)
+            tick += 1
+        })
+    }
+
+    private var tiledNote: String {
+        "筆跡照位置分成很多小檔，存檔只存有改到的那幾塊，筆跡很多的白板存檔和打開會快很多。"
+            + "原本的檔案會留著當備份，可以隨時關掉改回來。" + (model.documentView?.boardInkInfo ?? "")
     }
 
     private var tapesBinding: Binding<Bool> {

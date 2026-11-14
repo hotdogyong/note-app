@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.10.1"
+let appVersion = "v12.11.0"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序
@@ -29,6 +29,10 @@ let appVersion = "v12.10.1"
 //   BoardSettings.swift     白板右上角的齒輪面板（v12.9.1：底色、格線圓圈＋一排一排的設定）
 //   ActivityLog.swift       修改紀錄（v12.9.5：每天改了哪些頁，之後的行事曆／日誌用；畫面還沒做）
 //   StorageCheck.swift      儲存空間檢查（v12.9.6：首頁設定裡，列出可用空間、App 佔的、暫存，可以清暫存）
+//   BoardTiles.swift        白板筆跡的分區儲存：怎麼切格子（v12.10.1 準備、v12.11.0 接上）
+//   BoardTileStore.swift    分區儲存接到存檔系統：只存有變的格子、安全地換檔、平行讀取、開關的轉換（v12.11.0）
+//   BoardTileCheck.swift    分區儲存的自動測試（v12.11.0；平常不會執行）
+//   SelfTest.swift          自動測試的場景（雲端模擬器截圖用；平常不會執行）
 // 每一版只要換有改到的檔案，再加上這個檔案（版本號在這裡）。
 
 enum LibraryRoute: Hashable {

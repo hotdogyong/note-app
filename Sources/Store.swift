@@ -212,6 +212,7 @@ enum Store {
         let waiting = pendingSaves[pageID]?.drawing            // 還在排隊存檔的那一份比檔案新
         saveLock.unlock()
         if let waiting = waiting { return waiting }
+        if BoardTiles.isTiled(pageID) { return BoardTiles.loadAll(pageID) }   // 分區儲存的頁（v12.11.0）：所有格子合起來
         // 新位置找不到就找舊位置（整理到一半出問題也讀得到）
         for url in [drawingURL(pageID), legacyDrawingURL(pageID)] {
             if let data = try? Data(contentsOf: url), let drawing = try? PKDrawing(data: data) { return drawing }
@@ -238,8 +239,13 @@ enum Store {
         let job = pendingSaves[pageID]
         saveLock.unlock()
         guard let job = job else { return }
-        ensureDir(url.deletingLastPathComponent())
-        try? job.drawing.dataRepresentation().write(to: url, options: .atomic)
+        let tiles = BoardTiles.dir(forDrawing: url)
+        if BoardTiles.isFolder(tiles) {
+            BoardTiles.writeChanged(job.drawing, folder: tiles)   // 分區儲存的頁（v12.11.0）：只寫有變的格子
+        } else {
+            ensureDir(url.deletingLastPathComponent())
+            try? job.drawing.dataRepresentation().write(to: url, options: .atomic)
+        }
         saveLock.lock()
         if pendingSaves[pageID]?.generation == job.generation { pendingSaves[pageID] = nil }   // 寫的這段時間沒有更新的才拿掉
         saveLock.unlock()
@@ -284,6 +290,13 @@ enum Store {
         for row in copy.rows {
             for page in row.pages {
                 mix(Data(page.id.uuidString.utf8))
+                if BoardTiles.isTiled(page.id) {               // 分區儲存的頁：每一格的檔名和內容
+                    for tile in BoardTiles.allData(page.id) {
+                        mix(Data(tile.name.utf8))
+                        mix(tile.data)
+                    }
+                    continue
+                }
                 for url in [drawingURL(page.id), legacyDrawingURL(page.id)] {
                     if let data = try? Data(contentsOf: url) {
                         mix(data)
@@ -328,6 +341,11 @@ enum Store {
         for row in notebook.rows {
             for page in row.pages {
                 pages += 1
+                if BoardTiles.isTiled(page.id) {               // 分區儲存的頁：整個格子資料夾複製一份
+                    BoardTiles.copyFolder(from: BoardTiles.dir(page.id),
+                                          to: drawings.appendingPathComponent("page-\(page.id.uuidString).tiles"))
+                    continue
+                }
                 for src in [drawingURL(page.id), legacyDrawingURL(page.id)] where exists(src) {
                     try? fm.copyItem(at: src, to: drawings.appendingPathComponent("page-\(page.id.uuidString).drawing"))
                     break
@@ -366,6 +384,8 @@ enum Store {
     static func snapshotDrawing(_ snapshot: SnapshotInfo, notebook id: UUID, pageID: UUID) -> PKDrawing {
         let url = historyDir(id).appendingPathComponent(snapshot.id).appendingPathComponent("筆跡", isDirectory: true)
             .appendingPathComponent("page-\(pageID.uuidString).drawing")
+        let tiles = BoardTiles.dir(forDrawing: url)             // 那個版本是分區儲存的（v12.11.0）
+        if BoardTiles.isFolder(tiles) { return BoardTiles.loadAll(folder: tiles, remember: false) }
         if let data = try? Data(contentsOf: url), let drawing = try? PKDrawing(data: data) { return drawing }
         return PKDrawing()
     }
@@ -385,8 +405,27 @@ enum Store {
             for page in row.pages {
                 let dst = drawingURL(page.id)
                 ensureDir(dst.deletingLastPathComponent())
-                try? fm.removeItem(at: dst)                    // 那時候是空白的頁：清掉現在的筆跡
                 let src = saved.appendingPathComponent("page-\(page.id.uuidString).drawing")
+                // 分區儲存（v12.11.0）：這一頁現在用哪一種存法，恢復之後還是那一種
+                let srcTiles = BoardTiles.dir(forDrawing: src)
+                let snapTiled = BoardTiles.isFolder(srcTiles)
+                if BoardTiles.isTiled(page.id) {
+                    if snapTiled {
+                        BoardTiles.replaceFolder(page.id, with: srcTiles)
+                    } else {
+                        var old = PKDrawing()                  // 那個版本是單一檔（或空白）：內容換成它，拆成格子存
+                        if let data = try? Data(contentsOf: src), let drawing = try? PKDrawing(data: data) { old = drawing }
+                        BoardTiles.forget(page.id)
+                        BoardTiles.writeChanged(old, folder: BoardTiles.dir(page.id))
+                    }
+                    continue
+                }
+                if snapTiled {                                  // 那個版本是分區的、現在是單一檔：合起來寫回單一檔
+                    let drawing = BoardTiles.loadAll(folder: srcTiles, remember: false)
+                    try? drawing.dataRepresentation().write(to: dst, options: .atomic)
+                    continue
+                }
+                try? fm.removeItem(at: dst)                    // 那時候是空白的頁：清掉現在的筆跡
                 if exists(src) { try? fm.copyItem(at: src, to: dst) }
             }
         }
@@ -395,8 +434,20 @@ enum Store {
     }
 
     static func deleteDrawing(_ pageID: UUID) {
+        BoardTiles.remove(pageID)                               // 分區儲存的格子檔（v12.11.0）
         try? FileManager.default.removeItem(at: drawingURL(pageID))
         try? FileManager.default.removeItem(at: legacyDrawingURL(pageID))
+    }
+
+    /// 一頁的筆跡檔複製給另一頁（複製筆記本、把頁面移到別本）。分區儲存的頁：格子資料夾也一起複製
+    static func copyDrawingFiles(from old: UUID, to new: UUID) {
+        for src in [drawingURL(old), legacyDrawingURL(old)] where exists(src) {
+            let dst = drawingURL(new)
+            ensureDir(dst.deletingLastPathComponent())
+            try? FileManager.default.copyItem(at: src, to: dst)
+            break
+        }
+        BoardTiles.copy(from: old, to: new)
     }
 
     // MARK: 圖片
@@ -518,12 +569,7 @@ enum Store {
                         row.pages[p].pdf = nil                   // PDF 找不到：變成一般的紙
                     }
                 }
-                for src in [drawingURL(old), legacyDrawingURL(old)] where exists(src) {
-                    let dst = drawingURL(new)
-                    ensureDir(dst.deletingLastPathComponent())
-                    try? fm.copyItem(at: src, to: dst)
-                    break
-                }
+                copyDrawingFiles(from: old, to: new)
                 for image in row.pages[p].images ?? [] {
                     let src = imagesDir(old).appendingPathComponent(image.file)
                     let folder = imagesDir(new)
@@ -679,5 +725,6 @@ enum Store {
         }
         pageOwner = [:]
         pdfOwner = [:]
+        BoardTiles.resetMemory()                                // 分區儲存記在記憶體裡的指紋（v12.11.0）
     }
 }

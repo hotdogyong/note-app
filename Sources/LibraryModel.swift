@@ -632,12 +632,7 @@ final class LibraryModel: ObservableObject {
         Store.ensureDir(targetDir)
         // 筆跡：換成新的頁面編號
         for (old, new) in pageMap {
-            for src in [Store.drawingURL(old), Store.legacyDrawingURL(old)] where Store.exists(src) {
-                let dst = Store.drawingURL(new)
-                Store.ensureDir(dst.deletingLastPathComponent())
-                try? fm.copyItem(at: src, to: dst)
-                break
-            }
+            Store.copyDrawingFiles(from: old, to: new)         // 分區儲存的頁連格子檔一起（v12.11.0）
         }
         // PDF：換成新的檔名
         for (oldName, newName) in pdfMap {

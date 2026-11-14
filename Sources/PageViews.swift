@@ -282,6 +282,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     private var toolActive = false                     // 筆正在紙上（一次擦好幾筆也只算一步）
     private var changedDuringTool = false
     private(set) var toolUses = 0                      // 下筆的次數（判斷變形後有沒有又寫了新的一筆）
+    private(set) var loadMillis = 0                    // 打開這一頁時讀筆跡花了多久（v12.11.0：白板齒輪面板顯示，比較分區前後）
 
     /// 白板的大頁面（v12.5）：畫布、格線只蓋住這一塊（頁面座標），由筆記本畫面依捲動位置更新。
     /// PencilKit 的畫布跟整張白板一樣大的話會吃光記憶體（v12.3 只好限制白板大小和放大倍數）；
@@ -322,7 +323,9 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         canvas.showsHorizontalScrollIndicator = false
         canvas.bouncesZoom = false
         canvas.contentInsetAdjustmentBehavior = .never
+        let loadStart = CACurrentMediaTime()
         canvas.drawing = Store.loadDrawing(page.id)
+        loadMillis = Int((CACurrentMediaTime() - loadStart) * 1000)
         committedDrawing = canvas.drawing
         canvas.delegate = self
         if page.pdf != nil {

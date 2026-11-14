@@ -2230,6 +2230,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         defer {
             positionRestored = true
             dailySnapshotIfNeeded()                        // 每天第一次打開：存一份歷史版本
+            SelfTest.notebookOpened(self)                  // 自動測試的場景才會做事
         }
         if isBoard {
             restoreBoardView()                                 // 白板：回到上次的位置和縮放
@@ -2755,7 +2756,78 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let setMs = Int((t1 - t0) * 1000)
         let saveMs = Int((t2 - t1) * 1000)
         let points = stressTemplates.reduce(0) { $0 + $1.path.count } / max(stressTemplates.count, 1)
-        showMessage("flask", "共 \(total) 筆（每筆約 \(points) 點）｜換上去 \(setMs) ms｜存檔 \(saveMs) ms")
+        showMessage("flask", "共 \(total) 筆（每筆約 \(points) 點）｜換上去 \(setMs) ms｜存檔 \(saveMs) ms"
+                    + (boardTiled ? "（分區）" : ""))
+    }
+
+    // MARK: 分區儲存（v12.11.0，實驗）
+
+    /// 這張白板的筆跡是不是分區儲存
+    var boardTiled: Bool {
+        guard isBoard, let page = model.notebook.rows.first?.pages.first else { return false }
+        return BoardTiles.isTiled(page.id)
+    }
+
+    /// 齒輪面板上的說明：現在幾筆、分成幾格、這次打開讀筆跡花多久
+    var boardInkInfo: String {
+        guard let pv = boardPV else { return "" }
+        let count = pv.canvas.drawing.strokes.count
+        let tiles = boardTiled ? "，分成 \(BoardTiles.allKeys(pv.page.id).count) 格" : ""
+        return "目前 \(count) 筆\(tiles)；這次打開讀筆跡花了 \(pv.loadMillis) ms。"
+    }
+
+    /// 開、關分區儲存。開：把整份筆跡拆成格子檔（原本的單一檔留著當備份）；關：合回單一檔。
+    /// 畫布上的筆跡不變，只是換存法；每一格寫完都會讀回來核對筆數，不對就不換
+    func setBoardTiled(_ on: Bool) {
+        guard isBoard, !readOnly, let pv = boardPV, on != boardTiled else { return }
+        pv.flush()
+        Store.finishPendingSaves()
+        let drawing = pv.canvas.drawing
+        let count = drawing.strokes.count
+        let t0 = CACurrentMediaTime()
+        let problem = on ? BoardTiles.enable(pv.page.id, drawing: drawing) : BoardTiles.disable(pv.page.id, drawing: drawing)
+        let ms = Int((CACurrentMediaTime() - t0) * 1000)
+        if let problem = problem {
+            showMessage("exclamationmark.triangle", "沒有換成功，筆跡沒有動：" + problem)
+        } else if on {
+            showMessage("square.grid.3x3", "已改用分區儲存（\(count) 筆，\(ms) ms）")
+        } else {
+            showMessage("square", "已改回單一檔案（\(count) 筆，\(ms) ms）")
+        }
+    }
+
+    /// 自動測試（tiledboard 場景）：在開著的白板上關、開分區，加筆跡存檔，再復原；回報每一步畫布上和檔案裡的筆數
+    func selfTestTiles() -> String {
+        guard let pv = boardPV else { return "沒有白板" }
+        let id = pv.page.id
+        var lines: [String] = []
+        let opened = pv.canvas.drawing.strokes.count
+        lines.append("打開：畫布 \(opened) 筆，分區 \(boardTiled)。" + boardInkInfo)
+        setBoardTiled(false)
+        let off = Store.loadDrawing(id).strokes.count
+        lines.append("關掉分區：分區 \(boardTiled)，檔案裡 \(off) 筆")
+        setBoardTiled(true)
+        let on = Store.loadDrawing(id).strokes.count
+        lines.append("再打開分區：分區 \(boardTiled)，檔案裡 \(on) 筆，\(BoardTiles.allKeys(id).count) 格")
+        var drawing = pv.canvas.drawing
+        let center = CGPoint(x: pv.page.spec.width / 2, y: pv.page.spec.height / 2)
+        drawing.strokes.append(contentsOf: BoardTileCheck.makeStrokes(count: 50, markers: 0,
+                                                                     origin: CGPoint(x: center.x - 300, y: center.y + 200),
+                                                                     spread: CGSize(width: 600, height: 200)))
+        pv.setDrawingRecorded(drawing)
+        Store.saveDrawingLater(drawing, pageID: id)
+        Store.finishPendingSaves()
+        let added = Store.loadDrawing(id).strokes.count
+        lines.append("加 50 筆、背景存檔：畫布 \(pv.canvas.drawing.strokes.count) 筆，檔案裡 \(added) 筆")
+        history.undo()
+        Store.finishPendingSaves()
+        let undone = Store.loadDrawing(id).strokes.count
+        let canvasNow = boardPV?.canvas.drawing.strokes.count ?? -1
+        lines.append("復原：畫布 \(canvasNow) 筆，檔案裡 \(undone) 筆")
+        let ok = opened > 0 && off == opened && on == opened && added == opened + 50 && undone == opened
+            && canvasNow == opened && boardTiled
+        lines.append(ok ? "結果：全部正確" : "結果：有問題")
+        return lines.joined(separator: "\n")
     }
 
     /// 畫面上的一點（這個畫面的座標）→ 白板的頁面座標
@@ -5925,6 +5997,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
            let m = attrs[.modificationDate] as? Date {
             d = max(d, m)
         }
+        if BoardTiles.isTiled(page.id), let m = BoardTiles.modified(page.id) { d = max(d, m) }   // 分區儲存的頁（v12.11.0）
         return d
     }
 

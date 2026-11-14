@@ -8,8 +8,8 @@ import PencilKit
 // 做法：把白板切成 1200 × 1200 點的格子，每格一個檔；一筆照它外框的中心算在哪一格。
 // 畫布只放畫面附近幾格的筆跡，存檔只存有變動的那幾格。
 //
-// 目前這個檔案只有「切格子、讀寫每一格、整份拆開／合起來」這些基本工具，**還沒有接到白板上**，
-// 正式的白板仍然用原本的單一檔案。接上去之前先用自動測試（SelfTest 的 tiles 場景）確認拆開再合起來不會少任何一筆。
+// 這個檔案是「切格子、讀寫每一格、整份拆開／合起來」這些基本工具。
+// v12.11.0 接到白板上了（白板齒輪面板的「分區儲存（實驗）」開關）：安全地讀寫、只存有變的格子、開關的轉換在 BoardTileStore.swift。
 
 /// 第幾格（x、y 都可以是負的）
 struct TileKey: Hashable, Comparable, Sendable {
@@ -113,9 +113,7 @@ enum BoardTiles {
 
     /// 所有格子合起來（匯出、縮圖、歷史版本這些要整頁的地方用；慢，但一筆都不會少）
     static func loadAll(_ pageID: UUID) -> PKDrawing {
-        var strokes: [PKStroke] = []
-        for key in allKeys(pageID) { strokes.append(contentsOf: load(pageID, key)) }
-        return PKDrawing(strokes: strokes)
+        loadAll(folder: dir(pageID))                       // v12.11.0：所有格子同時讀，見 BoardTileStore.swift
     }
 
     /// 整份拆開寫成格子檔；原本有、現在沒有筆跡的格子會拿掉。回傳寫了幾格；有任何一格寫失敗回傳 nil

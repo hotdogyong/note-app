@@ -822,6 +822,9 @@ struct PenBoxView: View {
             .scrollDisabled(movingPen != nil)                         // 長按拖曳換順序的時候不要跟著捲
             .frame(width: vertical ? 56 : length, height: vertical ? length : 56)
             .padding(cross, -8)
+            .onAppear {                                               // 剛超過 10 支（或剛打開）：先捲到正在用的那支
+                if case .preset(let id) = box.selection { proxy.scrollTo(id) }
+            }
             .onChange(of: box.selection) { _, selection in
                 if case .preset(let id) = selection {
                     withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(id) }

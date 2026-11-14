@@ -58,7 +58,7 @@ jobs:
           for scene in $(cat ci/scenes.txt); do
             xcrun simctl terminate "$U" com.yuan.noteapp >/dev/null 2>&1
             xcrun simctl launch "$U" com.yuan.noteapp -selftest "$scene" > "shots/$scene.launch.txt" 2>&1
-            sleep 12
+            sleep 20
             xcrun simctl io "$U" screenshot "shots/$scene.png"
             sips -s format jpeg -s formatOptions 70 -Z 1600 "shots/$scene.png" --out "shots/$scene.jpg" >/dev/null 2>&1 && rm -f "shots/$scene.png"
           done

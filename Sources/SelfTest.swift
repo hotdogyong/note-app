@@ -46,6 +46,33 @@ enum SelfTest {
                 library.openNotebook = meta
             case "notebook":
                 library.openNotebook = library.addNotebook(in: nil)
+            case "outline":
+                // 大綱分層、往左滑的按鈕（v12.11.0）：筆記本畫面會自己打開左邊面板的大綱，第一項是滑開的
+                let meta = library.addNotebook(in: nil)
+                var data = Store.loadNotebook(meta.id)
+                if let page = data.rows.first?.pages.first {
+                    let a = OutlineItem(title: "第一章 靜電學", pageID: page.id)
+                    var b = OutlineItem(title: "1.1 電荷", pageID: page.id)
+                    b.parentID = a.id
+                    var c = OutlineItem(title: "1.1.1 例題", pageID: page.id)
+                    c.parentID = b.id
+                    var d = OutlineItem(title: "1.2 電荷守恆", pageID: page.id)
+                    d.parentID = a.id
+                    var e = OutlineItem(title: "第二章（收合起來的）", pageID: page.id)
+                    e.collapsed = true
+                    var f = OutlineItem(title: "2.1 看不到這一項才對", pageID: page.id)
+                    f.parentID = e.id
+                    let g = OutlineItem(title: "沒有下一層的一項", pageID: page.id)
+                    data.outline = [a, b, c, d, e, f, g]
+                    Store.saveNotebook(data, id: meta.id)
+                }
+                library.openNotebook = meta
+            case "manypens":
+                // 筆盒超過 10 支筆（v12.11.0）：筆的那一段固定長度、用滑的
+                library.openNotebook = library.addNotebook(in: nil)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    for _ in 0 ..< 6 { PenBoxModel.shared.add(.pen) }
+                }
             case "markdown":
                 library.openNotebook = library.addMarkdownNotebook(in: nil)
             default:

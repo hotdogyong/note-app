@@ -829,12 +829,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         // Markdown 頁的空白處（文字下面）：接著最後面打字（v12.9.2）
         if markdownPageTap(at: p) { return }
-        // 文字方塊：輸入中 → 點旁邊先退到「選取」（可以直接拖方塊）→ 再點一次才結束
-        if let tv = activeText, tv.textView.isFirstResponder {
-            tv.textView.resignFirstResponder()
-            textEditingChanged(tv)
-            return
-        }
+        // 文字方塊：點旁邊直接結束（v12.11.0）。以前輸入中點旁邊會先退到「選取」（還留著外框和工具列），
+        // 不小心點兩下跑出文字方塊的時候要再點一次才消得掉。要移動方塊：結束後點它一下（選取）再拖
         endTextSelection()
         dismissShapeEditor()
     }

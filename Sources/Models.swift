@@ -403,6 +403,8 @@ struct OutlineItem: Codable, Hashable, Identifiable {
     var id = UUID()
     var title: String
     var pageID: UUID
+    var parentID: UUID? = nil       // 上一層是哪一項（v12.11.0：大綱可以分層）；沒有：最外層
+    var collapsed: Bool? = nil      // true：收合，底下的不列出來
 }
 
 struct NoteFolder: Codable, Hashable, Identifiable {

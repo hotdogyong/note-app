@@ -795,14 +795,48 @@ struct PenBoxView: View {
             .frame(width: box.dock.isVertical ? 30 : 1, height: box.dock.isVertical ? 1 : 30)
     }
 
+    /// 筆盒上最多直接排幾支筆；超過的用滑的（v12.11.0：以前筆越加筆盒越長）
+    static let visiblePens = 10
+
+    @ViewBuilder
+    private var penButtons: some View {
+        ForEach(box.presets) { preset in
+            penButton(preset)
+                .scaleEffect(movingPen == preset.id ? 1.22 : 1)       // 拖曳中的那支筆放大一點
+                .zIndex(movingPen == preset.id ? 1 : 0)
+                .simultaneousGesture(penMoveGesture(preset.id))
+        }
+    }
+
+    /// 超過 10 支筆：筆的那一段固定 10 支的長度，沿著筆盒的方向滑；選到畫面外的筆會自己捲過去
+    private var penScroller: some View {
+        let vertical = box.dock.isVertical
+        let length = CGFloat(Self.visiblePens) * 44 - 4               // 一格 = 筆 40 點 + 間距 4 點
+        let cross: Edge.Set = vertical ? .horizontal : .vertical
+        let layout = vertical ? AnyLayout(VStackLayout(spacing: 4)) : AnyLayout(HStackLayout(spacing: 4))
+        return ScrollViewReader { proxy in
+            ScrollView(vertical ? .vertical : .horizontal, showsIndicators: false) {
+                layout { penButtons }
+                    .padding(cross, 8)                                // 選中的筆會往內側突出 6 點：留位置，不會被切掉
+            }
+            .scrollDisabled(movingPen != nil)                         // 長按拖曳換順序的時候不要跟著捲
+            .frame(width: vertical ? 56 : length, height: vertical ? length : 56)
+            .padding(cross, -8)
+            .onChange(of: box.selection) { _, selection in
+                if case .preset(let id) = selection {
+                    withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(id) }
+                }
+            }
+        }
+    }
+
     /// 所有的筆，加上最後面的 ＋
     @ViewBuilder
     private var penGroup: some View {
-                ForEach(box.presets) { preset in
-                    penButton(preset)
-                        .scaleEffect(movingPen == preset.id ? 1.22 : 1)       // 拖曳中的那支筆放大一點
-                        .zIndex(movingPen == preset.id ? 1 : 0)
-                        .simultaneousGesture(penMoveGesture(preset.id))
+                if box.presets.count > Self.visiblePens {
+                    penScroller
+                } else {
+                    penButtons
                 }
                 Menu {
                     ForEach(PenKind.allCases) { kind in

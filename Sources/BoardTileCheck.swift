@@ -195,6 +195,10 @@ enum BoardTileCheck {
         var row = PageRow()
         row.pages = [page]
         let notebook = NotebookData(rows: [row])
+        let print1 = Store.fingerprint(notebook)
+        let print2 = Store.fingerprint(notebook)
+        check(print1 == print2, "同樣的內容連算兩次指紋：\(print1 == print2 ? "一樣" : "不一樣")")
+        let bytesBefore = BoardTiles.allData(pageID)
         let info = Store.makeSnapshot(notebook, id: notebookID, manual: true, reason: "測試")
         let inSnapshot = info.map { Store.snapshotDrawing($0, notebook: notebookID, pageID: pageID).strokes.count } ?? -1
         check(inSnapshot == expected, "歷史版本存一份：裡面 \(inSnapshot) 筆")
@@ -202,12 +206,16 @@ enum BoardTileCheck {
         let halved = Store.loadDrawing(pageID).strokes.count
         var restored = -1
         var sameFingerprint = false
+        var sameBytes = false
         if let info = info, Store.restoreSnapshot(info, notebook: notebookID) != nil {
             restored = Store.loadDrawing(pageID).strokes.count
             sameFingerprint = Store.fingerprint(notebook) == info.fingerprint
+            let bytesAfter = BoardTiles.allData(pageID)
+            sameBytes = bytesAfter.count == bytesBefore.count
+                && !zip(bytesAfter, bytesBefore).contains { $0.name != $1.name || $0.data != $1.data }
         }
-        check(halved == expected / 2 && restored == expected && BoardTiles.isTiled(pageID) && sameFingerprint,
-              "擦掉一半（剩 \(halved) 筆）再恢復：\(restored) 筆，還是分區，指紋\(sameFingerprint ? "一樣" : "不一樣")")
+        check(halved == expected / 2 && restored == expected && BoardTiles.isTiled(pageID) && sameFingerprint && sameBytes,
+              "擦掉一半（剩 \(halved) 筆）再恢復：\(restored) 筆，還是分區，格子檔內容\(sameBytes ? "一模一樣" : "不一樣")，指紋\(sameFingerprint ? "一樣" : "不一樣")")
 
         // 11. 改回單一檔
         current = Store.loadDrawing(pageID)

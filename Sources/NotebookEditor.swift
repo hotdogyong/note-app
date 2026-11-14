@@ -850,11 +850,23 @@ final class NotebookModel: ObservableObject {
         return "\(r + 1)"
     }
 
-    func addOutline(title: String) {
+    /// parent：加在哪一項底下（v12.11.0）；nil：最外層
+    func addOutline(title: String, parent: UUID? = nil) {
         guard let id = currentPageID else { return }
         var items = notebook.outline ?? []
-        items.append(OutlineItem(title: title, pageID: id))
+        var item = OutlineItem(title: title, pageID: id)
+        item.parentID = parent
+        items.append(item)
+        if let parent = parent, let i = items.firstIndex(where: { $0.id == parent }) { items[i].collapsed = nil }   // 上一層打開，才看得到剛加的
         notebook.outline = items
+        save()
+    }
+
+    /// 收合／展開
+    func toggleOutline(_ id: UUID) {
+        guard let i = notebook.outline?.firstIndex(where: { $0.id == id }) else { return }
+        let folded = notebook.outline?[i].collapsed == true
+        notebook.outline?[i].collapsed = folded ? nil : true
         save()
     }
 
@@ -865,6 +877,10 @@ final class NotebookModel: ObservableObject {
     }
 
     func removeOutline(_ id: UUID) {
+        // 底下的項目不跟著刪：往上接到它原本的上一層
+        let items = notebook.outline ?? []
+        let parent = items.first(where: { $0.id == id })?.parentID
+        for i in items.indices where items[i].parentID == id { notebook.outline?[i].parentID = parent }
         notebook.outline?.removeAll { $0.id == id }
         save()
     }
@@ -1235,6 +1251,9 @@ struct NotebookEditorView: View {
             }
             .modifier(InsertPickers(model: model))               // 相簿、相機、檔案的選取畫面（v12.3）
             .onAppear {
+                if SelfTest.scene == "outline" {                 // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
+                }
                 penBox.onBoard = model.isBoard
                 penBox.enterNotebook(model.meta.id)              // 這本筆記本自己的筆（v12.3）
                 applyPenBoxTool()
@@ -1320,6 +1339,98 @@ final class ThumbStore: ObservableObject {
     }
 }
 
+/// 大綱面板上的一列（我的大綱；v12.11.0）
+struct OutlineLine: Identifiable {
+    let item: OutlineItem
+    let row: Int
+    let page: Int
+    let depth: Int
+    let hasChildren: Bool
+    var id: UUID { item.id }
+}
+
+/// 大綱面板上的一列（PDF 自帶的目錄）
+struct PDFOutlineLine: Identifiable {
+    let id: UUID
+    let title: String
+    let row: Int
+    let page: Int
+    let depth: Int
+    let hasChildren: Bool
+}
+
+/// 往左滑露出來的按鈕
+struct SwipeRowAction {
+    let symbol: String
+    let tint: Color
+    let background: Color
+    let run: () -> Void
+}
+
+/// 一列內容，往左滑露出右邊的按鈕（v12.11.0，大綱用；照 GUGA）。同一時間只有一列是滑開的（openID）
+struct SwipeRow<Content: View>: View {
+    let id: UUID
+    @Binding var openID: UUID?
+    let actions: [SwipeRowAction]
+    @ViewBuilder let content: () -> Content
+    @GestureState private var drag: CGFloat = 0
+
+    private var actionsWidth: CGFloat { CGFloat(actions.count) * 54 }
+
+    var body: some View {
+        let open = openID == id
+        let shift = min(0, max(-actionsWidth - 24, (open ? -actionsWidth : 0) + drag))
+        return content()
+            .overlay {
+                if open {
+                    // 滑開的時候點內容：先收回去
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { withAnimation(.easeOut(duration: 0.2)) { openID = nil } }
+                }
+            }
+            .offset(x: shift)
+            .background(alignment: .trailing) {
+                HStack(spacing: 0) {
+                    ForEach(actions.indices, id: \.self) { i in
+                        Button {
+                            withAnimation(.easeOut(duration: 0.2)) { openID = nil }
+                            actions[i].run()
+                        } label: {
+                            Image(systemName: actions[i].symbol)
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(actions[i].tint)
+                                .frame(width: 54)
+                                .frame(maxHeight: .infinity)
+                                .background(actions[i].background)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .frame(width: max(-shift, 0), alignment: .trailing)
+                .clipped()
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 16)
+                    .updating($drag) { value, state, _ in
+                        if abs(value.translation.width) > abs(value.translation.height) { state = value.translation.width }
+                    }
+                    .onEnded { value in
+                        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                        let end = (open ? -actionsWidth : 0) + value.predictedEndTranslation.width
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            if end < -actionsWidth / 2 {
+                                openID = id
+                            } else if openID == id {
+                                openID = nil
+                            }
+                        }
+                    }
+            )
+    }
+}
+
 /// PDF 自帶的目錄（書籤）
 struct PDFOutlineEntry: Identifiable {
     let id = UUID()
@@ -1391,6 +1502,8 @@ struct NotePanel: View {
     @State private var tab = 0
     @StateObject private var thumbs = ThumbStore()
     @State private var pdfOutline: [PDFOutlineEntry] = []
+    @State private var pdfFolded: Set<UUID> = []      // PDF 目錄收合起來的項目（v12.11.0；只記到面板關掉）
+    @State private var openOutline: UUID?             // 往左滑開、露出按鈕的那一項
     @State private var pendingDelete: (row: Int, page: Int)?
     @State private var showDelete = false
     @State private var sideRowID: UUID?               // 「旁頁」分頁要看哪一列；沒指定＝目前這一列
@@ -1429,6 +1542,10 @@ struct NotePanel: View {
         .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         .onAppear {
             pdfOutline = PDFOutlineReader.entries(for: model.notebook)
+            if SelfTest.scene == "outline" {                     // 自動測試：直接看大綱，第一項滑開
+                tab = 2
+                openOutline = model.notebook.outline?.first?.id
+            }
         }
         .confirmationDialog(deleteTitle, isPresented: $showDelete, titleVisibility: .visible) {
             Button("刪除", role: .destructive) {
@@ -1678,16 +1795,10 @@ struct NotePanel: View {
 
     // 大綱：自己加的 + PDF 自帶的；點一下跳過去
     private var outlineTab: some View {
-        let mine = (model.notebook.outline ?? [])
-            .compactMap { item -> (OutlineItem, Int, Int)? in
-                guard let loc = model.location(of: item.pageID) else { return nil }
-                return (item, loc.row, loc.page)
-            }
-            .sorted { ($0.1, $0.2) < ($1.1, $1.2) }
-        let fromPDF = pdfOutline.compactMap { entry -> (PDFOutlineEntry, Int, Int)? in
-            guard let loc = model.location(of: entry.pageID) else { return nil }
-            return (entry, loc.row, loc.page)
-        }
+        let mine = outlineTree()
+        let mineIndent = mine.contains { $0.hasChildren || $0.depth > 0 }
+        let fromPDF = pdfLines()
+        let pdfIndent = fromPDF.contains { $0.hasChildren }
         return VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -1698,29 +1809,53 @@ struct NotePanel: View {
                             .padding(.top, 20)
                     }
                     if !mine.isEmpty {
-                        sectionTitle("我的大綱")
-                        ForEach(mine, id: \.0.id) { item in
-                            outlineRow(title: item.0.title, row: item.1, page: item.2, depth: 0)
-                                .contextMenu {
-                                    Button {
-                                        TextPrompt.show(title: "重新命名", initial: item.0.title) { text in
-                                            model.renameOutline(item.0.id, to: text)
-                                        }
-                                    } label: {
-                                        Label("重新命名", systemImage: "pencil")
-                                    }
-                                    Button(role: .destructive) {
-                                        model.removeOutline(item.0.id)
-                                    } label: {
-                                        Label("刪除", systemImage: "trash")
-                                    }
+                        sectionTitle("我的大綱（往左滑：改名、加下一層、刪除）")
+                        ForEach(mine) { line in
+                            // v12.11.0：往左滑露出三顆按鈕（照 GUGA）；長按的選單也留著
+                            SwipeRow(id: line.id, openID: $openOutline, actions: [
+                                SwipeRowAction(symbol: "square.and.pencil", tint: Color.primary, background: Color.gray.opacity(0.35)) {
+                                    renameOutline(line.item)
+                                },
+                                SwipeRowAction(symbol: "plus", tint: Color.black, background: Color.yellow) {
+                                    addOutlineChild(line.item)
+                                },
+                                SwipeRowAction(symbol: "trash.fill", tint: Color.white, background: Color.red) {
+                                    model.removeOutline(line.id)
                                 }
+                            ]) {
+                                outlineRow(title: line.item.title, row: line.row, page: line.page, depth: line.depth,
+                                           folded: line.hasChildren ? (line.item.collapsed == true) : nil,
+                                           reserveChevron: mineIndent) {
+                                    model.toggleOutline(line.id)
+                                }
+                            }
+                            .contextMenu {
+                                Button {
+                                    renameOutline(line.item)
+                                } label: {
+                                    Label("重新命名", systemImage: "pencil")
+                                }
+                                Button {
+                                    addOutlineChild(line.item)
+                                } label: {
+                                    Label("在底下加一項（目前這一頁）", systemImage: "plus")
+                                }
+                                Button(role: .destructive) {
+                                    model.removeOutline(line.id)
+                                } label: {
+                                    Label("刪除", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                     if !fromPDF.isEmpty {
                         sectionTitle("PDF 自帶的目錄")
-                        ForEach(fromPDF, id: \.0.id) { item in
-                            outlineRow(title: item.0.title, row: item.1, page: item.2, depth: item.0.depth)
+                        ForEach(fromPDF) { line in
+                            outlineRow(title: line.title, row: line.row, page: line.page, depth: line.depth,
+                                       folded: line.hasChildren ? pdfFolded.contains(line.id) : nil,
+                                       reserveChevron: pdfIndent) {
+                                if pdfFolded.contains(line.id) { pdfFolded.remove(line.id) } else { pdfFolded.insert(line.id) }
+                            }
                         }
                     }
                 }
@@ -1747,25 +1882,106 @@ struct NotePanel: View {
             .padding(.top, 8)
     }
 
-    private func outlineRow(title: String, row r: Int, page p: Int, depth: Int) -> some View {
-        Button {
-            model.documentView?.jump(toRow: r, page: p)
-        } label: {
-            HStack {
-                Text(title.isEmpty ? "（沒有標題）" : title)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Spacer()
-                Text(model.label(row: r, page: p))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    /// 大綱的一列。folded：有下一層的項目，目前是不是收合（左邊多一個箭頭，點它收合／展開）；nil：沒有下一層。
+    /// reserveChevron：這份大綱有分層，沒有箭頭的列也留箭頭的位置，標題才會對齊
+    private func outlineRow(title: String, row r: Int, page p: Int, depth: Int, folded: Bool? = nil,
+                            reserveChevron: Bool = false, toggle: @escaping () -> Void = { }) -> some View {
+        HStack(spacing: 0) {
+            if let folded = folded {
+                Button(action: toggle) {
+                    Image(systemName: folded ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 30, height: 40)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .padding(.vertical, 10)
-            .padding(.horizontal, 12)
-            .padding(.leading, CGFloat(depth) * 14)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.1)))
+            Button {
+                model.documentView?.jump(toRow: r, page: p)
+            } label: {
+                HStack {
+                    Text(title.isEmpty ? "（沒有標題）" : title)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    Spacer()
+                    Text(model.label(row: r, page: p))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 10)
+                .padding(.leading, folded != nil ? 0 : (reserveChevron ? 30 : 12))
+                .padding(.trailing, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.leading, CGFloat(depth) * 14)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.1)))
+    }
+
+    private func renameOutline(_ item: OutlineItem) {
+        TextPrompt.show(title: "重新命名", initial: item.title) { text in
+            model.renameOutline(item.id, to: text)
+        }
+    }
+
+    /// 在這一項底下加一項，指到目前這一頁
+    private func addOutlineChild(_ item: OutlineItem) {
+        TextPrompt.show(title: "加在「\(item.title)」底下", initial: "第 \(model.focusRow + 1) 頁") { text in
+            model.addOutline(title: text, parent: item.id)
+        }
+    }
+
+    /// 我的大綱排成一層一層（v12.11.0）：同一層照頁面先後；收合的不列出底下的
+    private func outlineTree() -> [OutlineLine] {
+        var located: [(item: OutlineItem, row: Int, page: Int, order: Int)] = []
+        for (i, item) in (model.notebook.outline ?? []).enumerated() {
+            guard let loc = model.location(of: item.pageID) else { continue }
+            located.append((item, loc.row, loc.page, i))
+        }
+        let ids = Set(located.map { $0.item.id })
+        var children: [UUID?: [(item: OutlineItem, row: Int, page: Int, order: Int)]] = [:]
+        for entry in located {
+            var parent = entry.item.parentID
+            if let p = parent, !ids.contains(p) || p == entry.item.id { parent = nil }   // 上一層不見了：放回最外層
+            children[parent, default: []].append(entry)
+        }
+        var out: [OutlineLine] = []
+        var seen = Set<UUID>()
+        func visit(_ parent: UUID?, _ depth: Int) {
+            let list = (children[parent] ?? []).sorted { a, b in (a.row, a.page, a.order) < (b.row, b.page, b.order) }
+            for entry in list where !seen.contains(entry.item.id) {
+                seen.insert(entry.item.id)
+                let has = !(children[entry.item.id] ?? []).isEmpty
+                out.append(OutlineLine(item: entry.item, row: entry.row, page: entry.page, depth: depth, hasChildren: has))
+                if has && entry.item.collapsed != true { visit(entry.item.id, depth + 1) }
+            }
+        }
+        visit(nil, 0)
+        return out
+    }
+
+    /// PDF 自帶的目錄：收合的項目底下不列出來
+    private func pdfLines() -> [PDFOutlineLine] {
+        var list: [(entry: PDFOutlineEntry, row: Int, page: Int)] = []
+        for entry in pdfOutline {
+            guard let loc = model.location(of: entry.pageID) else { continue }
+            list.append((entry, loc.row, loc.page))
+        }
+        var out: [PDFOutlineLine] = []
+        var hiddenBelow: Int?
+        for (i, item) in list.enumerated() {
+            if let d = hiddenBelow {
+                if item.entry.depth > d { continue }
+                hiddenBelow = nil
+            }
+            let has = i + 1 < list.count && list[i + 1].entry.depth > item.entry.depth
+            out.append(PDFOutlineLine(id: item.entry.id, title: item.entry.title, row: item.row, page: item.page,
+                                      depth: item.entry.depth, hasChildren: has))
+            if has && pdfFolded.contains(item.entry.id) { hiddenBelow = item.entry.depth }
+        }
+        return out
     }
 }
 

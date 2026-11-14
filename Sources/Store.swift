@@ -286,7 +286,11 @@ enum Store {
                 hash = hash &* 0x100000001b3
             }
         }
-        if let json = try? JSONEncoder().encode(copy) { mix(json) }
+        // v12.11.0：欄位照字母順序輸出。沒指定的話同樣的內容兩次輸出的欄位順序可能不同，
+        // 指紋就不一樣（自動測試抓到的），「內容沒變就不重複存歷史版本」會失效
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let json = try? encoder.encode(copy) { mix(json) }
         for row in copy.rows {
             for page in row.pages {
                 mix(Data(page.id.uuidString.utf8))

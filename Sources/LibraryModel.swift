@@ -614,11 +614,14 @@ final class LibraryModel: ObservableObject {
             }
         }
         data.bookmarks = data.bookmarks?.compactMap { pageMap[$0] }
+        var outlineMap: [UUID: UUID] = [:]                      // 大綱的層級（v12.11.0）：上一層也要換成新的編號
+        for item in data.outline ?? [] { outlineMap[item.id] = UUID() }
         data.outline = data.outline?.compactMap { (item: OutlineItem) -> OutlineItem? in
             guard let new = pageMap[item.pageID] else { return nil }
             var copy = item
-            copy.id = UUID()
+            copy.id = outlineMap[item.id] ?? UUID()
             copy.pageID = new
+            copy.parentID = item.parentID.flatMap { outlineMap[$0] }
             return copy
         }
         data.lastPage = data.lastPage.flatMap { pageMap[$0] }

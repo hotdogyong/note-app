@@ -780,8 +780,14 @@ final class NotebookModel: ObservableObject {
     @Published var cardRequest: CardRequest?           // 白板：要放一張筆記本的卡片（v12.12.0；BoardCards.swift）
     @Published var cardOpen: CardOpen?                 // 白板：點了卡片，要開那一本的浮動視窗
 
+    @Published var cardTab: CardOpen?                  // 白板：點了卡片的第二顆按鈕，要把那一本開成分頁（v12.12.2）
+
     func openCard(_ id: UUID) {
         cardOpen = CardOpen(notebookID: id, stamp: (cardOpen?.stamp ?? 0) + 1)
+    }
+
+    func openCardAsTab(_ id: UUID) {
+        cardTab = CardOpen(notebookID: id, stamp: (cardTab?.stamp ?? 0) + 1)
     }
 
     /// 這是白板（只有一張大頁面）
@@ -1390,6 +1396,16 @@ struct NotebookEditorView: View {
             }
             .onChange(of: model.cardOpen) { _, open in
                 if let open = open { openWindow(open.notebookID) }
+            }
+            .onChange(of: model.cardTab) { _, open in
+                guard let open = open else { return }
+                guard let meta = library.notebook(open.notebookID), meta.deletedAt == nil else {
+                    model.documentView?.showMessage("questionmark.folder", "找不到這本筆記本（可能被刪掉了）")
+                    return
+                }
+                if let window = windows.first(where: { $0.meta.id == meta.id }) { closeWindow(window) }
+                model.documentView?.flushAll()
+                library.openRequest = meta
             }
             .sheet(isPresented: $showCardPicker) {
                 CardNotebookPicker(library: library, boardID: model.meta.id) { meta in

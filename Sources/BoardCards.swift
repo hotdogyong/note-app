@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 //
 // 卡片：白板上的一張「帶連結的圖片」（ImageBox.link＝筆記本的編號；圖是封面＋標題）。
 //   所以移動、縮放、刪除、復原、跟著區塊搬、匯出都跟一般圖片一樣，不用另外寫一套。
-//   點一下：開浮動視窗；長按：選取（跟圖片一樣可以搬、拉大小、刪除）。
+//   v12.12.2（照 GUGA，使用者要求）：卡片左上角有兩顆按鈕——第一顆開浮動視窗、第二顆開成分頁（整個畫面）。
+//   點卡片其他地方（或長按）：選取，跟圖片一樣可以搬、拉大小、刪除。
 // 浮動視窗：固定在畫面上（不跟著白板捲動），裡面是完整的筆記本（NotebookEditorView 的內嵌模式）。
 //   可以同時開好幾個（最多 3 個，超過會收掉最早開的）；抓上面那一條移動、右下角拉大小、可以開成分頁。
 //   筆盒用白板的那一個：選什麼筆，視窗裡就用什麼筆。
@@ -44,6 +45,9 @@ struct BoardWindow: Identifiable, Equatable {
 enum CardCover {
     static let width: CGFloat = 240
     static let captionHeight: CGFloat = 46
+    /// 左上角兩顆按鈕（畫在圖上；點在哪一顆由 NotebookView 用位置判斷）：每顆佔 buttonZone × buttonZone（圖的座標）
+    static let buttonZone: CGFloat = 54
+    static let buttonSize: CGFloat = 40
 
     static func image(for meta: NotebookMeta, caption: String) -> UIImage {
         let data = Store.loadNotebook(meta.id)
@@ -91,6 +95,18 @@ enum CardCover {
             ]
             let text = caption as NSString
             text.draw(in: CGRect(x: 10, y: coverHeight + 12, width: width - 20, height: 24), withAttributes: attrs)
+            // 左上角的兩顆按鈕：開浮動視窗、開成分頁
+            let inset = (buttonZone - buttonSize) / 2
+            for (i, name) in ["rectangle.on.rectangle", "book"].enumerated() {
+                let rect = CGRect(x: CGFloat(i) * buttonZone + inset, y: inset, width: buttonSize, height: buttonSize)
+                UIColor(white: 0.1, alpha: 0.82).setFill()
+                UIBezierPath(roundedRect: rect, cornerRadius: 9).fill()
+                let icon = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))?
+                    .withTintColor(UIColor.white, renderingMode: .alwaysOriginal)
+                if let icon = icon {
+                    icon.draw(at: CGPoint(x: rect.midX - icon.size.width / 2, y: rect.midY - icon.size.height / 2))
+                }
+            }
             // 外框
             UIColor(white: 1, alpha: 0.35).setStroke()
             let border = UIBezierPath(rect: CGRect(origin: CGPoint.zero, size: size).insetBy(dx: 1, dy: 1))
@@ -221,14 +237,23 @@ struct BoardWindowView: View {
     }
 
     private func titleBar(_ base: CGRect) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(Color.white.opacity(0.7))
+        HStack(spacing: 4) {
+            // v12.12.2：照 GUGA，關閉、開成整個畫面放在左上角
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .frame(width: 36, height: Self.barHeight)
+                    .contentShape(Rectangle())
+            }
+            Button(action: openAsTab) {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 36, height: Self.barHeight)
+                    .contentShape(Rectangle())
+            }
             Text(window.meta.title)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(Color.white)
                 .lineLimit(1)
+                .padding(.leading, 6)
             Spacer(minLength: 4)
             Menu {
                 Button(action: renameCard) {
@@ -244,27 +269,24 @@ struct BoardWindowView: View {
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
-                    .frame(width: 34, height: Self.barHeight)
-                    .contentShape(Rectangle())
-            }
-            Button(action: openAsTab) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .frame(width: 34, height: Self.barHeight)
-                    .contentShape(Rectangle())
-            }
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .frame(width: 34, height: Self.barHeight)
+                    .frame(width: 36, height: Self.barHeight)
                     .contentShape(Rectangle())
             }
         }
         .font(.system(size: 15, weight: .semibold))
         .tint(Color.white)
         .foregroundStyle(Color.white)
-        .padding(.leading, 14)
-        .padding(.trailing, 4)
+        .padding(.horizontal, 4)
         .frame(height: Self.barHeight)
         .background(Color(white: 0.22))
+        .overlay(alignment: .top) {
+            // 中間上面的小把手：提示這一條可以抓著移動
+            Capsule()
+                .fill(Color.white.opacity(0.45))
+                .frame(width: 36, height: 4)
+                .padding(.top, 4)
+                .allowsHitTesting(false)
+        }
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 2, coordinateSpace: .global)

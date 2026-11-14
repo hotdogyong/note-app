@@ -124,10 +124,7 @@ enum SelfTest {
                 let second = library.addNotebook(inBoard: view.model.meta, title: "例題本")
                 view.placeCard(for: first, at: CGPoint(x: view.bounds.width * 0.2, y: view.bounds.height * 0.3))
                 view.placeCard(for: second, at: CGPoint(x: view.bounds.width * 0.2, y: view.bounds.height * 0.62))
-                view.model.openCard(first.id)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
-                    view?.model.openCard(second.id)
-                }
+                view.model.openCard(first.id)                // 只開一個視窗，另一張卡片露出來看左上角的按鈕
             }
             return
         }

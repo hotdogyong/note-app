@@ -815,12 +815,20 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         // 點到圖片：選取它（可以移動、縮放、旋轉）；縮成小圖的：彈出大圖（v12.8.3）
         if let hit = imageHit(at: p) {
-            // 白板上的筆記本卡片（v12.12.0）：點一下開浮動視窗；要搬、要拉大小先長按選取
-            if let link = hit.1.link, imageEditor?.box.id != hit.1.id {
-                endTextSelection()
-                endImageSelection()
-                model.openCard(link)
-                return
+            // 白板上的筆記本卡片：左上角兩顆按鈕（v12.12.2，照 GUGA）——第一顆開浮動視窗、第二顆開成分頁。
+            // 點卡片其他地方：跟圖片一樣選取（可以搬、拉大小、刪除）
+            if let link = hit.1.link, let view = hit.0.imageViews[hit.1.id] {
+                let local = view.convert(p, from: self)
+                let fx = local.x / max(view.bounds.width, 1)
+                let fy = local.y / max(view.bounds.height, 1)
+                let imageHeight = CardCover.width * hit.1.height / max(hit.1.width, 1)
+                let zoneX = CardCover.buttonZone / CardCover.width
+                if fy >= 0, fy < CardCover.buttonZone / max(imageHeight, 1), fx >= 0, fx < zoneX * 2 {
+                    endTextSelection()
+                    endImageSelection()
+                    if fx < zoneX { model.openCard(link) } else { model.openCardAsTab(link) }
+                    return
+                }
             }
             if hit.1.isMini {
                 endTextSelection()
@@ -1520,6 +1528,19 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         pv.syncImages(model.images(of: id))
         history.registerUndo(withTarget: self) { notebook in
             notebook.restoreImages(pageID: id, to: before)
+        }
+    }
+
+    /// 打開白板之後：每張卡片的封面重畫一次（筆記本在別的地方改過、或卡片是舊版做的沒有左上角的按鈕）。
+    /// 一張一張慢慢做，不要卡住畫面
+    func refreshCardCovers() {
+        guard isBoard, let pv = boardPV else { return }
+        let links = Set(model.images(of: pv.page.id).compactMap { $0.link })
+        for (i, link) in links.enumerated() {
+            guard let meta = Store.libraryCache.notebooks.first(where: { $0.id == link && $0.deletedAt == nil }) else { continue }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1 + Double(i) * 0.15) { [weak self] in
+                self?.updateCards(for: meta, caption: nil)
+            }
         }
     }
 
@@ -2307,6 +2328,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             positionRestored = true
             dailySnapshotIfNeeded()                        // 每天第一次打開：存一份歷史版本
             SelfTest.notebookOpened(self)                  // 自動測試的場景才會做事
+            if isBoard { refreshCardCovers() }             // 白板上的卡片：封面換成最新的（v12.12.2）
         }
         if isBoard {
             restoreBoardView()                                 // 白板：回到上次的位置和縮放

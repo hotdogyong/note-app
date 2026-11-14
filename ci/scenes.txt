@@ -1,4 +1,4 @@
 board
-collapsed
-cards
-notebook
+strokes30000
+strokes65000
+strokes66000

@@ -19,6 +19,19 @@ enum SelfTest {
         guard let scene = scene, scene != "home" else { return }
         UserDefaults.standard.set(scene == "collapsed", forKey: "tabsCollapsed")   // 只有 collapsed 場景把分頁那一排收起來
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if scene.hasPrefix("strokes"), let count = Int(scene.dropFirst(7)) {
+                // 很多筆的白板（例如 strokes66000）：看 PencilKit 一張畫布畫不畫得出這麼多筆。
+                // 使用者實機壓力測試到 80,000 筆時筆跡整個不見（2026-11-14）
+                let meta = library.addBoard(in: nil, title: "\(count) 筆", width: 100 * 842, height: 100 * 595)
+                if let page = Store.loadNotebook(meta.id).rows.first?.pages.first {
+                    let strokes = BoardTileCheck.makeStrokes(count: count, markers: 0,
+                                                             origin: CGPoint(x: page.spec.width / 2 - 1500, y: page.spec.height / 2 - 1500),
+                                                             spread: CGSize(width: 3000, height: 3000))
+                    Store.saveDrawing(PKDrawing(strokes: strokes), pageID: page.id)
+                }
+                library.openNotebook = meta
+                return
+            }
             switch scene {
             case "board":
                 library.openNotebook = library.addBoard(in: nil, title: "測試白板", width: 100 * 842, height: 100 * 595)
@@ -115,6 +128,13 @@ enum SelfTest {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
                     view?.model.openCard(second.id)
                 }
+            }
+            return
+        }
+        if let scene = scene, scene.hasPrefix("strokes"), view.model.isBoard {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak view] in
+                guard let view = view else { return }
+                show("畫布上的資料：" + view.boardInkInfo + "\n（下面看得到白色的筆跡＝畫得出來；一片空白＝畫不出來）")
             }
             return
         }

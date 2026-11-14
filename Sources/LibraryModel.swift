@@ -756,6 +756,10 @@ final class LibraryModel: ObservableObject {
             meta = library.notebooks[i]
             save()
         }
+        // v12.11.1（使用者決定）：新建的白板一開始就用分區儲存；不想用的話在白板的齒輪面板關掉。舊的白板不動
+        if let page = Store.loadNotebook(meta.id).rows.first?.pages.first {
+            _ = BoardTiles.enable(page.id, drawing: PKDrawing())
+        }
         return meta
     }
 

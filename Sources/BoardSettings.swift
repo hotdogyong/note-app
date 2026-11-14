@@ -201,8 +201,8 @@ struct BoardSettingsPanel: View {
     }
 
     private var tiledNote: String {
-        "筆跡照位置分成很多小檔，存檔只存有改到的那幾塊，筆跡很多的白板存檔和打開會快很多。"
-            + "原本的檔案會留著當備份，可以隨時關掉改回來。" + (model.documentView?.boardInkInfo ?? "")
+        "筆跡照位置分成很多小檔，存檔只存有改到的那幾塊，筆跡很多的白板存檔會快很多。新建的白板預設是開的。"
+            + "可以隨時關掉改回單一檔案，筆跡不會變。" + (model.documentView?.boardInkInfo ?? "")
     }
 
     private var tapesBinding: Binding<Bool> {

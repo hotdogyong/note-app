@@ -1081,15 +1081,14 @@ struct NotebookEditorView: View {
 
     /// 分頁下面那一排工具（v12.8.4，以前在系統的工具列裡）
     private var toolRow: some View {
-        HStack(spacing: embedded ? 8 : 12) {
-            if tabsCollapsed && !embedded {
-                closeAndTitle                                      // 分頁收起來時：左上「× │ 名稱」（照 GUGA）
-            }
-            if !model.isBoard {
-                toolCapsule { leadingTools }
-            }
-            Spacer(minLength: 0)
-            toolCapsule { trailingTools }
+        // v12.12.1：這一排放不下的時候（直式、分頁收起來、名稱又長），以前整排被擠壓，
+        // 左邊的「四宮格＋頁數」變成上下疊、頁數不見，兩邊還超出畫面。
+        // 現在準備四種寬度，由寬到窄，用第一個放得下的：按鈕間隔 30 → 20 → 13 → 9，名稱 16 字 → 10 → 6 → 不顯示
+        ViewThatFits(in: .horizontal) {
+            toolRowContent(gap: embedded ? 15 : (model.isBoard ? 22 : 30), titleMax: 16)
+            toolRowContent(gap: embedded ? 11 : 20, titleMax: 10)
+            toolRowContent(gap: embedded ? 8 : 13, titleMax: 6)
+            toolRowContent(gap: embedded ? 6 : 9, titleMax: 0)
         }
         .tint(Color.primary)
         .padding(.horizontal, embedded ? 8 : 16)
@@ -1101,10 +1100,25 @@ struct NotebookEditorView: View {
         }
     }
 
+    /// 這一排的內容。gap：膠囊裡按鈕的間隔；titleMax：左上角名稱最多幾個字（0：不顯示名稱）
+    private func toolRowContent(gap: CGFloat, titleMax: Int) -> some View {
+        HStack(spacing: embedded ? 8 : (gap < 15 ? 8 : 12)) {
+            if tabsCollapsed && !embedded {
+                closeAndTitle(titleMax)                            // 分頁收起來時：左上「× │ 名稱」（照 GUGA）
+            }
+            if !model.isBoard {
+                toolCapsule(gap) { leadingTools }
+            }
+            Spacer(minLength: 0)
+            toolCapsule(gap) { trailingTools }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     /// 一個膠囊（v12.8.7：符號粗一點；iOS 26 以上用系統的玻璃，跟以前系統工具列的樣子一樣）
     @ViewBuilder
-    private func toolCapsule<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        let row = HStack(spacing: embedded ? 15 : (model.isBoard ? 22 : 30)) {      // v12.9.8：筆記本的按鈕比較多，間隔拉開
+    private func toolCapsule<Content: View>(_ gap: CGFloat, @ViewBuilder _ content: () -> Content) -> some View {
+        let row = HStack(spacing: gap) {                           // v12.9.8：筆記本的按鈕比較多，間隔拉開
             content()
         }
         .font(.system(size: embedded ? 16 : 19, weight: .semibold))
@@ -1114,20 +1128,22 @@ struct NotebookEditorView: View {
     }
 
     /// 分頁收起來時左上角（v12.8.8，照 GUGA）：× 回首頁，右邊是名稱
-    private var closeAndTitle: some View {
+    private func closeAndTitle(_ titleMax: Int) -> some View {
         HStack(spacing: 14) {
             Button {
                 library.goHome()
             } label: {
                 Image(systemName: "xmark")
             }
-            Rectangle()
-                .fill(Color.secondary.opacity(0.4))
-                .frame(width: 1, height: 22)
-            Text(model.meta.title.count > 16 ? String(model.meta.title.prefix(15)) + "…" : model.meta.title)
-                .font(.system(size: 17, weight: .semibold))
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+            if titleMax > 0 {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.4))
+                    .frame(width: 1, height: 22)
+                Text(model.meta.title.count > titleMax ? String(model.meta.title.prefix(titleMax - 1)) + "…" : model.meta.title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
         }
         .font(.system(size: 19, weight: .semibold))
         .padding(.horizontal, 18)
@@ -1157,6 +1173,8 @@ struct NotebookEditorView: View {
             Label(model.pageLabel, systemImage: "square.grid.2x2")
                 .labelStyle(.titleAndIcon)
                 .monospacedDigit()
+                .lineLimit(1)
+                .fixedSize()                                   // v12.12.1：不管多擠，圖示和頁數都排成一列、不換行
         }
         Button {
             model.documentView?.flushAll()

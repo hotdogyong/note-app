@@ -17,6 +17,7 @@ enum SelfTest {
     static func run(_ library: LibraryModel) {
         Self.library = library
         guard let scene = scene, scene != "home" else { return }
+        UserDefaults.standard.set(scene == "collapsed", forKey: "tabsCollapsed")   // 只有 collapsed 場景把分頁那一排收起來
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             switch scene {
             case "board":
@@ -50,6 +51,9 @@ enum SelfTest {
                 library.openNotebook = meta
             case "notebook":
                 library.openNotebook = library.addNotebook(in: nil)
+            case "collapsed":
+                // 直式、分頁收起來、名稱很長（v12.12.1）：上面那一排要放得下，四宮格和頁數排成一列
+                library.openNotebook = library.addNotebook(in: nil, title: "IEM 工程數學_OCR版 第一冊")
             case "outline":
                 // 大綱分層、往左滑的按鈕（v12.11.0）：筆記本畫面會自己打開左邊面板的大綱，第一項是滑開的
                 let meta = library.addNotebook(in: nil)

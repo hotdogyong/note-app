@@ -876,13 +876,51 @@ final class NotebookModel: ObservableObject {
         save()
     }
 
-    func removeOutline(_ id: UUID) {
-        // 底下的項目不跟著刪：往上接到它原本的上一層
+    /// 這一項底下（所有層）的項目
+    func outlineDescendants(_ id: UUID) -> Set<UUID> {
         let items = notebook.outline ?? []
-        let parent = items.first(where: { $0.id == id })?.parentID
-        for i in items.indices where items[i].parentID == id { notebook.outline?[i].parentID = parent }
-        notebook.outline?.removeAll { $0.id == id }
+        var found: Set<UUID> = []
+        var grew = true
+        while grew {
+            grew = false
+            for item in items {
+                guard let parent = item.parentID, !found.contains(item.id), item.id != id else { continue }
+                if parent == id || found.contains(parent) {
+                    found.insert(item.id)
+                    grew = true
+                }
+            }
+        }
+        return found
+    }
+
+    /// 刪掉一項，底下的項目一起刪（v12.11.1：使用者確認要一起刪）
+    func removeOutline(_ id: UUID) {
+        var doomed = outlineDescendants(id)
+        doomed.insert(id)
+        notebook.outline?.removeAll { doomed.contains($0.id) }
         save()
+    }
+
+    /// PDF 自帶的目錄整份搬進「我的大綱」（v12.11.1）：搬過來之後每一項都能改名、加下一層、刪除。
+    /// 層級照 PDF 的；folded：面板上收合著的項目，搬過來維持收合。回傳「PDF 的項目 → 搬過來的項目」的編號對照
+    func importPDFOutline(_ entries: [PDFOutlineEntry], folded: Set<UUID>) -> [UUID: UUID] {
+        var items = notebook.outline ?? []
+        var map: [UUID: UUID] = [:]
+        var stack: [(depth: Int, id: UUID)] = []
+        for entry in entries {
+            while let last = stack.last, last.depth >= entry.depth { stack.removeLast() }
+            var item = OutlineItem(title: entry.title, pageID: entry.pageID)
+            item.parentID = stack.last?.id
+            if folded.contains(entry.id) { item.collapsed = true }
+            items.append(item)
+            map[entry.id] = item.id
+            stack.append((entry.depth, item.id))
+        }
+        notebook.outline = items
+        notebook.pdfOutlineImported = true
+        save()
+        return map
     }
 
     func texts(of pageID: UUID) -> [TextBox] {
@@ -1373,7 +1411,9 @@ struct SwipeRow<Content: View>: View {
     @Binding var openID: UUID?
     let actions: [SwipeRowAction]
     @ViewBuilder let content: () -> Content
-    @GestureState private var drag: CGFloat = 0
+    // 放手時拖曳量歸零也用動畫（v12.11.1：以前是瞬間歸零，滑回去會跳一下）
+    @GestureState(resetTransaction: Transaction(animation: .easeOut(duration: 0.2))) private var drag: CGFloat = 0
+    private static var slack: CGFloat { 14 }             // 手指要先移動這麼多才算開始滑；算位置時扣掉，起步不會跳
 
     private var actionsWidth: CGFloat { CGFloat(actions.count) * 54 }
 
@@ -1412,13 +1452,19 @@ struct SwipeRow<Content: View>: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .simultaneousGesture(
-                DragGesture(minimumDistance: 16)
+                DragGesture(minimumDistance: Self.slack)
                     .updating($drag) { value, state, _ in
-                        if abs(value.translation.width) > abs(value.translation.height) { state = value.translation.width }
+                        let w = value.translation.width
+                        if abs(w) > abs(value.translation.height) {
+                            state = w > 0 ? max(0, w - Self.slack) : min(0, w + Self.slack)
+                        }
                     }
                     .onEnded { value in
                         guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                        let end = (open ? -actionsWidth : 0) + value.predictedEndTranslation.width
+                        // 放手時看「現在的位置」和一點點慣性，過一半就開、沒過就關
+                        let now = (open ? -actionsWidth : 0) + value.translation.width
+                        let push = (value.predictedEndTranslation.width - value.translation.width) * 0.3
+                        let end = now + push
                         withAnimation(.easeOut(duration: 0.2)) {
                             if end < -actionsWidth / 2 {
                                 openID = id
@@ -1490,6 +1536,21 @@ enum TextPrompt {
             let text = alert.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             done(text.isEmpty ? initial : text)
         })
+        top.present(alert, animated: true)
+    }
+}
+
+/// 問一次「確定嗎」的小視窗
+@MainActor
+enum ConfirmPrompt {
+    static func show(title: String, message: String, confirm: String, done: @escaping () -> Void) {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let root = (scene.windows.first { $0.isKeyWindow } ?? scene.windows.first)?.rootViewController else { return }
+        var top = root
+        while let next = top.presentedViewController { top = next }
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: confirm, style: .destructive) { _ in done() })
         top.present(alert, animated: true)
     }
 }
@@ -1797,7 +1858,8 @@ struct NotePanel: View {
     private var outlineTab: some View {
         let mine = outlineTree()
         let mineIndent = mine.contains { $0.hasChildren || $0.depth > 0 }
-        let fromPDF = pdfLines()
+        // PDF 的目錄已經搬進我的大綱的話不再列一份（我的大綱全部刪光了才會再出現）
+        let fromPDF = (model.notebook.pdfOutlineImported == true && !mine.isEmpty) ? [] : pdfLines()
         let pdfIndent = fromPDF.contains { $0.hasChildren }
         return VStack(spacing: 0) {
             ScrollView {
@@ -1820,7 +1882,7 @@ struct NotePanel: View {
                                     addOutlineChild(line.item)
                                 },
                                 SwipeRowAction(symbol: "trash.fill", tint: Color.white, background: Color.red) {
-                                    model.removeOutline(line.id)
+                                    deleteOutline(line.item)
                                 }
                             ]) {
                                 outlineRow(title: line.item.title, row: line.row, page: line.page, depth: line.depth,
@@ -1841,7 +1903,7 @@ struct NotePanel: View {
                                     Label("在底下加一項（目前這一頁）", systemImage: "plus")
                                 }
                                 Button(role: .destructive) {
-                                    model.removeOutline(line.id)
+                                    deleteOutline(line.item)
                                 } label: {
                                     Label("刪除", systemImage: "trash")
                                 }
@@ -1849,12 +1911,26 @@ struct NotePanel: View {
                         }
                     }
                     if !fromPDF.isEmpty {
-                        sectionTitle("PDF 自帶的目錄")
+                        // v12.11.1：PDF 的目錄也能往左滑。它本來是直接從 PDF 檔讀出來的、不能改；
+                        // 第一次編輯時整份搬進「我的大綱」（之後這一段就不再列），再對那一項做事
+                        sectionTitle("PDF 自帶的目錄（往左滑就能編輯，會整份搬進我的大綱）")
                         ForEach(fromPDF) { line in
-                            outlineRow(title: line.title, row: line.row, page: line.page, depth: line.depth,
-                                       folded: line.hasChildren ? pdfFolded.contains(line.id) : nil,
-                                       reserveChevron: pdfIndent) {
-                                if pdfFolded.contains(line.id) { pdfFolded.remove(line.id) } else { pdfFolded.insert(line.id) }
+                            SwipeRow(id: line.id, openID: $openOutline, actions: [
+                                SwipeRowAction(symbol: "square.and.pencil", tint: Color.primary, background: Color.gray.opacity(0.35)) {
+                                    editPDFLine(line.id) { renameOutline($0) }
+                                },
+                                SwipeRowAction(symbol: "plus", tint: Color.black, background: Color.yellow) {
+                                    editPDFLine(line.id) { addOutlineChild($0) }
+                                },
+                                SwipeRowAction(symbol: "trash.fill", tint: Color.white, background: Color.red) {
+                                    editPDFLine(line.id) { deleteOutline($0) }
+                                }
+                            ]) {
+                                outlineRow(title: line.title, row: line.row, page: line.page, depth: line.depth,
+                                           folded: line.hasChildren ? pdfFolded.contains(line.id) : nil,
+                                           reserveChevron: pdfIndent) {
+                                    if pdfFolded.contains(line.id) { pdfFolded.remove(line.id) } else { pdfFolded.insert(line.id) }
+                                }
                             }
                         }
                     }
@@ -1918,6 +1994,25 @@ struct NotePanel: View {
         }
         .padding(.leading, CGFloat(depth) * 14)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.1)))
+    }
+
+    /// PDF 自帶的目錄要編輯：先整份搬進「我的大綱」，再對搬過來的那一項做事
+    private func editPDFLine(_ id: UUID, _ action: (OutlineItem) -> Void) {
+        let map = model.importPDFOutline(pdfOutline, folded: pdfFolded)
+        guard let new = map[id], let item = model.notebook.outline?.first(where: { $0.id == new }) else { return }
+        action(item)
+    }
+
+    /// 刪除一項：底下還有項目的話先問一次（會一起刪）
+    private func deleteOutline(_ item: OutlineItem) {
+        let below = model.outlineDescendants(item.id).count
+        if below == 0 {
+            model.removeOutline(item.id)
+            return
+        }
+        ConfirmPrompt.show(title: "刪除「\(item.title)」？", message: "底下的 \(below) 項會一起刪除。", confirm: "刪除") {
+            model.removeOutline(item.id)
+        }
     }
 
     private func renameOutline(_ item: OutlineItem) {

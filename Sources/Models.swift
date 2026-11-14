@@ -357,6 +357,7 @@ struct NotebookData: Codable {
     var frames: [BoardFrame]? = nil       // 白板的區塊（v12.7）
     var pinGroups: [String]? = nil        // 圖釘的分組（v12.7）
     var markdown: Bool? = nil             // true：Markdown 筆記本（v12.9.2）：新增的頁都是 Markdown 頁
+    var pdfOutlineImported: Bool? = nil   // true：PDF 自帶的目錄已經搬進「我的大綱」（v12.11.1），面板不再另外列一份
 }
 
 /// Markdown 頁的方塊（v12.9.2）：整頁寬、固定（不能拖、不能拉寬度），用起來像一般的 Markdown 文件

@@ -1500,8 +1500,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         for (i, image) in images.enumerated() {
             var p = base
             if isBoard {
-                p.x += (CGFloat(i % columns) - CGFloat(columns - 1) / 2) * 500 * scale
-                p.y += CGFloat(i / columns) * 660 * scale
+                // 一張最大 10 × 10 格（v12.11.1），每張之間留 2 格
+                let step = PaperRenderer.gridUnit * 12 * scale
+                p.x += (CGFloat(i % columns) - CGFloat(columns - 1) / 2) * step
+                p.y += CGFloat(i / columns) * step
             } else {
                 p.x += CGFloat(i) * 36
                 p.y += CGFloat(i) * 36
@@ -1807,10 +1809,15 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let ph = pv.page.spec.height
         var w = max(image.size.width, 1)
         var h = max(image.size.height, 1)
-        // 太大會縮到頁寬、頁高的八成；白板的大頁面最多 480 × 640 點（差不多 A4 的八成）
+        // 太大會縮到頁寬、頁高的八成。
+        // 白板（v12.11.1，使用者要求）：貼上來差不多 6 × 10 格（橫的圖 10 × 6），之後自己再拉大小；本來就比較小的圖不放大。
+        // 以前是最多 480 × 640 點，每張圖貼上來大小差很多
         let flat = pv.page.spec.flat == true
-        let capW: CGFloat = flat ? min(pw * 0.8, 480) : pw * 0.8
-        let capH: CGFloat = flat ? min(ph * 0.8, 640) : ph * 0.8
+        let unit = PaperRenderer.gridUnit
+        let boardW: CGFloat = (w >= h ? 10 : 6) * unit
+        let boardH: CGFloat = (w >= h ? 6 : 10) * unit
+        let capW: CGFloat = flat ? min(pw * 0.8, boardW) : pw * 0.8
+        let capH: CGFloat = flat ? min(ph * 0.8, boardH) : ph * 0.8
         if w > capW { h *= capW / w; w = capW }
         if h > capH { w *= capH / h; h = capH }
         var box = ImageBox(file: file)

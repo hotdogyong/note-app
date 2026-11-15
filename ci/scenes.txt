@@ -1,7 +1,7 @@
 board
-cards
-importdoc
-subboard
-linkedit
+winsplit
+winfull
+clip
+tidytree
 texttidy
-markdown
+textzone

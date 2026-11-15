@@ -14,6 +14,7 @@ enum SelfTest {
 
     static weak var library: LibraryModel?
     static var sceneDone = false
+    static var windowMode: BoardWindowMode?          // winsplit、winfull：新開的浮動視窗一開就是這個樣子
 
     static func run(_ library: LibraryModel) {
         Self.library = library
@@ -110,6 +111,13 @@ enum SelfTest {
                 // 白板匯入文件（Markdown、PDF）、子白板（v12.14.0）：notebookOpened 裡匯入、放卡片、開一個視窗
                 library.openNotebook = library.addBoard(in: nil, title: scene == "subboard" ? "子白板測試" : "匯入文件測試",
                                                         width: 100 * 842, height: 100 * 595)
+            case "winsplit", "winfull", "clip", "tidytree":
+                // v12.15.0：分屏、全屏的浮動視窗；視窗裡剪一塊貼到白板；四層的一鍵整理
+                if scene == "winsplit" { windowMode = .split }
+                if scene == "winfull" { windowMode = .full }
+                library.openNotebook = library.addBoard(in: nil, title: "視窗測試 " + scene, width: 100 * 842, height: 100 * 595)
+            case "textzone":
+                library.openNotebook = library.addNotebook(in: nil, title: "文字方塊測試")
             case "textlinks":
                 // 文字方塊的外框樣式、連線（v12.13.0）：白板上放幾個方塊和線，選取其中一個（看四邊的點）
                 library.openNotebook = library.addBoard(in: nil, title: "連線測試白板", width: 100 * 842, height: 100 * 595)
@@ -189,6 +197,38 @@ enum SelfTest {
                 // 開一個視窗：importdoc 開 Markdown 那一本、subboard 開子白板
                 if let open = sub ? subBoard : metas.first { view.model.openCard(open.id) }
                 show(lines.joined(separator: "\n"))
+            }
+            return
+        }
+        if scene == "clip", view.model.embedded {
+            // 視窗裡那一本打開了：剪一塊貼到白板（貼上的圖會是選取的，左下角應該有 ‹）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak view] in view?.selfTestClip() }
+            return
+        }
+        if scene == "textzone", !view.model.isBoard {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in view?.selfTestTextZone() }
+            return
+        }
+        if scene == "tidytree", view.model.isBoard {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                show(view.selfTestTidyTree())
+            }
+            return
+        }
+        if scene == "winsplit" || scene == "winfull" || scene == "clip", view.model.isBoard, !view.model.embedded, !sceneDone,
+           let library = library {
+            sceneDone = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                var meta: NotebookMeta?
+                if let pdf = makeOutlinePDF(), let made = library.importDocument(from: pdf, into: view.model.meta.folderID) {
+                    library.setBoardHome(made.id, board: view.model.meta.id)
+                    meta = library.notebook(made.id) ?? made
+                }
+                guard let open = meta else { return }
+                view.placeCard(for: open, at: CGPoint(x: view.bounds.width * 0.75, y: view.bounds.height * 0.3))
+                view.model.openCard(open.id)
             }
             return
         }

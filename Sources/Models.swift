@@ -239,6 +239,10 @@ struct ImageBox: Codable, Hashable, Identifiable {
     var link: UUID? = nil           // 白板上的筆記本卡片（v12.12.0）：連到哪一本筆記本；圖是封面＋標題（BoardCards.swift）
     var caption: String? = nil      // 卡片上的標題（預設是筆記本的名稱，可以另外改）
     var previewPage: Int? = nil     // 卡片正在預覽第幾頁（v12.12.3；從 0 開始）；nil：顯示封面
+    // 從浮動視窗裡剪下來貼到白板的圖（v12.15.0）：從哪一本、哪一頁、頁面上的哪一塊剪的。選取後左下角的 ‹ 會開那一本並跳到那裡
+    var sourceNotebook: UUID? = nil
+    var sourcePage: UUID? = nil
+    var sourceRect: CGRect? = nil
 
     var isLocked: Bool { locked ?? false }
     var isMini: Bool { mini ?? false }

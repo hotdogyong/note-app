@@ -29,6 +29,19 @@ enum CardRequest: Equatable {
 struct CardOpen: Equatable {
     let notebookID: UUID
     let stamp: Int
+    var jump: WindowJump? = nil       // 打開後跳到哪一頁的哪一塊（白板上剪下來的圖的 ‹；v12.15.0）
+}
+
+/// 浮動視窗裡的筆記本要跳到哪裡（stamp 每次不一樣，同一個地方按兩次也會跳）
+struct WindowJump: Equatable {
+    let page: UUID
+    let rect: CGRect
+    let stamp: Int
+}
+
+/// 浮動視窗的樣子（v12.15.0）：浮著、整個白板（全屏）、左半邊（分屏）
+enum BoardWindowMode: Equatable {
+    case float, full, split
 }
 
 /// 一個開著的浮動視窗
@@ -36,9 +49,11 @@ struct BoardWindow: Identifiable, Equatable {
     let id = UUID()
     var meta: NotebookMeta
     var frame: CGRect?          // 在白板畫面上的位置、大小；nil：還沒擺過，用預設的
+    var mode = BoardWindowMode.float
+    var jump: WindowJump? = nil
 
     static func == (a: BoardWindow, b: BoardWindow) -> Bool {
-        a.id == b.id && a.frame == b.frame && a.meta == b.meta
+        a.id == b.id && a.frame == b.frame && a.meta == b.meta && a.mode == b.mode && a.jump == b.jump
     }
 }
 
@@ -150,8 +165,11 @@ enum CardCover {
 /// 浮動視窗交給裡面那本筆記本的動作：它工具列最左邊的「關閉、放大」
 struct BoardWindowActions {
     let close: () -> Void
-    let expand: () -> Void
-    let openCard: (UUID) -> Void       // 視窗裡是白板：按它上面的卡片，交給外面的白板再開一個視窗（v12.13.0）
+    let expand: () -> Void             // 全屏（v12.15.0：在白板上放大，不是開成分頁）
+    let back: () -> Void               // 全屏、分屏時左上角的 ‹：回到浮著的大小
+    let mode: BoardWindowMode
+    let openCard: (UUID, WindowJump?) -> Void   // 視窗裡是白板：按它上面的卡片，交給外面的白板再開一個視窗（v12.13.0）
+    let pasteToBoard: (UIImage, UUID, UUID, CGRect) -> Void   // 剪刀「貼到白板」（v12.15.0）：圖、哪一本、哪一頁、頁面上的範圍
 }
 
 /// 視窗靠到哪一邊
@@ -163,7 +181,8 @@ enum BoardWindowSnap {
 struct BoardWindowsLayer: View {
     @Binding var windows: [BoardWindow]
     @Binding var tucked: Bool                      // 全部先收到旁邊（還開著，只是看不到）
-    let openCard: (UUID) -> Void
+    let openCard: (UUID, WindowJump?) -> Void
+    let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> Void   // 最後一個：那個視窗在畫面上的位置（貼的時候讓開）
     let close: (BoardWindow) -> Void
     let openAsTab: (BoardWindow) -> Void
     let renameCard: (BoardWindow) -> Void
@@ -178,6 +197,7 @@ struct BoardWindowsLayer: View {
                                     index: windows.firstIndex(where: { $0.id == window.id }) ?? 0,
                                     inBoard: isInBoard(window),
                                     openCard: openCard,
+                                    pasteToBoard: pasteToBoard,
                                     close: { close(window) },
                                     toFront: { bringToFront(window.id) },
                                     openAsTab: { openAsTab(window) },
@@ -187,27 +207,9 @@ struct BoardWindowsLayer: View {
                 .opacity(tucked ? 0 : 1)
                 .scaleEffect(tucked ? 0.97 : 1)
                 .allowsHitTesting(!tucked)
-                if !windows.isEmpty {
-                    // 左上角：全部收到旁邊／放回來（照 GUGA 的虛線方框）
-                    Button {
-                        withAnimation(BoardWindowView.spring) { tucked.toggle() }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: tucked ? "rectangle.on.rectangle" : "rectangle.dashed")
-                            Text(tucked ? "放回 \(windows.count) 個視窗" : "收起視窗")
-                                .font(.system(size: 14, weight: .semibold))
-                        }
-                        .foregroundStyle(Color.primary)
-                        .padding(.horizontal, 12)
-                        .frame(height: 34)
-                        .background(Capsule().fill(.regularMaterial))
-                    }
-                    .buttonStyle(.plain)
-                    .offset(x: 16, y: 6)
-                    .transition(.opacity)
-                }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            // 「收起視窗」在白板左下角那一排的第一顆（v12.15.0，照 GUGA；NotebookView.windowsButton）
         }
     }
 
@@ -226,7 +228,8 @@ struct BoardWindowView: View {
     let container: CGSize
     let index: Int
     let inBoard: Bool
-    let openCard: (UUID) -> Void
+    let openCard: (UUID, WindowJump?) -> Void
+    let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> Void
     let close: () -> Void
     let toFront: () -> Void
     let openAsTab: () -> Void
@@ -284,15 +287,40 @@ struct BoardWindowView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.17) { then() }
     }
 
+    /// 浮著的時候的位置、大小
+    private var floatFrame: CGRect { clamped(window.frame ?? Self.defaultFrame(container, index)) }
+
+    /// 現在畫面上的位置、大小：全屏＝整個白板（白板的工具列下面）；分屏＝左半邊
+    private var shownFrame: CGRect {
+        switch window.mode {
+        case .float: return floatFrame
+        case .full: return CGRect(origin: CGPoint.zero, size: container)
+        case .split: return CGRect(x: 0, y: 0, width: (container.width / 2).rounded(), height: container.height)
+        }
+    }
+
+    private func setMode(_ mode: BoardWindowMode) {
+        toFront()
+        withAnimation(Self.spring) { window.mode = mode }
+    }
+
     var body: some View {
-        let base = clamped(window.frame ?? Self.defaultFrame(container, index))
-        let shape = RoundedRectangle(cornerRadius: Self.corner, style: .continuous)
+        let floating = window.mode == .float
+        let base = shownFrame
+        let shape = RoundedRectangle(cornerRadius: floating ? Self.corner : 0, style: .continuous)
+        let frameNow = base
         return VStack(spacing: 0) {
-            grip(base)
+            if floating { grip(base) }
             NotebookEditorView(meta: window.meta, embedded: true,
                                windowActions: BoardWindowActions(close: { animateOut(close) },
-                                                                 expand: { animateOut(openAsTab) },
-                                                                 openCard: openCard))
+                                                                 expand: { setMode(.full) },
+                                                                 back: { setMode(.float) },
+                                                                 mode: window.mode,
+                                                                 openCard: openCard,
+                                                                 pasteToBoard: { image, nb, page, rect in
+                                                                     pasteToBoard(image, nb, page, rect, frameNow)
+                                                                 }),
+                               jump: window.jump)
                 .id(window.meta.id)
         }
         .frame(width: base.width, height: base.height)
@@ -310,7 +338,15 @@ struct BoardWindowView: View {
                     .allowsHitTesting(false)
             }
         }
-        .overlay(alignment: .bottomTrailing) { resizeHandle(base) }
+        .overlay(alignment: .bottomTrailing) {
+            if floating { resizeHandle(base) }
+        }
+        .overlay(alignment: .trailing) {
+            if window.mode == .split {
+                // 分屏：右邊一條分隔線
+                Rectangle().fill(Color.white.opacity(0.25)).frame(width: 1)
+            }
+        }
         .transaction { $0.animation = nil }        // 大小的改變不做動畫（裡面的筆記本每一格都重排會頓）；位置、彈出才做
         .scaleEffect(shown ? 1 : 0.9)
         .opacity(shown ? 1 : 0)
@@ -356,6 +392,14 @@ struct BoardWindowView: View {
                                 withAnimation(Self.spring) { window.frame = clamped(snapFrame(snap, from: base)) }
                             },
                             fullScreen: {
+                                showMenu = false
+                                setMode(.full)
+                            },
+                            split: {
+                                showMenu = false
+                                setMode(.split)
+                            },
+                            openTab: {
                                 showMenu = false
                                 animateOut(openAsTab)
                             },
@@ -406,6 +450,8 @@ struct BoardWindowMenu: View {
     let inBoard: Bool
     let snap: (BoardWindowSnap) -> Void
     let fullScreen: () -> Void
+    let split: () -> Void
+    let openTab: () -> Void
     let rename: () -> Void
     let moveHome: () -> Void
     let close: () -> Void
@@ -425,6 +471,8 @@ struct BoardWindowMenu: View {
             title("模式")
             tile("全屏", "arrow.up.left.and.arrow.down.right", action: fullScreen)
             tile("Mini 浮窗", "arrow.down.right.and.arrow.up.left") { snap(BoardWindowSnap.mini) }
+            tile("分屏模式", "rectangle.lefthalf.inset.filled", action: split)
+            tile("開成分頁", "macwindow.on.rectangle", action: openTab)
             Divider()
             title("卡片")
             tile("改卡片上的標題", "pencil", action: rename)

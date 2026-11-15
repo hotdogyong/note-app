@@ -74,6 +74,7 @@ struct BoardSettingsPanel: View {
     @ObservedObject var model: NotebookModel
     let open: (BoardSettingsTarget) -> Void
     @State private var tick = 0                         // 改了設定：重畫
+    @AppStorage(TextDefaults.handwritingKey) private var handwritingZone = false   // v12.15.0
 
     private var paper: PaperStyle { model.notebook.rows.first?.pages.first?.paperStyle ?? PaperStyle() }
 
@@ -110,6 +111,8 @@ struct BoardSettingsPanel: View {
                     textSizeRow
                     Divider()
                     toggleRow("新文字方塊用粗體", symbol: "bold", isOn: boldBinding)
+                    Divider()
+                    toggleRow("文字方塊輸入時的手寫區", symbol: "pencil.and.scribble", isOn: $handwritingZone)
                 }
                 group {
                     actionRow("加大白板（往右、往下各加一倍）", symbol: "arrow.up.left.and.arrow.down.right") {

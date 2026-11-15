@@ -22,7 +22,30 @@ final class ImageEditorView: UIView {
     private let press = UILongPressGestureRecognizer()
     private let yield = ScrollYield()
 
-    private enum Mode { case idle, move, scale, rotate, cardOpen, cardPreview, cardPrev, cardNext }
+    private enum Mode { case idle, move, scale, rotate, cardOpen, cardPreview, cardPrev, cardNext, sourceOpen }
+    // 從浮動視窗剪下來的圖（v12.15.0）：選取後左下角一顆 ‹，按了回到剪下來的地方
+    private let sourceButton: UIImageView = {
+        let view = UIImageView(image: UIImage(systemName: "chevron.left",
+                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)))
+        view.contentMode = .center
+        view.tintColor = UIColor.white
+        view.backgroundColor = UIColor(white: 0.35, alpha: 0.9)
+        view.layer.cornerRadius = 21
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        view.isHidden = true
+        return view
+    }()
+
+    private var hasSourceButton: Bool { box.link == nil && box.sourceNotebook != nil && !box.isLocked }
+
+    /// ‹ 的中心（頁面座標）：圖片裡面的左下角
+    private var sourceButtonCenter: CGPoint {
+        let s = max(scale, 0.0001)
+        let side = 42 / s
+        let gap = 10 / s
+        return rotated(CGPoint(x: -box.width / 2 + gap + side / 2, y: box.height / 2 - gap - side / 2))
+    }
     private static let cardModes: [Mode] = [.cardOpen, .cardPreview, .cardPrev, .cardNext]
     // 白板上的筆記本卡片（v12.12.3，照 GUGA）：選取之後左上角才出現兩顆按鈕——開浮動視窗、在卡片上預覽；
     // 預覽中，封面下緣左右各多一顆翻頁。按鈕只是圖，按到哪一顆由 modeAt 判斷（跟拖曳用同一個手勢）
@@ -68,6 +91,7 @@ final class ImageEditorView: UIView {
         press.addTarget(self, action: #selector(handlePress(_:)))
         addGestureRecognizer(press)
         for button in cardButtons { addSubview(button) }
+        addSubview(sourceButton)
         setUpBar()
     }
 
@@ -213,6 +237,12 @@ final class ImageEditorView: UIView {
             button.center = toView(cardButtonCenter(i))
             bringSubviewToFront(button)
         }
+        sourceButton.isHidden = !hasSourceButton
+        if hasSourceButton {
+            sourceButton.bounds = CGRect(x: 0, y: 0, width: 42, height: 42)
+            sourceButton.center = toView(sourceButtonCenter)
+            bringSubviewToFront(sourceButton)
+        }
     }
 
     /// 只有圖片、控制點、工具列的地方才攔觸控；其他地方照常（寫字、捲動）
@@ -231,6 +261,10 @@ final class ImageEditorView: UIView {
         for i in 0 ..< cardButtonCount {
             let c = cardButtonCenter(i)
             if abs((p.x - c.x) * s) <= 23 && abs((p.y - c.y) * s) <= 23 { return Self.cardModes[i] }
+        }
+        if hasSourceButton {
+            let c = sourceButtonCenter
+            if hypot((p.x - c.x) * s, (p.y - c.y) * s) <= 26 { return .sourceOpen }
         }
         for c in corners where hypot((p.x - c.x) * s, (p.y - c.y) * s) < 24 { return .scale }
         // 轉回圖片自己的方向，看是不是在圖片裡
@@ -293,12 +327,31 @@ final class ImageEditorView: UIView {
                 let nearest = (angle / quarter).rounded() * quarter
                 if abs(angle - nearest) < 0.06 { angle = nearest }
                 box.rotation = angle
-            case .idle, .cardOpen, .cardPreview, .cardPrev, .cardNext:
+            case .idle, .cardOpen, .cardPreview, .cardPrev, .cardNext, .sourceOpen:
                 return
             }
             setNeedsLayout()
             host?.imageEdited(box, commit: false)
         case .ended, .cancelled, .failed:
+            if mode == .sourceOpen {
+                mode = .idle
+                if g.state == .ended, modeAt(v) == .sourceOpen { host?.openImageSource(box) }
+                return
+            }
+            // 選取中的卡片：點標題那一條（沒有拖動）＝改卡片名稱（v12.15.0，使用者要求）
+            if mode == .move, g.state == .ended, box.link != nil, !box.isLocked,
+               hypot(p.x - startPoint.x, p.y - startPoint.y) * s < 8 {
+                let dx = p.x - imageCenter.x
+                let dy = p.y - imageCenter.y
+                let ly = dx * sin(-box.rotation) + dy * cos(-box.rotation)
+                let caption = CardCover.captionHeight * box.width / CardCover.width
+                if ly > box.height / 2 - caption {
+                    mode = .idle
+                    if box != startBox { host?.imageEdited(box, commit: true) }
+                    host?.editCardCaption()
+                    return
+                }
+            }
             if let index = Self.cardModes.firstIndex(of: mode) {
                 // 卡片的按鈕：手指放開時還在同一顆上才算按到
                 let pressed = mode
@@ -978,9 +1031,12 @@ final class TextBoxView: UIView, UITextViewDelegate {
             // Markdown 頁那一整頁的方塊照舊（整頁都是打字的地方）
             var zone = area
             if !box.isMarkdownPage {
-                let near = CGRect(x: box.x - 14, y: box.y - 14, width: contentW / s + 14 + 70, height: contentH / s + 14 + 44)
-                    .intersection(area)
-                if !near.isNull, near.width > 1, near.height > 1 { zone = near }
+                // v12.15.0：預設沒有手寫區（使用者基本上都用鍵盤）：範圍就是方塊本身；設定裡「文字方塊的手寫區」打開才多一圈
+                let handwriting = TextDefaults.handwriting
+                let near = handwriting
+                    ? CGRect(x: box.x - 14, y: box.y - 14, width: contentW / s + 14 + 70, height: contentH / s + 14 + 44)
+                    : CGRect(x: box.x, y: box.y, width: contentW / s, height: contentH / s)
+                if !near.intersection(area).isNull, near.width > 1, near.height > 1 { zone = near.intersection(area) }
             }
             frame = CGRect(x: zone.minX * s, y: zone.minY * s, width: zone.width * s, height: zone.height * s)
             textView.textContainerInset = UIEdgeInsets(top: (box.y - area.minY) * s + iy, left: (box.x - area.minX) * s + ix,
@@ -1034,7 +1090,8 @@ final class TextBoxView: UIView, UITextViewDelegate {
         }
         borderLayer.strokeColor = (box.isLocked ? UIColor.systemOrange : UIColor.systemBlue).cgColor   // 固定：橘色虛線
         borderLayer.lineDashPattern = box.isLocked ? [6, 4] : nil
-        zoneLayer.path = editing ? UIBezierPath(rect: bounds).cgPath : nil     // 整頁淡淡上色：表示現在寫的都會變成文字
+        // 淡淡上色：表示這一塊寫的都會變成文字（沒開手寫區就不上色，只有方塊本身）
+        zoneLayer.path = editing && (TextDefaults.handwriting || box.isMarkdownPage) ? UIBezierPath(rect: bounds).cgPath : nil
         CATransaction.commit()
         // 選取（沒在輸入）時才顯示四個角
         makeHandles()

@@ -234,6 +234,9 @@ enum TextDefaults {
     static let sizeKey = "textDefaultSize"
     static let colorKey = "textDefaultColor"      // "auto" 或 6 位色碼
     static let boldKey = "textDefaultBold"
+    static let handwritingKey = "textDefaultHandwriting"     // 輸入時方塊外面多一圈手寫區（v12.15.0；預設關）
+
+    static var handwriting: Bool { UserDefaults.standard.bool(forKey: handwritingKey) }
     static let sizes: [Int] = [8, 10, 12, 14, 16, 18, 20, 24, 28]
 
     /// 某一本筆記本的預設（v12.9：每本各自記住）
@@ -487,6 +490,7 @@ struct NotebookMoreMenu: View {
     private var backdrop: Binding<String> {
         prefBinding("notebookBackdrop", "dark", onSet: { model.documentView?.applyBackdrop() })
     }
+    @AppStorage(TextDefaults.handwritingKey) private var handwritingZone = false
     private var textSize: Binding<Double> { prefBinding(TextDefaults.sizeKey, 16.0) }   // v12.14.0：跟實際的預設一樣是 16（以前顯示 14）
     private var textColor: Binding<String> { prefBinding(TextDefaults.colorKey, "auto") }
     private var textBold: Binding<Bool> { prefBinding(TextDefaults.boldKey, false) }
@@ -653,6 +657,9 @@ struct NotebookMoreMenu: View {
             Toggle(isOn: textBold) {
                 Label("粗體", systemImage: "bold")
             }
+            Toggle(isOn: $handwritingZone) {
+                Label("輸入時外面多一圈手寫區（所有筆記本）", systemImage: "pencil.and.scribble")
+            }
         }
     }
 
@@ -782,9 +789,15 @@ final class NotebookModel: ObservableObject {
 
     @Published var cardTab: CardOpen?                  // 白板：點了卡片的第二顆按鈕，要把那一本開成分頁（v12.12.2）
 
-    func openCard(_ id: UUID) {
-        cardOpen = CardOpen(notebookID: id, stamp: (cardOpen?.stamp ?? 0) + 1)
+    func openCard(_ id: UUID, jumpTo: (page: UUID, rect: CGRect)? = nil) {
+        let stamp = (cardOpen?.stamp ?? 0) + 1
+        cardOpen = CardOpen(notebookID: id, stamp: stamp,
+                            jump: jumpTo.map { WindowJump(page: $0.page, rect: $0.rect, stamp: stamp) })
     }
+
+    var embedded = false                               // 開在白板的浮動視窗裡（v12.15.0：不顯示左下角的百分比和鎖頭）
+    /// 浮動視窗裡剪刀的「貼到白板」（v12.15.0）：圖、哪一本、哪一頁、頁面上的範圍
+    var pasteToBoard: ((UIImage, UUID, UUID, CGRect) -> Void)?
 
     func openCardAsTab(_ id: UUID) {
         cardTab = CardOpen(notebookID: id, stamp: (cardTab?.stamp ?? 0) + 1)
@@ -1099,12 +1112,18 @@ struct NotebookEditorView: View {
     /// 開在浮動視窗裡時：工具列最左邊的「關閉、放大」由視窗提供（v12.12.3，照 GUGA 排成一排）
     private let windowActions: BoardWindowActions?
 
+    private let jump: WindowJump?
+
     init(meta: NotebookMeta, onClose: (() -> Void)? = nil, embedded: Bool = false,
-         windowActions: BoardWindowActions? = nil) {
-        _model = StateObject(wrappedValue: NotebookModel(meta: meta))
+         windowActions: BoardWindowActions? = nil, jump: WindowJump? = nil) {
+        let made = NotebookModel(meta: meta)
+        made.embedded = embedded
+        made.pasteToBoard = windowActions?.pasteToBoard
+        _model = StateObject(wrappedValue: made)
         self.onClose = onClose
         self.embedded = embedded
         self.windowActions = windowActions
+        self.jump = jump
     }
 
     /// 分頁下面那一排工具（v12.8.4，以前在系統的工具列裡）
@@ -1135,12 +1154,21 @@ struct NotebookEditorView: View {
                 closeAndTitle(titleMax)                            // 分頁收起來時：左上「× │ 名稱」（照 GUGA）
             }
             if embedded, let actions = windowActions {
-                toolCapsule(gap) {                                 // 浮動視窗：關閉、放大（開成整個畫面）
-                    Button(action: actions.close) {
-                        Image(systemName: "xmark")
+                toolCapsule(gap) {
+                    // 浮著：× 關閉、↗ 全屏。全屏、分屏（v12.15.0，照 GUGA）：‹ 回到浮著的大小；分屏另外有 ↗ 全屏
+                    if actions.mode == .float {
+                        Button(action: actions.close) {
+                            Image(systemName: "xmark")
+                        }
+                    } else {
+                        Button(action: actions.back) {
+                            Image(systemName: "chevron.left")
+                        }
                     }
-                    Button(action: actions.expand) {
-                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    if actions.mode != .full {
+                        Button(action: actions.expand) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        }
                     }
                 }
             }
@@ -1192,7 +1220,7 @@ struct NotebookEditorView: View {
     /// 分頁收起來時：﹀ 放回來（放在 ＋ 的右邊）
     @ViewBuilder
     private var expandTabsButton: some View {
-        if tabsCollapsed {
+        if tabsCollapsed && !embedded {                           // 浮動視窗裡不放（v12.15.0）
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) { tabsCollapsed = false }
             } label: {
@@ -1280,7 +1308,11 @@ struct NotebookEditorView: View {
                 // 白板上的浮動視窗（v12.12.0）：在白板上面、筆盒下面
                 if model.isBoard && !embedded {
                     BoardWindowsLayer(windows: $windows, tucked: $windowsTucked,
-                                      openCard: { openWindow($0) },
+                                      openCard: { id, target in openWindow(id, jump: target) },
+                                      pasteToBoard: { image, notebook, page, rect, windowFrame in
+                                          model.documentView?.placeClip(image, notebook: notebook, page: page, rect: rect,
+                                                                        avoiding: windowFrame)
+                                      },
                                       close: { closeWindow($0) },
                                       openAsTab: { window in
                                           closeWindow(window)
@@ -1330,7 +1362,7 @@ struct NotebookEditorView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     if !tabsCollapsed && !embedded { NotebookTabBar() }      // 分頁那一排可以收起來（︿）；浮動視窗裡沒有
-                    toolRow
+                    if !hasFullWindow { toolRow }                    // 白板上有全屏的視窗：白板自己的工具列先收起來（v12.15.0）
                 }
                 .background(
                     // 量上面兩排的高度，告訴白板：那一塊的觸控交給按鈕（v12.8.8）
@@ -1384,6 +1416,12 @@ struct NotebookEditorView: View {
             }
             .modifier(InsertPickers(model: model))               // 相簿、相機、檔案的選取畫面（v12.3）
             .onAppear {
+                if let target = jump {
+                    // 開視窗時就要跳到某個地方（白板上剪下來的圖的 ‹）：等這一本回到上次的位置之後再跳
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                        model.documentView?.jumpTo(pageID: target.page, rect: target.rect)
+                    }
+                }
                 if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
                 }
@@ -1420,7 +1458,25 @@ struct NotebookEditorView: View {
                 handleCardRequest(request)
             }
             .onChange(of: model.cardOpen) { _, open in
-                if let open = open { openWindow(open.notebookID) }
+                if let open = open { openWindow(open.notebookID, jump: open.jump) }
+            }
+            .onChange(of: windows) { _, list in
+                // 分屏（v12.15.0）：白板左下角的按鈕讓到右半邊
+                guard let doc = model.documentView else { return }
+                doc.boardLeftInset = list.contains(where: { $0.mode == .split }) ? (doc.bounds.width / 2).rounded() : 0
+                // 左下角第一顆「收起視窗」：有視窗才出現
+                doc.boardWindowCount = list.count
+                let tucked = $windowsTucked
+                doc.onToggleWindows = {
+                    withAnimation(BoardWindowView.spring) { tucked.wrappedValue.toggle() }
+                }
+                if list.isEmpty { windowsTucked = false }
+            }
+            .onChange(of: windowsTucked) { _, tucked in
+                model.documentView?.boardWindowsTucked = tucked
+            }
+            .onChange(of: jump) { _, target in
+                if let target = target { model.documentView?.jumpTo(pageID: target.page, rect: target.rect) }
             }
             .onChange(of: model.cardTab) { _, open in
                 guard let open = open else { return }
@@ -1472,11 +1528,14 @@ struct NotebookEditorView: View {
     }
 
     /// 開一本的浮動視窗（已經開著就拿到最上面）。最多同時 3 個，超過就收掉最早開的
-    private func openWindow(_ id: UUID) {
+    /// 白板上有全屏的浮動視窗
+    private var hasFullWindow: Bool { model.isBoard && !embedded && windows.contains(where: { $0.mode == .full }) }
+
+    private func openWindow(_ id: UUID, jump target: WindowJump? = nil) {
         // 浮動視窗裡的白板（白板裡放白板）：自己沒有地方放視窗，交給最外面那張白板開（v12.13.0；以前按了沒反應）
         if embedded {
             if let actions = windowActions {
-                actions.openCard(id)
+                actions.openCard(id, target)
             } else {
                 model.documentView?.showMessage("macwindow.on.rectangle", "這裡不能再開浮動視窗")
             }
@@ -1492,12 +1551,16 @@ struct NotebookEditorView: View {
         }
         windowsTucked = false
         if let i = windows.firstIndex(where: { $0.meta.id == id }) {
-            let existing = windows.remove(at: i)
+            var existing = windows.remove(at: i)
+            if let target = target { existing.jump = target }     // 已經開著：直接跳過去
             windows.append(existing)
             return
         }
         if windows.count >= 3 { closeWindow(windows[0]) }
-        windows.append(BoardWindow(meta: meta, frame: nil))
+        var window = BoardWindow(meta: meta, frame: nil)
+        window.jump = target
+        if let forced = SelfTest.windowMode { window.mode = forced }   // 自動測試：一開就是分屏／全屏
+        windows.append(window)
     }
 
     /// 關掉浮動視窗：裡面的筆記本會自己存檔；白板上那張卡片的封面換成最新的

@@ -101,6 +101,12 @@ enum SelfTest {
             case "cards":
                 // 白板上的筆記本（v12.12.0）：打開白板後放兩張卡片、開兩個浮動視窗（notebookOpened 裡做）
                 library.openNotebook = library.addBoard(in: nil, title: "卡片測試白板", width: 100 * 842, height: 100 * 595)
+            case "textlinks":
+                // 文字方塊的外框樣式、連線（v12.13.0）：白板上放幾個方塊和線，選取其中一個（看四邊的點）
+                library.openNotebook = library.addBoard(in: nil, title: "連線測試白板", width: 100 * 842, height: 100 * 595)
+            case "textstyle":
+                // 同上，在一般筆記本裡，而且打開「卡片樣式」面板
+                library.openNotebook = library.addNotebook(in: nil, title: "連線測試")
             case "manypens":
                 // 筆盒超過 10 支筆（v12.11.0）：筆的那一段固定長度、用滑的
                 library.openNotebook = library.addNotebook(in: nil)
@@ -128,6 +134,13 @@ enum SelfTest {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
                     view?.selfTestSelectCard(second.id, preview: true)   // 另一張卡片選取＋預覽：看左上角的按鈕、翻頁鈕、頁碼
                 }
+            }
+            return
+        }
+        if scene == "textlinks" || scene == "textstyle" {
+            let panel = scene == "textstyle"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                view?.selfTestLinks(panel: panel)
             }
             return
         }

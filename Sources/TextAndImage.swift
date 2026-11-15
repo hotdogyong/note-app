@@ -149,6 +149,10 @@ final class ImageEditorView: UIView {
             // 卡片（v12.12.4）：拿掉「縮成小圖」。那顆的圖示看起來像「打開」，使用者按了之後卡片縮成一小塊、
             // 再點只會彈出封面的大圖，以為卡片不見、視窗打不開
             all.remove(at: 4)
+            // 卡片（v12.13.0）：拿掉拷貝、剪下。貼出來的只是一張封面的圖（不是卡片、按了不會開），
+            // 剪下的話原本的卡片就沒了。要再放一張：下面的「複製」，或長按白板 →「匯入現有的」
+            all.remove(at: 1)
+            all.remove(at: 0)
             // 卡片（v12.12.3）：改卡片下面顯示的名稱（不會改到筆記本的檔名）
             all.insert(("pencil", .white, { [weak self] in self?.host?.editCardCaption() }), at: 0)
         }
@@ -708,6 +712,28 @@ final class TextBoxView: UIView, UITextViewDelegate {
     private var scale: CGFloat = 1
     var onChange: (() -> Void)?
     var onEditingChanged: (() -> Void)?
+    // 外框樣式、連線（v12.13.0；TextLinks.swift）
+    private let styleLayer = CAShapeLayer()          // 外框（填滿或只有線）
+    private let bandLayer = CAShapeLayer()           // 「上面一條」
+    private var dots: [UIView] = []                  // 四邊的點：0 上、1 右、2 下、3 左；往外拉＝連到另一個文字方塊
+    var onLink: ((Int, UIGestureRecognizer.State, CGPoint) -> Void)?   // 哪一邊、手勢的狀態、手指在頁面視圖上的位置
+    var onRelayout: (() -> Void)?                    // 位置、大小變了（連線要跟著重畫）
+    var linked = false {                             // 有連線接著它：空的也留著、顯示「輸入文字」
+        didSet { if linked != oldValue { refreshPlaceholder() } }
+    }
+    /// 外框的範圍（這個視圖自己的座標）：有樣式的比文字大一圈；沒有樣式就是文字的範圍
+    private(set) var frameRect = CGRect.zero
+    /// 外框的範圍（頁面座標）：連線接在它四邊的中點
+    var linkRect: CGRect {
+        let s = max(scale, 0.0001)
+        return CGRect(x: box.x + (frameRect.minX - contentRect.minX) / s, y: box.y + (frameRect.minY - contentRect.minY) / s,
+                      width: frameRect.width / s, height: frameRect.height / s)
+    }
+
+    private func refreshPlaceholder() {
+        let wanted = isUserInteractionEnabled || box.fill != nil || linked
+        placeholder.isHidden = !wanted || !textView.text.isEmpty
+    }
 
     static let insetX: CGFloat = 4      // 留白（頁面座標）
 
@@ -754,6 +780,10 @@ final class TextBoxView: UIView, UITextViewDelegate {
         zoneLayer.fillColor = UIColor.systemBlue.withAlphaComponent(0.05).cgColor
         zoneLayer.strokeColor = nil
         layer.insertSublayer(zoneLayer, at: 0)
+        styleLayer.lineJoin = .round
+        layer.insertSublayer(styleLayer, at: 1)                    // 在字的下面
+        bandLayer.strokeColor = nil
+        layer.insertSublayer(bandLayer, at: 2)
         borderLayer.fillColor = nil
         borderLayer.strokeColor = UIColor.systemBlue.cgColor
         borderLayer.lineWidth = 1.5
@@ -788,6 +818,36 @@ final class TextBoxView: UIView, UITextViewDelegate {
         }
     }
 
+    private func makeDots() {
+        guard dots.isEmpty else { return }
+        for i in 0 ..< 4 {
+            let d = UIView(frame: CGRect(x: 0, y: 0, width: 32, height: 32))     // 摸得到的範圍比看到的點大
+            d.tag = Self.handleTag
+            d.backgroundColor = .clear
+            let dot = CALayer()
+            dot.frame = CGRect(x: 9.5, y: 9.5, width: 13, height: 13)
+            dot.cornerRadius = 6.5
+            dot.backgroundColor = UIColor(white: 0.62, alpha: 1).cgColor
+            dot.borderColor = UIColor(white: 1, alpha: 0.85).cgColor
+            dot.borderWidth = 1
+            d.layer.addSublayer(dot)
+            d.isHidden = true
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(dragDot(_:)))
+            pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+            pan.delegate = handleYield
+            d.addGestureRecognizer(pan)
+            d.accessibilityIdentifier = "\(i)"
+            addSubview(d)
+            dots.append(d)
+        }
+    }
+
+    /// 從四邊的點往外拉：交給 NotebookView（畫預覽的線；放開時多一個文字方塊，或連到已經有的那一個）
+    @objc private func dragDot(_ g: UIPanGestureRecognizer) {
+        guard let d = g.view, let i = Int(d.accessibilityIdentifier ?? ""), let sv = superview else { return }
+        onLink?(i, g.state, g.location(in: sv))
+    }
+
     /// 拖右邊的角：右邊跟著手指（改寬度）；拖左邊的角：左邊跟著手指；字的大小不變，只改換行的位置
     @objc private func dragHandle(_ g: UIPanGestureRecognizer) {
         guard let h = g.view, let i = Int(h.accessibilityIdentifier ?? ""), let sv = superview, !box.isLocked else { return }
@@ -813,6 +873,8 @@ final class TextBoxView: UIView, UITextViewDelegate {
     // 角在框外面一點點，也要點得到
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         if super.point(inside: point, with: event) { return true }
+        if isUserInteractionEnabled, frameRect.contains(point) { return true }      // 有外框的：框比視圖大一圈
+        if dots.contains(where: { !$0.isHidden && $0.frame.contains(point) }) { return true }
         return handles.contains { !$0.isHidden && $0.frame.insetBy(dx: -8, dy: -8).contains(point) }
     }
     private let borderLayer = CAShapeLayer()     // 藍框：只框住實際的文字
@@ -842,7 +904,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
     /// 選取中：藍框、可以點進去編輯或用 Pencil 寫；沒選取：不攔觸控（Pencil 照常在上面畫）
     func setActive(_ on: Bool) {
         isUserInteractionEnabled = on
-        placeholder.isHidden = !on || !textView.text.isEmpty
+        refreshPlaceholder()
         pencilOnlyTextGestures()
         relayout()
     }
@@ -924,11 +986,39 @@ final class TextBoxView: UIView, UITextViewDelegate {
             let h = image.size.height / MathRenderer.scaleFactor * s
             mathView.frame = CGRect(x: contentRect.minX + ix, y: contentRect.minY + iy, width: w, height: h)
         }
-        placeholder.isHidden = !isUserInteractionEnabled || !textView.text.isEmpty
+        refreshPlaceholder()
+        // 外框樣式（v12.13.0）
+        let styleShape = box.shape ?? 1
+        frameRect = box.fill == nil ? contentRect : TextBoxStyle.frame(content: contentRect, shape: styleShape, scale: s)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        borderLayer.path = isUserInteractionEnabled
-            ? UIBezierPath(roundedRect: contentRect, cornerRadius: 4).cgPath : nil
+        if let rgb = box.fill {
+            let outline = TextBoxStyle.path(frameRect, shape: styleShape, scale: s).cgPath
+            let tint = TextBoxStyle.color(rgb).cgColor
+            let mode = box.fillMode ?? 0
+            styleLayer.path = outline
+            styleLayer.fillColor = mode == 0 ? tint : nil
+            styleLayer.strokeColor = mode == 0 ? nil : tint
+            styleLayer.lineWidth = max(2 * s, 1)
+            if mode == 1 {
+                let band = CGRect(x: frameRect.minX, y: frameRect.minY, width: frameRect.width, height: TextBoxStyle.bandHeight(s))
+                bandLayer.path = outline.intersection(CGPath(rect: band, transform: nil))
+                bandLayer.fillColor = tint
+            } else {
+                bandLayer.path = nil
+            }
+        } else {
+            styleLayer.path = nil
+            bandLayer.path = nil
+        }
+        if isUserInteractionEnabled {
+            // 選取的藍框：有外框樣式的，框在外框的外面一點
+            borderLayer.path = box.fill == nil
+                ? UIBezierPath(roundedRect: contentRect, cornerRadius: 4).cgPath
+                : TextBoxStyle.path(frameRect.insetBy(dx: -3, dy: -3), shape: styleShape, scale: s).cgPath
+        } else {
+            borderLayer.path = nil
+        }
         borderLayer.strokeColor = (box.isLocked ? UIColor.systemOrange : UIColor.systemBlue).cgColor   // 固定：橘色虛線
         borderLayer.lineDashPattern = box.isLocked ? [6, 4] : nil
         zoneLayer.path = editing ? UIBezierPath(rect: bounds).cgPath : nil     // 整頁淡淡上色：表示現在寫的都會變成文字
@@ -936,13 +1026,25 @@ final class TextBoxView: UIView, UITextViewDelegate {
         // 選取（沒在輸入）時才顯示四個角
         makeHandles()
         let showHandles = isUserInteractionEnabled && !editing && !box.isLocked
-        let corners = [CGPoint(x: contentRect.minX, y: contentRect.minY), CGPoint(x: contentRect.maxX, y: contentRect.minY),
-                       CGPoint(x: contentRect.maxX, y: contentRect.maxY), CGPoint(x: contentRect.minX, y: contentRect.maxY)]
+        let corners = [CGPoint(x: frameRect.minX, y: frameRect.minY), CGPoint(x: frameRect.maxX, y: frameRect.minY),
+                       CGPoint(x: frameRect.maxX, y: frameRect.maxY), CGPoint(x: frameRect.minX, y: frameRect.maxY)]
         for (i, h) in handles.enumerated() {
             h.isHidden = !showHandles
             h.center = corners[i]
             bringSubviewToFront(h)
         }
+        // 四邊的點（v12.13.0）：選取（沒在輸入）時才有；Markdown 頁那一整頁的方塊沒有
+        makeDots()
+        let showDots = showHandles && !box.isMarkdownPage
+        let out: CGFloat = 20
+        let middles = [CGPoint(x: frameRect.midX, y: frameRect.minY - out), CGPoint(x: frameRect.maxX + out, y: frameRect.midY),
+                       CGPoint(x: frameRect.midX, y: frameRect.maxY + out), CGPoint(x: frameRect.minX - out, y: frameRect.midY)]
+        for (i, d) in dots.enumerated() {
+            d.isHidden = !showDots
+            d.center = middles[i]
+            bringSubviewToFront(d)
+        }
+        onRelayout?()
     }
 
     /// 在某個位置放游標（沒在輸入的話先進入輸入）
@@ -1420,6 +1522,7 @@ final class TextBar: UIView {
     private let alignButton = UIButton(type: .system)
     private let lockButton = UIButton(type: .system)
     private let markdownButton = UIButton(type: .system)     // Markdown 排版（v12.9）
+    let styleButton = UIButton(type: .system)                // 卡片樣式（v12.13.0）
 
     init(host: NotebookView) {
         self.host = host
@@ -1463,6 +1566,9 @@ final class TextBar: UIView {
         markdownButton.addAction(UIAction { [weak host] _ in host?.toggleTextMarkdown() }, for: .touchUpInside)
         markdownButton.setImage(UIImage(systemName: "doc.richtext"), for: .normal)
         items.append(markdownButton)                               // Markdown 排版開關（v12.9）
+        styleButton.addAction(UIAction { [weak host] _ in host?.showTextStyle() }, for: .touchUpInside)
+        styleButton.setImage(UIImage(systemName: "paintpalette"), for: .normal)
+        items.append(styleButton)                                  // 卡片樣式：外框的顏色、形狀（v12.13.0）
 
         // 分隔線：前面是文字樣式，後面是剪下、拷貝、複製、刪除
         let divider = UIView()
@@ -1502,6 +1608,7 @@ final class TextBar: UIView {
         sizeLabel.text = "\(size)"
         boldButton.tintColor = box.bold ? .systemYellow : .white
         markdownButton.tintColor = box.isMarkdown ? .systemYellow : .white
+        styleButton.tintColor = box.fill != nil ? .systemYellow : .white
         let alignSymbol = ["text.alignleft", "text.aligncenter", "text.alignright"][min(max(box.align, 0), 2)]
         alignButton.setImage(UIImage(systemName: alignSymbol), for: .normal)
         alignButton.tintColor = .white

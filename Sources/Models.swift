@@ -214,6 +214,7 @@ struct NotePage: Codable, Hashable, Identifiable {
     var images: [ImageBox]? = nil   // 這一頁的圖片
     var tapes: [TapeBox]? = nil     // 這一頁的紙膠帶
     var modified: Date? = nil       // 文字、圖片、紙膠帶最後改的時間（v12.9.2；筆跡看筆跡檔的修改時間）
+    var links: [BoxLink]? = nil     // 文字方塊之間的連線（v12.13.0；TextLinks.swift）
 
     var paperStyle: PaperStyle { paper ?? PaperStyle() }
 }
@@ -333,6 +334,9 @@ struct TextBox: Codable, Hashable, Identifiable {
     var fixedWidth: CGFloat? = nil   // 拖過角的話：固定用這個寬度換行；沒有就自動依內容決定
     var locked: Bool? = nil          // 固定：不能移動、拉寬度（內容照樣可以改）（v11.17）
     var markdown: Bool? = nil        // Markdown 排版（v12.9）：標題、條列、粗體、表格…；Markdown 頁就是一個整頁寬的 Markdown 方塊
+    var fill: [Double]? = nil        // 外框樣式的顏色（v12.13.0；TextLinks.swift）；nil＝沒有外框，就是單純的字
+    var fillMode: Int? = nil         // 0 整個填滿、1 外框＋上面一條、2 只有外框
+    var shape: Int? = nil            // 0 方、1 圓角、2 圓頭
 
     var isLocked: Bool { locked ?? false }
     var isMarkdown: Bool { markdown ?? false }

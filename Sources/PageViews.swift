@@ -349,6 +349,9 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             syncOverlay()
         }
         syncImages(page.images ?? [])
+        linkView.isUserInteractionEnabled = false
+        addSubview(linkView)                         // 文字方塊之間的連線（v12.13.0）：在筆跡上面、文字方塊下面
+        links = page.links ?? []
         syncTexts(page.texts ?? [])
         syncTapes(page.tapes ?? [])
     }
@@ -619,6 +622,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             textViews[id] = nil
         }
         let s = bounds.width / max(page.spec.width, 1)
+        linkLayoutPaused = true
         for t in texts {
             if let view = textViews[t.id] {
                 if view.box != t { view.update(t) }
@@ -626,6 +630,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
                 let view = TextBoxView(box: t, pageID: page.id, pageWidth: page.spec.width,
                                        pageHeight: page.spec.height)
                 view.wrapWidth = textWrapWidth(page.spec)            // 白板：換行的寬度不照整張白板算
+                view.onRelayout = { [weak self] in self?.layoutLinks() }
                 if let editor = subviews.first(where: { $0 is SelectionEditorView }) {
                     insertSubview(view, belowSubview: editor)
                 } else {
@@ -635,6 +640,109 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
                 if s > 0 { view.apply(scale: s) }
             }
         }
+        linkLayoutPaused = false
+        markLinked()
+        layoutLinks()
+    }
+
+    // MARK: 文字方塊之間的連線（v12.13.0；TextLinks.swift）
+
+    private let linkView = UIView()
+    private(set) var links: [BoxLink] = []
+    private var linkLayers: [UUID: CAShapeLayer] = [:]
+    private let linkPreview = CAShapeLayer()
+    private var linkLayoutPaused = false             // 一次改很多個方塊時先不要每個都重畫
+
+    func syncLinks(_ list: [BoxLink]) {
+        links = list
+        markLinked()
+        layoutLinks()
+    }
+
+    /// 告訴每個文字方塊有沒有線接著它（有的話，空的也留著、顯示「輸入文字」）
+    private func markLinked() {
+        var ends = Set<UUID>()
+        for link in links where textViews[link.from] != nil && textViews[link.to] != nil {
+            ends.insert(link.from)
+            ends.insert(link.to)
+        }
+        for (id, view) in textViews { view.linked = ends.contains(id) }
+    }
+
+    private func styleLinkLayer(_ shape: CAShapeLayer, scale s: CGFloat) {
+        shape.fillColor = nil
+        shape.strokeColor = UIColor(white: 0.62, alpha: 1).cgColor
+        shape.lineWidth = max(2 * s, 1)
+        shape.lineJoin = .round
+        shape.lineCap = .round
+    }
+
+    /// 每一條線各自一個小圖層（白板很大，不要用一個跟白板一樣大的圖層）
+    func layoutLinks() {
+        if linkLayoutPaused { return }
+        if links.isEmpty && linkLayers.isEmpty { return }
+        let s = bounds.width / max(page.spec.width, 1)
+        guard s > 0 else { return }
+        linkView.frame = bounds
+        var alive = Set<UUID>()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for link in links {
+            guard let a = textViews[link.from], let b = textViews[link.to] else { continue }
+            let ra = a.linkRect.applying(CGAffineTransform(scaleX: s, y: s))
+            let rb = b.linkRect.applying(CGAffineTransform(scaleX: s, y: s))
+            let path = BoxLinkPath.path(from: BoxLinkPath.anchor(ra, side: link.fromSide), fromSide: link.fromSide,
+                                        to: BoxLinkPath.anchor(rb, side: link.toSide), toSide: link.toSide, scale: s)
+            let shape: CAShapeLayer
+            if let existing = linkLayers[link.id] {
+                shape = existing
+            } else {
+                shape = CAShapeLayer()
+                linkView.layer.addSublayer(shape)
+                linkLayers[link.id] = shape
+            }
+            styleLinkLayer(shape, scale: s)
+            let box = path.boundingBoxOfPath.insetBy(dx: -4 * s - 2, dy: -4 * s - 2)
+            shape.frame = box
+            var shift = CGAffineTransform(translationX: -box.minX, y: -box.minY)
+            shape.path = path.copy(using: &shift)
+            alive.insert(link.id)
+        }
+        for (id, shape) in linkLayers where !alive.contains(id) {
+            shape.removeFromSuperlayer()
+            linkLayers[id] = nil
+        }
+        CATransaction.commit()
+    }
+
+    /// 從點往外拉的時候：先畫出線（跟放開後會多出來的方塊的位置）。座標都是頁面座標
+    func showLinkPreview(from start: CGPoint, fromSide: Int, to end: CGPoint, toSide: Int, ghost: CGRect?) {
+        let s = bounds.width / max(page.spec.width, 1)
+        guard s > 0 else { return }
+        linkView.frame = bounds
+        if linkPreview.superlayer == nil { linkView.layer.addSublayer(linkPreview) }
+        let a = CGPoint(x: start.x * s, y: start.y * s)
+        let b = CGPoint(x: end.x * s, y: end.y * s)
+        let path = CGMutablePath()
+        path.addPath(BoxLinkPath.path(from: a, fromSide: fromSide, to: b, toSide: toSide, scale: s))
+        if let ghost = ghost {
+            let r = ghost.applying(CGAffineTransform(scaleX: s, y: s))
+            path.addPath(UIBezierPath(roundedRect: r, cornerRadius: 9 * s).cgPath)
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        styleLinkLayer(linkPreview, scale: s)
+        linkPreview.strokeColor = UIColor.systemBlue.cgColor
+        let box = path.boundingBoxOfPath.insetBy(dx: -4 * s - 2, dy: -4 * s - 2)
+        linkPreview.frame = box
+        var shift = CGAffineTransform(translationX: -box.minX, y: -box.minY)
+        linkPreview.path = path.copy(using: &shift)
+        CATransaction.commit()
+    }
+
+    func hideLinkPreview() {
+        linkPreview.removeFromSuperlayer()
+        linkPreview.path = nil
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -644,7 +752,10 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         if page.pdf != nil { pdfView.frame = bounds }
         layoutCanvasWindow(scale: s)
         if !isFlat { layer.shadowPath = UIBezierPath(rect: bounds).cgPath }
+        linkLayoutPaused = true
         for view in textViews.values { view.apply(scale: s) }
+        linkLayoutPaused = false
+        layoutLinks()
         for (id, view) in imageViews {
             if let box = imageBoxes[id] { placeImage(view, box) }
         }
@@ -1388,8 +1499,62 @@ enum PageRenderer {
     }
 
     /// 文字方塊（匯出、縮圖用）
+    /// 一個文字方塊的範圍（頁面座標，含留白）：資料裡只存寬度，高度要用字算出來
+    static func textContentRect(_ t: TextBox, page: NotePage) -> CGRect {
+        var w = t.width
+        var h: CGFloat
+        if !t.text.isEmpty, MathRenderer.needsRender(t),
+           let image = MathRenderer.shared.cached(MathRenderer.request(for: t, pageWidth: textWrapWidth(page.spec))) {
+            h = image.size.height / MathRenderer.scaleFactor
+            if t.fixedWidth == nil { w = max(16, image.size.width / MathRenderer.scaleFactor) }
+        } else {
+            let font = TextBoxView.font(for: t, scale: 1)
+            let text = t.text.isEmpty ? "輸入文字" : t.text
+            let size = (text as NSString).boundingRect(with: CGSize(width: t.width + 2, height: CGFloat.greatestFiniteMagnitude),
+                                                       options: [.usesLineFragmentOrigin, .usesFontLeading],
+                                                       attributes: [.font: font], context: nil)
+            h = max(ceil(size.height), font.lineHeight)
+        }
+        return CGRect(x: t.x, y: t.y, width: w + TextBoxView.insetX * 2, height: h + TextBoxView.insetY * 2)
+    }
+
+    /// 文字方塊的外框（有樣式的比文字大一圈）
+    static func textFrameRect(_ t: TextBox, page: NotePage) -> CGRect {
+        let content = textContentRect(t, page: page)
+        return t.fill == nil ? content : TextBoxStyle.frame(content: content, shape: t.shape ?? 1, scale: 1)
+    }
+
+    /// 文字方塊的外框樣式、方塊之間的連線（v12.13.0；匯出、縮圖用）
+    static func drawTextStyles(_ page: NotePage, rect: CGRect) {
+        let texts = page.texts ?? []
+        guard texts.contains(where: { $0.fill != nil }) || !(page.links ?? []).isEmpty,
+              let ctx = UIGraphicsGetCurrentContext() else { return }
+        let k = rect.width / max(page.spec.width, 1)
+        var frames: [UUID: CGRect] = [:]
+        for t in texts where t.fill != nil || (page.links ?? []).contains(where: { $0.from == t.id || $0.to == t.id }) {
+            let f = textFrameRect(t, page: page)
+            frames[t.id] = CGRect(x: rect.minX + f.minX * k, y: rect.minY + f.minY * k, width: f.width * k, height: f.height * k)
+        }
+        ctx.saveGState()
+        ctx.setStrokeColor(UIColor(white: 0.62, alpha: 1).cgColor)
+        ctx.setLineWidth(max(2 * k, 0.5))
+        ctx.setLineJoin(.round)
+        ctx.setLineCap(.round)
+        for link in page.links ?? [] {
+            guard let a = frames[link.from], let b = frames[link.to] else { continue }
+            ctx.addPath(BoxLinkPath.path(from: BoxLinkPath.anchor(a, side: link.fromSide), fromSide: link.fromSide,
+                                         to: BoxLinkPath.anchor(b, side: link.toSide), toSide: link.toSide, scale: k))
+            ctx.strokePath()
+        }
+        ctx.restoreGState()
+        for t in texts where t.fill != nil {
+            if let f = frames[t.id] { TextBoxStyle.draw(t, rect: f, scale: k) }
+        }
+    }
+
     static func drawTexts(_ page: NotePage, rect: CGRect) {
         let k = rect.width / max(page.spec.width, 1)
+        drawTextStyles(page, rect: rect)
         for t in page.texts ?? [] where !t.text.isEmpty {
             // 數學式：有排好的圖片就畫圖片
             if MathRenderer.needsRender(t),

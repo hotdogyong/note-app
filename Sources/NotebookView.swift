@@ -944,7 +944,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private func textBox(at p: CGPoint) -> TextBoxView? {
         for pv in pageViews.values {
             for tv in pv.textViews.values {
-                if tv.convert(tv.contentRect, to: self).insetBy(dx: -6, dy: -6).contains(p) { return tv }
+                if tv.convert(tv.frameRect, to: self).insetBy(dx: -6, dy: -6).contains(p) { return tv }
             }
         }
         return nil
@@ -972,6 +972,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         box.y = min(max(local.y / s - box.fontSize * 0.7, 0), max(pv.page.spec.height - 30, 0))
         let darkPage = pv.page.isDarkBackground
         box.rgba = TextDefaults.rgba(model.meta.id) ?? defaultTextRGBA(pdf: !darkPage)
+        // 存成預設的外框樣式（v12.13.0；「卡片樣式」面板的「存成預設」）
+        if let style = TextStyleDefault.load(), style.fill != nil {
+            box.fill = style.fill
+            box.fillMode = style.fillMode
+            box.shape = style.shape
+            box.rgba = TextBoxStyle.readable(text: box.rgba, fill: box.fill, mode: box.fillMode)
+        }
         let before = model.texts(of: pv.page.id)
         model.setTexts(before + [box], pageID: pv.page.id)
         pv.syncTexts(model.texts(of: pv.page.id))
@@ -1019,6 +1026,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 box.fixedWidth = width
             }
         }
+        tv.onLink = { [weak self, weak tv] side, state, point in
+            guard let self = self, let tv = tv else { return }
+            self.handleLink(tv, side: side, state: state, at: point)
+        }
         textDrag.isEnabled = !edit && !tv.textView.isFirstResponder && !tv.box.isLocked
         textCursorPress.isEnabled = edit || tv.textView.isFirstResponder
     }
@@ -1063,9 +1074,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         tv.removeGestureRecognizer(textCursorPress)
         tv.onEditingChanged = nil
         tv.onResize = nil
+        tv.onLink = nil
+        pageViews[tv.pageID]?.hideLinkPreview()
         var texts = model.texts(of: tv.pageID)
         growMarkdownPageIfNeeded(tv)
+        // 空的方塊拿掉；有線接著的留著（v12.13.0：從點拉出來的新方塊還沒打字，也要看得到）
         if let i = texts.firstIndex(where: { $0.id == tv.box.id }), !texts[i].isMarkdownPage,   // Markdown 頁的方塊空了也留著
+           !tv.linked,
            texts[i].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             texts.remove(at: i)
             model.setTexts(texts, pageID: tv.pageID)
@@ -1142,21 +1157,214 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     func positionTextBar() {
         guard let tv = activeText, textBar.superview != nil else { return }
-        let r = tv.convert(tv.contentRect, to: self)
-        let size = CGSize(width: 630, height: 44)
+        let r = tv.convert(tv.frameRect, to: self)
+        // v12.13.0：多了「卡片樣式」一顆（630 → 674）；畫面比較窄（浮動視窗裡）就縮到放得下
+        let size = CGSize(width: min(674, max(bounds.width - 16, 320)), height: 44)
         var y: CGFloat
         if tv.textView.isFirstResponder {
             // 輸入中：放在文字上面，盡量不擋到要寫字的地方
             y = r.minY - 12 - size.height
             if y < 8 { y = r.maxY + 12 }
         } else {
-            y = r.maxY + 12
-            if y + size.height > bounds.height - 8 - bottomObstruction { y = r.minY - 12 - size.height }
+            // 選取中：方塊四邊外面有連線用的點，工具列再往外讓一點
+            y = r.maxY + 36
+            if y + size.height > bounds.height - 8 - bottomObstruction { y = r.minY - 36 - size.height }
         }
         // v12.9.8：鍵盤出來時不要被鍵盤蓋住
         if keyboardOverlap > 0 { y = min(y, bounds.height - keyboardOverlap - size.height - 8) }
         let x = min(max(r.midX - size.width / 2, 8), max(8, bounds.width - size.width - 8))
         textBar.frame = CGRect(x: x, y: max(8, y), width: size.width, height: size.height)
+    }
+
+    // MARK: 文字方塊的外框樣式、連線（v12.13.0；TextLinks.swift）
+
+    /// 工具列的調色盤：跳出「卡片樣式」面板（顏色的用法、顏色、形狀；套用預設、存成預設、清除）
+    func showTextStyle() {
+        guard let tv = activeText else { return }
+        if tv.textView.isFirstResponder {                       // 輸入中：先退到選取（面板出來時鍵盤收起來）
+            tv.textView.resignFirstResponder()
+            textEditingChanged(tv)
+        }
+        let box = tv.box
+        let panel = TextStylePanel(fill: box.fill, mode: box.fillMode ?? 0, shape: box.shape ?? 1) { [weak self] fill, mode, shape in
+            self?.applyTextStyle(fill: fill, mode: mode, shape: shape)
+        }
+        let vc = UIHostingController(rootView: panel)
+        vc.modalPresentationStyle = .popover
+        vc.preferredContentSize = CGSize(width: 300, height: 500)
+        if let pop = vc.popoverPresentationController {
+            pop.sourceView = textBar
+            pop.sourceRect = textBar.styleButton.frame
+            pop.permittedArrowDirections = [.up, .down]
+        }
+        Presenter.present(vc)
+    }
+
+    private func applyTextStyle(fill: [Double]?, mode: Int, shape: Int) {
+        updateActive { box in
+            box.fill = fill
+            box.fillMode = fill == nil ? nil : mode
+            box.shape = fill == nil ? nil : shape
+            box.rgba = TextBoxStyle.readable(text: box.rgba, fill: box.fill, mode: box.fillMode)
+        }
+    }
+
+    /// 從點拉出來的新方塊：字跟來源一樣；外框跟來源一樣（來源沒有外框：淡紫藍的圓角外框）。
+    /// 位置：線接到的那一邊的中點剛好在手指放開的地方（pp，頁面座標）
+    private func newLinkedBox(like source: TextBox, arrival: Int, at pp: CGPoint, page: NotePage) -> TextBox {
+        var box = TextBox()
+        box.fontSize = source.fontSize
+        box.bold = source.bold
+        box.rgba = source.rgba
+        box.align = source.align
+        if source.fill != nil {
+            box.fill = source.fill
+            box.fillMode = source.fillMode
+            box.shape = source.shape
+        } else {
+            box.fill = TextBoxStyle.linkedFill
+            box.fillMode = 2
+            box.shape = 1
+        }
+        let font = TextBoxView.font(for: box, scale: 1)
+        box.width = ceil(("輸入文字" as NSString).size(withAttributes: [.font: font]).width) + 2
+        let content = PageRenderer.textContentRect(box, page: page)
+        let frame = PageRenderer.textFrameRect(box, page: page)
+        let padX = (frame.width - content.width) / 2
+        let padY = (frame.height - content.height) / 2
+        switch arrival {
+        case 3:
+            box.x = pp.x + padX
+            box.y = pp.y - content.height / 2
+        case 1:
+            box.x = pp.x - padX - content.width
+            box.y = pp.y - content.height / 2
+        case 0:
+            box.x = pp.x - content.width / 2
+            box.y = pp.y + padY
+        default:
+            box.x = pp.x - content.width / 2
+            box.y = pp.y - padY - content.height
+        }
+        box.x = min(max(box.x, 0), max(page.spec.width - 40, 0))
+        box.y = min(max(box.y, 0), max(page.spec.height - 30, 0))
+        return box
+    }
+
+    /// 從文字方塊四邊的點往外拉（TextBoxView 呼叫）。point：手指在那一頁視圖上的位置
+    private func handleLink(_ tv: TextBoxView, side: Int, state: UIGestureRecognizer.State, at point: CGPoint) {
+        guard let pv = pageViews[tv.pageID], tv === activeText else { return }
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        let pp = CGPoint(x: point.x / s, y: point.y / s)
+        let start = BoxLinkPath.anchor(tv.linkRect, side: side)
+        // 拉到另一個文字方塊上：連到它（不另外多一個方塊）
+        let target = pv.textViews.values.first { other in
+            other !== tv && !other.box.isMarkdownPage && other.linkRect.insetBy(dx: -8, dy: -8).contains(pp)
+        }
+        switch state {
+        case .began, .changed:
+            if let target = target {
+                let toSide = BoxLinkPath.nearestSide(target.linkRect, to: start)
+                pv.showLinkPreview(from: start, fromSide: side, to: BoxLinkPath.anchor(target.linkRect, side: toSide),
+                                   toSide: toSide, ghost: nil)
+            } else {
+                let toSide = BoxLinkPath.arrivalSide(from: start, fromSide: side, to: pp)
+                let ghost = PageRenderer.textFrameRect(newLinkedBox(like: tv.box, arrival: toSide, at: pp, page: pv.page), page: pv.page)
+                pv.showLinkPreview(from: start, fromSide: side, to: pp, toSide: toSide, ghost: ghost)
+            }
+        case .ended:
+            pv.hideLinkPreview()
+            if let target = target {
+                toggleLink(from: tv, side: side, to: target, on: pv)
+                return
+            }
+            // 拉得太短（還在點的旁邊）：不算
+            guard hypot(pp.x - start.x, pp.y - start.y) * s > 48 else { return }
+            addLinkedText(from: tv, side: side, at: pp, on: pv)
+        default:
+            pv.hideLinkPreview()
+        }
+    }
+
+    /// 兩個方塊之間：沒有線就連起來；已經有線（不管方向）就拿掉
+    private func toggleLink(from tv: TextBoxView, side: Int, to target: TextBoxView, on pv: NotePageView) {
+        let id = pv.page.id
+        var links = model.links(of: id)
+        let a = tv.box.id
+        let b = target.box.id
+        if let i = links.firstIndex(where: { ($0.from == a && $0.to == b) || ($0.from == b && $0.to == a) }) {
+            links.remove(at: i)
+            showMessage("minus.circle", "這兩個方塊之間的線拿掉了")
+        } else {
+            let start = BoxLinkPath.anchor(tv.linkRect, side: side)
+            links.append(BoxLink(from: a, fromSide: side, to: b, toSide: BoxLinkPath.nearestSide(target.linkRect, to: start)))
+        }
+        model.setLinks(links, pageID: id)
+        pv.syncLinks(links)
+    }
+
+    /// 放開的地方多一個文字方塊，跟來源連起來；新的方塊變成選取的（再點一下就能打字）
+    private func addLinkedText(from tv: TextBoxView, side: Int, at pp: CGPoint, on pv: NotePageView) {
+        let id = pv.page.id
+        let start = BoxLinkPath.anchor(tv.linkRect, side: side)
+        let arrival = BoxLinkPath.arrivalSide(from: start, fromSide: side, to: pp)
+        let box = newLinkedBox(like: tv.box, arrival: arrival, at: pp, page: pv.page)
+        var links = model.links(of: id)
+        links.append(BoxLink(from: tv.box.id, fromSide: side, to: box.id, toSide: arrival))
+        model.setLinks(links, pageID: id)
+        model.setTexts(model.texts(of: id) + [box], pageID: id)
+        pv.syncLinks(links)
+        pv.syncTexts(model.texts(of: id))
+        if let created = pv.textViews[box.id] { activate(created, edit: false) }
+    }
+
+    /// 自動測試（textlinks、textstyle 場景）：放四個文字方塊（三種外框、一個沒有外框）、三條線，選取其中一個。
+    /// panel：順便打開「卡片樣式」面板
+    func selfTestLinks(panel: Bool) {
+        guard let pv = boardPV ?? pageViews.values.first else { return }
+        let id = pv.page.id
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        let c = pv.convert(CGPoint(x: bounds.midX, y: bounds.midY), from: self)
+        let center = CGPoint(x: c.x / s, y: c.y / s)
+        let k = pageScaleFactor(pv.page.spec)
+        func make(_ text: String, _ dx: CGFloat, _ dy: CGFloat, fill: [Double]?, mode: Int, shape: Int) -> TextBox {
+            var box = TextBox()
+            box.text = text
+            box.fontSize = 20 * k
+            box.x = center.x + dx * k
+            box.y = center.y + dy * k
+            box.rgba = pv.page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
+            if let fill = fill {
+                box.fill = fill
+                box.fillMode = mode
+                box.shape = shape
+                box.rgba = TextBoxStyle.readable(text: box.rgba, fill: fill, mode: mode)
+            }
+            return box
+        }
+        let a = make("電磁學", -60, -150, fill: TextBoxStyle.palette[5], mode: 0, shape: 1)
+        let b = make("靜電學\n第二行", 160, -60, fill: TextBoxStyle.palette[11], mode: 2, shape: 1)
+        let d = make("靜磁學", -260, -40, fill: TextBoxStyle.palette[7], mode: 1, shape: 0)
+        let e = make("沒有外框的字", -40, 60, fill: nil, mode: 0, shape: 1)
+        let f = make("圓頭", 170, 90, fill: TextBoxStyle.palette[10], mode: 0, shape: 2)
+        model.setTexts(model.texts(of: id) + [a, b, d, e, f], pageID: id)
+        let links = [BoxLink(from: a.id, fromSide: 1, to: b.id, toSide: 0),
+                     BoxLink(from: a.id, fromSide: 3, to: d.id, toSide: 0),
+                     BoxLink(from: a.id, fromSide: 2, to: e.id, toSide: 0),
+                     BoxLink(from: b.id, fromSide: 2, to: f.id, toSide: 0)]
+        model.setLinks(links, pageID: id)
+        pv.syncLinks(links)
+        pv.syncTexts(model.texts(of: id))
+        if let tv = pv.textViews[b.id] {
+            activate(tv, edit: false)
+            // 從下面的點往左下拉出一個新的（跟手指拉的走同一段程式）
+            let from = BoxLinkPath.anchor(tv.linkRect, side: 3)
+            addLinkedText(from: tv, side: 3, at: CGPoint(x: from.x - 70 * k, y: from.y + 190 * k), on: pv)
+        }
+        if let tv = pv.textViews[b.id] { activate(tv, edit: false) }
+        if panel {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showTextStyle() }
+        }
     }
 
     // 工具列的功能
@@ -1927,6 +2135,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         history.registerUndo(withTarget: self) { notebook in
             notebook.restoreImages(pageID: pageID, to: current)
         }
+        // 這一步復原／重做讓白板上的筆記本卡片不見了（v12.13.0）：說清楚，不然看起來像卡片自己消失。
+        // 最常見：放了卡片之後一直在浮動視窗裡寫字，白板自己的「上一步」還停在「放卡片」，這時候在白板上兩指點一下就會收回卡片
+        let lost = current.filter { old in old.link != nil && !images.contains(where: { $0.id == old.id }) }
+        if let first = lost.first {
+            let name = first.caption ?? "筆記本"
+            let undoing = history.isUndoing
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.showMessage("exclamationmark.triangle",
+                                  undoing ? "這一步復原把卡片「\(name)」收回去了（筆記本還在）。要放回來：按重做 ↷，或三指點一下"
+                                       : "這一步重做把卡片「\(name)」拿掉了（筆記本還在）。要放回來：按復原 ↶")
+            }
+        }
         var rect = CGRect.null
         for b in images where !current.contains(b) { rect = rect.union(CGRect(x: b.x, y: b.y, width: b.width, height: b.height)) }
         for b in current where !images.contains(b) { rect = rect.union(CGRect(x: b.x, y: b.y, width: b.width, height: b.height)) }
@@ -2156,11 +2376,15 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     func deleteImage() {
         guard let editor = imageEditor, let pv = editor.pageView else { return }
+        let wasCard = editor.box.link != nil
         var images = model.images(of: pv.page.id)
         images.removeAll { $0.id == editor.box.id }
         model.setImages(images, pageID: pv.page.id)
         pv.syncImages(images)
         endImageSelection()
+        if wasCard {                                           // 卡片（v12.13.0）：只是拿掉卡片，筆記本沒有刪
+            showMessage("trash", "卡片拿掉了，筆記本還在。按復原 ↶ 放回來；或長按白板 →「匯入現有的」再放一張")
+        }
     }
 
     // MARK: 版面

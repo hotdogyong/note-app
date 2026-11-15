@@ -950,6 +950,22 @@ final class NotebookModel: ObservableObject {
         save()
     }
 
+    /// 文字方塊之間的連線（v12.13.0；TextLinks.swift）
+    func links(of pageID: UUID) -> [BoxLink] {
+        guard let loc = location(of: pageID) else { return [] }
+        return notebook.rows[loc.row].pages[loc.page].links ?? []
+    }
+
+    func setLinks(_ links: [BoxLink], pageID: UUID) {
+        guard let loc = location(of: pageID) else { return }
+        if notebook.rows[loc.row].pages[loc.page].links ?? [] != links {
+            notebook.rows[loc.row].pages[loc.page].modified = Date()
+            ActivityLog.touch(pageID: pageID)
+        }
+        notebook.rows[loc.row].pages[loc.page].links = links.isEmpty ? nil : links
+        save()
+    }
+
     func images(of pageID: UUID) -> [ImageBox] {
         guard let loc = location(of: pageID) else { return [] }
         return notebook.rows[loc.row].pages[loc.page].images ?? []
@@ -1263,6 +1279,7 @@ struct NotebookEditorView: View {
                 // 白板上的浮動視窗（v12.12.0）：在白板上面、筆盒下面
                 if model.isBoard && !embedded {
                     BoardWindowsLayer(windows: $windows, tucked: $windowsTucked,
+                                      openCard: { openWindow($0) },
                                       close: { closeWindow($0) },
                                       openAsTab: { window in
                                           closeWindow(window)
@@ -1449,7 +1466,19 @@ struct NotebookEditorView: View {
 
     /// 開一本的浮動視窗（已經開著就拿到最上面）。最多同時 3 個，超過就收掉最早開的
     private func openWindow(_ id: UUID) {
-        guard id != model.meta.id else { return }
+        // 浮動視窗裡的白板（白板裡放白板）：自己沒有地方放視窗，交給最外面那張白板開（v12.13.0；以前按了沒反應）
+        if embedded {
+            if let actions = windowActions {
+                actions.openCard(id)
+            } else {
+                model.documentView?.showMessage("macwindow.on.rectangle", "這裡不能再開浮動視窗")
+            }
+            return
+        }
+        guard id != model.meta.id else {
+            model.documentView?.showMessage("rectangle.dashed", "這張卡片連到的就是現在這張白板")
+            return
+        }
         guard let meta = library.notebook(id), meta.deletedAt == nil else {
             model.documentView?.showMessage("questionmark.folder", "找不到這本筆記本（可能被刪掉了）")
             return

@@ -85,7 +85,7 @@ enum CardCover {
         return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
             let full = CGRect(origin: CGPoint.zero, size: size)
             UIBezierPath(roundedRect: full, cornerRadius: 16).addClip()
-            UIColor(white: 0.2, alpha: 1).setFill()
+            UIColor(white: 0.27, alpha: 1).setFill()                   // 標題那一條比白板的底色亮一點
             ctx.fill(full)
             let coverRect = CGRect(x: 0, y: 0, width: width, height: coverHeight)
             if let page = shown {
@@ -133,6 +133,12 @@ enum CardCover {
             (caption as NSString).draw(with: CGRect(x: 14, y: coverHeight + 8, width: width - 28, height: captionHeight - 14),
                                        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
                                        attributes: attrs, context: nil)
+            // 一圈亮一點的邊（v12.13.0）：空白的深色筆記本放在深色白板上，以前跟背景幾乎一樣，看起來像卡片不見了
+            ctx.cgContext.resetClip()
+            let edge = UIBezierPath(roundedRect: full.insetBy(dx: 1.5, dy: 1.5), cornerRadius: 14.5)
+            edge.lineWidth = 3
+            UIColor(white: 0.62, alpha: 1).setStroke()
+            edge.stroke()
         }
     }
 }
@@ -143,6 +149,7 @@ enum CardCover {
 struct BoardWindowActions {
     let close: () -> Void
     let expand: () -> Void
+    let openCard: (UUID) -> Void       // 視窗裡是白板：按它上面的卡片，交給外面的白板再開一個視窗（v12.13.0）
 }
 
 /// 視窗靠到哪一邊
@@ -154,6 +161,7 @@ enum BoardWindowSnap {
 struct BoardWindowsLayer: View {
     @Binding var windows: [BoardWindow]
     @Binding var tucked: Bool                      // 全部先收到旁邊（還開著，只是看不到）
+    let openCard: (UUID) -> Void
     let close: (BoardWindow) -> Void
     let openAsTab: (BoardWindow) -> Void
     let renameCard: (BoardWindow) -> Void
@@ -167,6 +175,7 @@ struct BoardWindowsLayer: View {
                     BoardWindowView(window: $window, container: geo.size,
                                     index: windows.firstIndex(where: { $0.id == window.id }) ?? 0,
                                     inBoard: isInBoard(window),
+                                    openCard: openCard,
                                     close: { close(window) },
                                     toFront: { bringToFront(window.id) },
                                     openAsTab: { openAsTab(window) },
@@ -215,6 +224,7 @@ struct BoardWindowView: View {
     let container: CGSize
     let index: Int
     let inBoard: Bool
+    let openCard: (UUID) -> Void
     let close: () -> Void
     let toFront: () -> Void
     let openAsTab: () -> Void
@@ -279,7 +289,8 @@ struct BoardWindowView: View {
             grip(base)
             NotebookEditorView(meta: window.meta, embedded: true,
                                windowActions: BoardWindowActions(close: { animateOut(close) },
-                                                                 expand: { animateOut(openAsTab) }))
+                                                                 expand: { animateOut(openAsTab) },
+                                                                 openCard: openCard))
                 .id(window.meta.id)
         }
         .frame(width: base.width, height: base.height)

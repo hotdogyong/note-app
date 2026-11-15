@@ -1172,7 +1172,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         // v12.9.8：鍵盤出來時不要被鍵盤蓋住
         if keyboardOverlap > 0 { y = min(y, bounds.height - keyboardOverlap - size.height - 8) }
-        let x = min(max(r.midX - size.width / 2, 8), max(8, bounds.width - size.width - 8))
+        // v12.13.0：筆盒停在左邊或右邊時，工具列不要鑽到筆盒底下（最後面的刪除、完成會按不到）。
+        // 只有這個畫面真的貼著螢幕那一邊才算（浮動視窗裡的不算）
+        var left: CGFloat = 8
+        var right: CGFloat = 8
+        let pens = PenBoxModel.shared
+        if !pens.minimized, let w = window {
+            let edges = convert(bounds, to: w)
+            if pens.dock == .leading, edges.minX < 40 { left = 76 }
+            if pens.dock == .trailing, edges.maxX > w.bounds.width - 40 { right = 76 }
+        }
+        var x = min(max(r.midX - size.width / 2, left), max(left, bounds.width - size.width - right))
+        if x + size.width > bounds.width - right { x = max(8, bounds.width - size.width - 8) }   // 畫面太窄：讓不開就算了
         textBar.frame = CGRect(x: x, y: max(8, y), width: size.width, height: size.height)
     }
 

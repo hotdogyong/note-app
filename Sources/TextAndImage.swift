@@ -226,11 +226,13 @@ final class ImageEditorView: UIView {
         let s = max(scale, 0.0001)
         let p = CGPoint(x: v.x / s, y: v.y / s)
         if hypot((p.x - rotateHandle.x) * s, (p.y - rotateHandle.y) * s) < 26 { return .rotate }
-        for c in corners where hypot((p.x - c.x) * s, (p.y - c.y) * s) < 24 { return .scale }
+        // 卡片的按鈕要比角先判斷（v12.13.0）：「開視窗」那一顆就在左上角旁邊，以前它靠角的那一小塊會被當成「拉角縮放」，
+        // 按了沒反應（使用者：有時候按書沒打開）
         for i in 0 ..< cardButtonCount {
             let c = cardButtonCenter(i)
             if abs((p.x - c.x) * s) <= 23 && abs((p.y - c.y) * s) <= 23 { return Self.cardModes[i] }
         }
+        for c in corners where hypot((p.x - c.x) * s, (p.y - c.y) * s) < 24 { return .scale }
         // 轉回圖片自己的方向，看是不是在圖片裡
         let dx = p.x - imageCenter.x
         let dy = p.y - imageCenter.y

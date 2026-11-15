@@ -275,8 +275,36 @@ final class RadialMenuView: UIView {
 }
 
 /// 照片、相機、檔案的選取畫面：掛在筆記本的 SwiftUI 外框上，選到圖片後交給筆記本畫面貼上
+/// 可以匯入成筆記本的文件（v12.14.0）：PDF、Markdown、純文字
+let importableDocumentTypes: [UTType] = [UTType.pdf, UTType.plainText] + [UTType(filenameExtension: "md"),
+                                                                         UTType(filenameExtension: "markdown")].compactMap { $0 }
+
 struct InsertPickers: ViewModifier {
     @ObservedObject var model: NotebookModel
+    @EnvironmentObject private var library: LibraryModel
+
+    /// 白板上「文件」也收 PDF、Markdown（變成白板上的筆記本卡片）；筆記本裡只收圖片
+    private var fileTypes: [UTType] {
+        model.isBoard ? [UTType.image] + importableDocumentTypes : [UTType.image]
+    }
+
+    /// 白板：選到的文件各變成一本「家在這張白板裡」的筆記本，白板上放它的卡片（v12.14.0）
+    private func importDocuments(_ urls: [URL]) {
+        var created: [NotebookMeta] = []
+        var failed = 0
+        for url in urls {
+            if let meta = library.importDocument(from: url, into: model.meta.folderID) {
+                library.setBoardHome(meta.id, board: model.meta.id)
+                created.append(library.notebook(meta.id) ?? meta)
+            } else {
+                failed += 1
+            }
+        }
+        model.documentView?.placeCards(for: created)
+        if failed > 0 {
+            model.documentView?.showMessage("exclamationmark.triangle", "有 \(failed) 份文件讀不進來")
+        }
+    }
     @State private var photoItem: PhotosPickerItem?
     @State private var photoItems: [PhotosPickerItem] = []     // 一次選很多張（v12.10）
 
@@ -294,7 +322,7 @@ struct InsertPickers: ViewModifier {
                 guard let picked = item else { return }
                 loadPhoto(picked)
             }
-            .fileImporter(isPresented: showing(InsertKind.files), allowedContentTypes: [UTType.image]) { result in
+            .fileImporter(isPresented: showing(InsertKind.files), allowedContentTypes: fileTypes) { result in
                 if case .success(let url) = result { loadFile(url) }
             }
             .fullScreenCover(isPresented: showing(InsertKind.camera)) {
@@ -316,7 +344,7 @@ struct InsertPickers: ViewModifier {
             )
             .background(
                 Color.clear
-                    .fileImporter(isPresented: showing(InsertKind.filesMany), allowedContentTypes: [UTType.image],
+                    .fileImporter(isPresented: showing(InsertKind.filesMany), allowedContentTypes: fileTypes,
                                   allowsMultipleSelection: true) { result in
                         if case .success(let urls) = result { loadFiles(urls) }
                     }
@@ -335,7 +363,14 @@ struct InsertPickers: ViewModifier {
         }
     }
 
-    private func loadFiles(_ urls: [URL]) {
+    private func loadFiles(_ all: [URL]) {
+        var urls = all
+        if model.isBoard {                                      // 白板：文件另外處理（變成卡片）
+            let documents = all.filter { LibraryModel.isDocument($0) }
+            urls = all.filter { !LibraryModel.isDocument($0) }
+            if !documents.isEmpty { importDocuments(documents) }
+            if urls.isEmpty { return }
+        }
         var images: [UIImage] = []
         for url in urls {
             let accessing = url.startAccessingSecurityScopedResource()
@@ -360,6 +395,10 @@ struct InsertPickers: ViewModifier {
 
     /// 「檔案」App 選到的圖片檔
     private func loadFile(_ url: URL) {
+        if model.isBoard, LibraryModel.isDocument(url) {        // 白板：PDF、Markdown 變成卡片（v12.14.0）
+            importDocuments([url])
+            return
+        }
         let accessing = url.startAccessingSecurityScopedResource()
         defer {
             if accessing { url.stopAccessingSecurityScopedResource() }

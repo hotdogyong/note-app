@@ -973,15 +973,26 @@ final class TextBoxView: UIView, UITextViewDelegate {
                 let bottom = min(pageHeight, box.y + 900)
                 area = CGRect(x: left, y: top, width: max(right - left, 40), height: max(bottom - top, 40))
             }
-            frame = CGRect(x: area.minX * s, y: area.minY * s, width: area.width * s, height: area.height * s)
+            // v12.14.0（使用者：基本上都用鍵盤，手寫的範圍不用那麼大）：淡藍色的書寫區（Pencil 寫了會變成字、手指點了算在方塊裡的範圍）
+            // 只留方塊附近一圈；文字本身的排版還是照整塊 area 算（換行的位置不變），只是這個視圖變小了。
+            // Markdown 頁那一整頁的方塊照舊（整頁都是打字的地方）
+            var zone = area
+            if !box.isMarkdownPage {
+                let near = CGRect(x: box.x - 14, y: box.y - 14, width: contentW / s + 14 + 70, height: contentH / s + 14 + 44)
+                    .intersection(area)
+                if !near.isNull, near.width > 1, near.height > 1 { zone = near }
+            }
+            frame = CGRect(x: zone.minX * s, y: zone.minY * s, width: zone.width * s, height: zone.height * s)
             textView.textContainerInset = UIEdgeInsets(top: (box.y - area.minY) * s + iy, left: (box.x - area.minX) * s + ix,
                                                        bottom: iy, right: (8 + Self.insetX) * s)
-            contentRect = CGRect(x: (box.x - area.minX) * s, y: (box.y - area.minY) * s, width: contentW, height: contentH)
+            contentRect = CGRect(x: (box.x - zone.minX) * s, y: (box.y - zone.minY) * s, width: contentW, height: contentH)
+            textView.frame = CGRect(x: (area.minX - zone.minX) * s, y: (area.minY - zone.minY) * s,
+                                    width: area.width * s, height: area.height * s)
         } else {
             frame = CGRect(x: box.x * s, y: box.y * s, width: contentW, height: contentH)
             contentRect = CGRect(x: 0, y: 0, width: contentW, height: contentH)
+            textView.frame = bounds
         }
-        textView.frame = bounds
         placeholder.frame = contentRect.inset(by: UIEdgeInsets(top: iy, left: ix, bottom: iy, right: ix))
         if let image = mathImage {
             let w = image.size.width / MathRenderer.scaleFactor * s

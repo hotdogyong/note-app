@@ -101,6 +101,10 @@ enum SelfTest {
             case "cards":
                 // 白板上的筆記本（v12.12.0）：打開白板後放兩張卡片、開兩個浮動視窗（notebookOpened 裡做）
                 library.openNotebook = library.addBoard(in: nil, title: "卡片測試白板", width: 100 * 842, height: 100 * 595)
+            case "linkedit", "texttidy":
+                // 連線改樣子＋選取一條線；一鍵整理（v12.14.0）
+                library.openNotebook = library.addBoard(in: nil, title: scene == "texttidy" ? "整理測試白板" : "線的樣子測試白板",
+                                                        width: 100 * 842, height: 100 * 595)
             case "textlinks":
                 // 文字方塊的外框樣式、連線（v12.13.0）：白板上放幾個方塊和線，選取其中一個（看四邊的點）
                 library.openNotebook = library.addBoard(in: nil, title: "連線測試白板", width: 100 * 842, height: 100 * 595)
@@ -134,6 +138,14 @@ enum SelfTest {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
                     view?.selfTestSelectCard(second.id, preview: true)   // 另一張卡片選取＋預覽：看左上角的按鈕、翻頁鈕、頁碼
                 }
+            }
+            return
+        }
+        if scene == "linkedit" || scene == "texttidy" {
+            let tidy = scene == "texttidy"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                show(view.selfTestLinkEdit(tidy: tidy))
             }
             return
         }

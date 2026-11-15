@@ -946,6 +946,10 @@ final class SelectionEditorView: UIView, UIGestureRecognizerDelegate {
         makeButton("doc.on.doc").addTarget(self, action: #selector(copyTapped), for: .touchUpInside)
         makeButton("plus.square.on.square").addTarget(self, action: #selector(duplicateTapped), for: .touchUpInside)
         makeButton("trash", tint: .systemRed).addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
+        // 圈到兩個以上的文字方塊（v12.14.0）：一鍵整理（連線多的上色、字放大；見 NotebookView.tidyTexts）
+        if baseTexts.count >= 2 {
+            makeButton("wand.and.stars", tint: .systemYellow).addTarget(self, action: #selector(tidyTapped), for: .touchUpInside)
+        }
         // 白板（v12.8.2）：用選到的範圍建立區塊
         if pageView?.page.spec.flat == true {
             makeButton("rectangle.dashed").addTarget(self, action: #selector(frameTapped), for: .touchUpInside)
@@ -967,6 +971,15 @@ final class SelectionEditorView: UIView, UIGestureRecognizerDelegate {
             let moreButton = makeButton("ellipsis.circle")
             moreButton.menu = UIMenu(children: more)
             moreButton.showsMenuAsPrimaryAction = true
+        }
+    }
+
+    @objc private func tidyTapped() {
+        guard let pv = pageView, let host = host else { return }
+        let ids = Set(baseTexts.map { $0.box.id })
+        let pageID = pv.page.id
+        DispatchQueue.main.async {                             // 這個選取框會先被收起來，所以等這一下按完再做
+            host.tidyTexts(ids, pageID: pageID)
         }
     }
 

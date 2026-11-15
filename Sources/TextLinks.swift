@@ -17,6 +17,12 @@ struct BoxLink: Codable, Hashable, Identifiable {
     var fromSide: Int          // 從哪一邊出來：0 上、1 右、2 下、3 左
     var to: UUID
     var toSide: Int            // 接到哪一邊
+    // 線的樣子（v12.14.0；點一下線 → 跳出的小工具列可以改）。都是 nil＝預設：灰色、實線、粗細 2、箭頭在尾端、直角轉彎
+    var rgb: [Double]? = nil
+    var dash: Bool? = nil
+    var width: Double? = nil
+    var arrow: Int? = nil      // 0 尾端有箭頭、1 沒有箭頭、2 兩端都有
+    var route: Int? = nil      // 0 直角轉彎、1 直線、2 曲線
 }
 
 /// 存成預設的文字方塊樣式（存在 UserDefaults；名稱是 textDefault 開頭，會跟著設定備份）
@@ -164,8 +170,62 @@ enum BoxLinkPath {
         return best
     }
 
-    /// 一條連線：從 a（fromSide 那一邊）到 b（toSide 那一邊），直角轉彎、轉角是圓的，b 那一頭有箭頭
-    static func path(from a: CGPoint, fromSide: Int, to b: CGPoint, toSide: Int, scale: CGFloat) -> CGPath {
+    static func color(_ link: BoxLink) -> UIColor {
+        guard let rgb = link.rgb else { return UIColor(white: 0.62, alpha: 1) }
+        return TextBoxStyle.color(rgb)
+    }
+
+    /// 兩個方塊互相面對的那兩邊（一鍵整理用）：左右隔得比較開就接左右邊，上下隔得比較開就接上下邊
+    static func facingSides(_ a: CGRect, _ b: CGRect) -> (Int, Int) {
+        let gapX = max(b.minX - a.maxX, a.minX - b.maxX)
+        let gapY = max(b.minY - a.maxY, a.minY - b.maxY)
+        let dx = b.midX - a.midX
+        let dy = b.midY - a.midY
+        let horizontal = (gapX > 0 || gapY > 0) ? gapX >= gapY : abs(dx) >= abs(dy)
+        if horizontal { return dx >= 0 ? (1, 3) : (3, 1) }
+        return dy >= 0 ? (2, 0) : (0, 2)
+    }
+
+    /// 箭頭：尖端在 tip，指向 d（單位向量）
+    private static func addArrow(to path: CGMutablePath, tip: CGPoint, direction d: CGPoint, scale: CGFloat) {
+        let size = 9 * scale
+        let back = CGPoint(x: -d.x * size, y: -d.y * size)
+        let side = CGPoint(x: -d.y * size * 0.6, y: d.x * size * 0.6)
+        path.move(to: CGPoint(x: tip.x + back.x + side.x, y: tip.y + back.y + side.y))
+        path.addLine(to: tip)
+        path.addLine(to: CGPoint(x: tip.x + back.x - side.x, y: tip.y + back.y - side.y))
+    }
+
+    /// 一條連線：從 a（fromSide 那一邊）到 b（toSide 那一邊）。
+    /// route：0 直角轉彎（轉角是圓的）、1 直線、2 曲線；arrow：0 b 那一頭有箭頭、1 沒有、2 兩頭都有
+    static func path(from a: CGPoint, fromSide: Int, to b: CGPoint, toSide: Int, scale: CGFloat,
+                     route: Int = 0, arrow: Int = 0) -> CGPath {
+        let na = normal(fromSide)
+        let nb = normal(toSide)
+        let whole = CGMutablePath()
+        var endDirection = CGPoint(x: -nb.x, y: -nb.y)
+        var startDirection = CGPoint(x: -na.x, y: -na.y)
+        if route == 1 {
+            whole.move(to: a)
+            whole.addLine(to: b)
+            let length = max(hypot(b.x - a.x, b.y - a.y), 0.001)
+            endDirection = CGPoint(x: (b.x - a.x) / length, y: (b.y - a.y) / length)
+            startDirection = CGPoint(x: -endDirection.x, y: -endDirection.y)
+        } else if route == 2 {
+            let reach = max(40 * scale, hypot(b.x - a.x, b.y - a.y) * 0.4)
+            whole.move(to: a)
+            whole.addCurve(to: b, control1: CGPoint(x: a.x + na.x * reach, y: a.y + na.y * reach),
+                           control2: CGPoint(x: b.x + nb.x * reach, y: b.y + nb.y * reach))
+        } else {
+            whole.addPath(elbow(from: a, fromSide: fromSide, to: b, toSide: toSide, scale: scale))
+        }
+        if arrow != 1 { addArrow(to: whole, tip: b, direction: endDirection, scale: scale) }
+        if arrow == 2 { addArrow(to: whole, tip: a, direction: startDirection, scale: scale) }
+        return whole
+    }
+
+    /// 直角轉彎的線（不含箭頭）
+    private static func elbow(from a: CGPoint, fromSide: Int, to b: CGPoint, toSide: Int, scale: CGFloat) -> CGPath {
         let lead = 16 * scale
         let na = normal(fromSide)
         let nb = normal(toSide)
@@ -224,14 +284,90 @@ enum BoxLinkPath {
             path.addArc(tangent1End: clean[i], tangent2End: clean[i + 1], radius: min(radius, before / 2, after / 2))
         }
         path.addLine(to: clean[clean.count - 1])
-        // 箭頭：指向方塊裡面（跟那一邊朝外的方向相反）
-        let size = 9 * scale
-        let back = CGPoint(x: nb.x * size, y: nb.y * size)
-        let sideways = CGPoint(x: -nb.y * size * 0.6, y: nb.x * size * 0.6)
-        path.move(to: CGPoint(x: b.x + back.x + sideways.x, y: b.y + back.y + sideways.y))
-        path.addLine(to: b)
-        path.addLine(to: CGPoint(x: b.x + back.x - sideways.x, y: b.y + back.y - sideways.y))
         return path
+    }
+}
+
+/// 點一下連線跳出來的小工具列（v12.14.0）：顏色、粗細和虛實、箭頭、走法、刪除
+final class LinkBar: UIView {
+    private weak var host: NotebookView?
+    private var items: [UIButton] = []
+    static let size = CGSize(width: 260, height: 44)
+
+    init(host: NotebookView) {
+        self.host = host
+        super.init(frame: CGRect(origin: CGPoint.zero, size: Self.size))
+        backgroundColor = UIColor(white: 0.16, alpha: 0.96)
+        layer.cornerRadius = 22
+
+        let colors: [(String, [Double]?)] = [
+            ("預設（灰）", nil), ("白", [1, 1, 1]), ("黑", [0.05, 0.05, 0.05]), ("紅", [1.0, 0.45, 0.45]),
+            ("橘", [0.94, 0.44, 0.29]), ("黃", [0.97, 0.78, 0.31]), ("綠", [0.68, 0.82, 0.53]),
+            ("藍", [0.45, 0.72, 1.0]), ("紫", [0.53, 0.58, 0.95])
+        ]
+        add("circle.fill", UIMenu(title: "線的顏色", children: colors.map { item in
+            let tint = item.1.map { TextBoxStyle.color($0) } ?? UIColor(white: 0.62, alpha: 1)
+            let swatch = UIImage(systemName: "circle.fill")?.withTintColor(tint, renderingMode: .alwaysOriginal)
+            return UIAction(title: item.0, image: swatch) { [weak host] _ in host?.updateSelectedLink { $0.rgb = item.1 } }
+        }))
+        add("lineweight", UIMenu(title: "線的樣子", children: [
+            UIAction(title: "實線", image: UIImage(systemName: "minus")) { [weak host] _ in host?.updateSelectedLink { $0.dash = nil } },
+            UIAction(title: "虛線", image: UIImage(systemName: "ellipsis")) { [weak host] _ in host?.updateSelectedLink { $0.dash = true } },
+            UIAction(title: "細") { [weak host] _ in host?.updateSelectedLink { $0.width = 1.2 } },
+            UIAction(title: "中（預設）") { [weak host] _ in host?.updateSelectedLink { $0.width = nil } },
+            UIAction(title: "粗") { [weak host] _ in host?.updateSelectedLink { $0.width = 4 } }
+        ]))
+        add("arrow.right", UIMenu(title: "箭頭", children: [
+            UIAction(title: "尾端有箭頭", image: UIImage(systemName: "arrow.right")) { [weak host] _ in host?.updateSelectedLink { $0.arrow = nil } },
+            UIAction(title: "兩端都有", image: UIImage(systemName: "arrow.left.and.right")) { [weak host] _ in host?.updateSelectedLink { $0.arrow = 2 } },
+            UIAction(title: "沒有箭頭", image: UIImage(systemName: "minus")) { [weak host] _ in host?.updateSelectedLink { $0.arrow = 1 } },
+            UIAction(title: "反過來（箭頭換到另一頭）", image: UIImage(systemName: "arrow.left.arrow.right")) { [weak host] _ in
+                host?.updateSelectedLink { link in
+                    let from = link.from
+                    let side = link.fromSide
+                    link.from = link.to
+                    link.fromSide = link.toSide
+                    link.to = from
+                    link.toSide = side
+                }
+            }
+        ]))
+        add("point.topleft.down.curvedto.point.bottomright.up", UIMenu(title: "線怎麼走", children: [
+            UIAction(title: "直角轉彎") { [weak host] _ in host?.updateSelectedLink { $0.route = nil } },
+            UIAction(title: "直線") { [weak host] _ in host?.updateSelectedLink { $0.route = 1 } },
+            UIAction(title: "曲線") { [weak host] _ in host?.updateSelectedLink { $0.route = 2 } }
+        ]))
+        let trash = UIButton(type: .system)
+        trash.setImage(UIImage(systemName: "trash"), for: .normal)
+        trash.tintColor = .systemRed
+        trash.addAction(UIAction { [weak host] _ in host?.deleteSelectedLink() }, for: .touchUpInside)
+        items.append(trash)
+        addSubview(trash)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    private func add(_ symbol: String, _ menu: UIMenu) {
+        let b = UIButton(type: .system)
+        b.setImage(UIImage(systemName: symbol), for: .normal)
+        b.tintColor = .white
+        b.menu = menu
+        b.showsMenuAsPrimaryAction = true
+        items.append(b)
+        addSubview(b)
+    }
+
+    /// 第一顆的顏色跟著線
+    func refresh(_ link: BoxLink) {
+        items.first?.tintColor = BoxLinkPath.color(link)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let w = bounds.width / CGFloat(max(items.count, 1))
+        for (i, item) in items.enumerated() {
+            item.frame = CGRect(x: CGFloat(i) * w, y: 0, width: w, height: bounds.height)
+        }
     }
 }
 
@@ -241,12 +377,15 @@ struct TextStylePanel: View {
     @State private var mode: Int
     @State private var shape: Int
     private let change: ([Double]?, Int, Int) -> Void
+    private let tidy: (() -> Void)?              // 有值：這個方塊有連線，下面多一顆「一鍵整理」
     @State private var note = ""
 
-    init(fill: [Double]?, mode: Int, shape: Int, change: @escaping ([Double]?, Int, Int) -> Void) {
+    init(fill: [Double]?, mode: Int, shape: Int, tidy: (() -> Void)? = nil,
+         change: @escaping ([Double]?, Int, Int) -> Void) {
         _fill = State(initialValue: fill)
         _mode = State(initialValue: mode)
         _shape = State(initialValue: shape)
+        self.tidy = tidy
         self.change = change
     }
 
@@ -302,6 +441,9 @@ struct TextStylePanel: View {
                     note = ""
                     push()
                 }
+            }
+            if let tidy = tidy {
+                action("一鍵整理：跟它連在一起的全部", run: tidy)
             }
             if !note.isEmpty {
                 Text(note)

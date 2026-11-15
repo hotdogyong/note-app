@@ -803,6 +803,36 @@ final class LibraryModel: ObservableObject {
         importPDFNotebook(from: url, into: folder) != nil
     }
 
+    /// 匯入一份文件（v12.14.0）：PDF → 每頁是課本頁的筆記本；Markdown、純文字 → Markdown 筆記本。其他格式回傳 nil
+    func importDocument(from url: URL, into folder: UUID?) -> NotebookMeta? {
+        switch url.pathExtension.lowercased() {
+        case "pdf": return importPDFNotebook(from: url, into: folder)
+        case "md", "markdown", "txt": return importMarkdownNotebook(from: url, into: folder)
+        default: return nil
+        }
+    }
+
+    static func isDocument(_ url: URL) -> Bool {
+        ["pdf", "md", "markdown", "txt"].contains(url.pathExtension.lowercased())
+    }
+
+    /// 匯入 Markdown／純文字檔：一本 Markdown 筆記本，第一頁就是整份內容（名稱用檔名）
+    func importMarkdownNotebook(from url: URL, into folder: UUID?) -> NotebookMeta? {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        guard let bytes = try? Data(contentsOf: url),
+              let text = String(data: bytes, encoding: .utf8) ?? String(data: bytes, encoding: .utf16) else { return nil }
+        let spec = PageSpec()
+        var page = NotePage(spec: spec, paper: PaperStyle(pattern: 0, color: 0))
+        page.texts = [markdownPageBox(spec: spec, text: text, fontSize: TextDefaults.size(nil),
+                                      rgba: TextDefaults.rgba(nil) ?? [1, 1, 1, 1])]
+        var row = PageRow()
+        row.pages = [page]
+        var data = NotebookData(rows: [row])
+        data.markdown = true
+        return addNotebook(in: folder, title: url.deletingPathExtension().lastPathComponent, data: data)
+    }
+
     /// 匯入 PDF，回傳做好的筆記本（白板上匯入 PDF 用；v12.12.0）
     func importPDFNotebook(from url: URL, into folder: UUID?) -> NotebookMeta? {
         let title = url.deletingPathExtension().lastPathComponent

@@ -420,6 +420,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if let v = touch.view, v.isDescendant(of: tapeDeleteButton) { return false }
         if let v = touch.view, v.isDescendant(of: regretBar) { return false }
         if let v = touch.view, v.isDescendant(of: textBar) { return false }      // 文字工具列上的按鈕
+        if let v = touch.view, v.isDescendant(of: linkBar) { return false }      // 連線的小工具列（v12.14.0）
         if touch.view?.tag == TextBoxView.handleTag { return false }            // 文字方塊的角
         // Pencil 在文字方塊裡寫字（手寫轉文字）：不要當成畫線、停筆變形或套索
         if gestureRecognizer === holdTracker || gestureRecognizer === lassoPan,
@@ -774,6 +775,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             return
         }
         hideTapeDelete()
+        deselectLink()                                         // 選著一條連線：點別的地方就取消（點到線會在下面重新選）
         if frameMode, !frameToolOn {                           // 按了「新區塊」又不想拉了：手指點一下取消（筆盒的區塊工具不算）
             endFrameMode()
             showMessage("rectangle.dashed", "取消新區塊")
@@ -830,6 +832,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 endTextSelection()
                 selectImage(hit.1, on: hit.0)
             }
+            return
+        }
+        // 點到文字方塊之間的連線（v12.14.0）：選取它，跳出小工具列（顏色、樣子、箭頭、走法、刪除）
+        if let hit = linkHit(at: p) {
+            endTextSelection()
+            dismissShapeEditor()
+            selectLink(hit.1, on: hit.0, at: p)
             return
         }
         // Markdown 頁的空白處（文字下面）：接著最後面打字（v12.9.2）
@@ -990,6 +999,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     private func activate(_ tv: TextBoxView, edit: Bool) {
+        deselectLink()
         if activeText !== tv {
             if activeText != nil { endTextSelection() }
             if textSnapshot?.pageID != tv.pageID || textSnapshot == nil {
@@ -1156,6 +1166,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     func positionTextBar() {
+        positionLinkBar()
         guard let tv = activeText, textBar.superview != nil else { return }
         let r = tv.convert(tv.frameRect, to: self)
         // v12.13.0：多了「卡片樣式」一顆（630 → 674）；畫面比較窄（浮動視窗裡）就縮到放得下
@@ -1197,18 +1208,203 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             textEditingChanged(tv)
         }
         let box = tv.box
-        let panel = TextStylePanel(fill: box.fill, mode: box.fillMode ?? 0, shape: box.shape ?? 1) { [weak self] fill, mode, shape in
+        // 有連線的方塊：面板多一顆「一鍵整理」（跟它連在一起的全部）
+        var tidy: (() -> Void)?
+        if tv.linked {
+            let pageID = tv.pageID
+            let start = box.id
+            tidy = { [weak self] in
+                guard let self = self else { return }
+                self.stylePanel?.dismiss(animated: true)
+                self.tidyTexts(self.connectedTexts(from: start, pageID: pageID), pageID: pageID)
+            }
+        }
+        let panel = TextStylePanel(fill: box.fill, mode: box.fillMode ?? 0, shape: box.shape ?? 1, tidy: tidy) { [weak self] fill, mode, shape in
             self?.applyTextStyle(fill: fill, mode: mode, shape: shape)
         }
         let vc = UIHostingController(rootView: panel)
+        stylePanel = vc
         vc.modalPresentationStyle = .popover
-        vc.preferredContentSize = CGSize(width: 300, height: 500)
+        vc.preferredContentSize = CGSize(width: 300, height: tidy == nil ? 500 : 548)
         if let pop = vc.popoverPresentationController {
             pop.sourceView = textBar
             pop.sourceRect = textBar.styleButton.frame
             pop.permittedArrowDirections = [.up, .down]
         }
         Presenter.present(vc)
+    }
+
+    private weak var stylePanel: UIViewController?
+
+    // MARK: 選取一條連線、改它的樣子（v12.14.0）
+
+    private var selectedLink: (pageID: UUID, id: UUID, at: CGPoint)?   // at：點到的地方（頁面座標），小工具列放在它上面
+    private lazy var linkBar = LinkBar(host: self)
+
+    private func linkHit(at p: CGPoint) -> (NotePageView, BoxLink)? {
+        for pv in pageViews.values {
+            let local = pv.convert(p, from: self)
+            guard pv.bounds.contains(local) else { continue }
+            if let link = pv.linkHit(at: local) { return (pv, link) }
+        }
+        return nil
+    }
+
+    private func selectLink(_ link: BoxLink, on pv: NotePageView, at p: CGPoint) {
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        let local = pv.convert(p, from: self)
+        selectedLink = (pv.page.id, link.id, CGPoint(x: local.x / s, y: local.y / s))
+        pv.selectedLink = link.id
+        if linkBar.superview == nil { addSubview(linkBar) }
+        bringSubviewToFront(linkBar)
+        linkBar.refresh(link)
+        positionLinkBar()
+    }
+
+    func deselectLink() {
+        guard let chosen = selectedLink else { return }
+        selectedLink = nil
+        pageViews[chosen.pageID]?.selectedLink = nil
+        linkBar.removeFromSuperview()
+    }
+
+    private func positionLinkBar() {
+        guard let chosen = selectedLink, linkBar.superview != nil else { return }
+        guard let pv = pageViews[chosen.pageID], pv.window != nil else {
+            deselectLink()
+            return
+        }
+        let s = pv.bounds.width / max(pv.page.spec.width, 1)
+        let p = convert(CGPoint(x: chosen.at.x * s, y: chosen.at.y * s), from: pv)
+        let size = LinkBar.size
+        var y = p.y - 26 - size.height
+        if y < 8 { y = p.y + 26 }
+        let x = min(max(p.x - size.width / 2, 8), max(8, bounds.width - size.width - 8))
+        linkBar.frame = CGRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    /// 改連線並登記一步復原
+    private func setLinksRecorded(_ links: [BoxLink], pageID: UUID) {
+        let old = model.links(of: pageID)
+        guard old != links else { return }
+        model.setLinks(links, pageID: pageID)
+        pageViews[pageID]?.syncLinks(links)
+        history.registerUndo(withTarget: self) { notebook in
+            notebook.deselectLink()
+            notebook.setLinksRecorded(old, pageID: pageID)
+        }
+    }
+
+    /// 小工具列改選取中那一條線的樣子
+    func updateSelectedLink(_ change: (inout BoxLink) -> Void) {
+        guard let chosen = selectedLink else { return }
+        var links = model.links(of: chosen.pageID)
+        guard let i = links.firstIndex(where: { $0.id == chosen.id }) else { return }
+        change(&links[i])
+        setLinksRecorded(links, pageID: chosen.pageID)
+        linkBar.refresh(links[i])
+    }
+
+    func deleteSelectedLink() {
+        guard let chosen = selectedLink else { return }
+        var links = model.links(of: chosen.pageID)
+        links.removeAll { $0.id == chosen.id }
+        deselectLink()
+        setLinksRecorded(links, pageID: chosen.pageID)
+    }
+
+    // MARK: 一鍵整理（v12.14.0，使用者要求：畫很大的時候圈選起來一鍵校正——連線多的給顏色、字放大）
+
+    /// 跟某個方塊連在一起的全部方塊（順著線一直找）
+    private func connectedTexts(from start: UUID, pageID: UUID) -> Set<UUID> {
+        let links = model.links(of: pageID)
+        var seen: Set<UUID> = [start]
+        var queue = [start]
+        while let id = queue.popLast() {
+            for link in links where link.from == id || link.to == id {
+                let other = link.from == id ? link.to : link.from
+                if seen.insert(other).inserted { queue.append(other) }
+            }
+        }
+        return seen
+    }
+
+    /// 整理一群文字方塊（套索圈到的，或跟某個方塊連在一起的全部）。照每個方塊接了幾條線分四級：
+    ///   接最多線的幾個（至少 3 條、而且是最多那個的 75% 以上）：深藍填滿、粗體、字放大 1.5 倍
+    ///   其他接 3 條以上的：淡紫藍填滿、粗體、字放大 1.25 倍
+    ///   接 2 條的：淡紫藍外框；只接 1 條或沒接的：灰色外框
+    /// 字的大小以這一群裡最小的為準（整理過再整理一次，結果一樣，不會越變越大）；放大時方塊的中心不動。
+    /// 這一群裡的線改接到兩個方塊互相面對的那兩邊。整個算一步復原
+    func tidyTexts(_ ids: Set<UUID>, pageID: UUID) {
+        guard !readOnly, let page = model.page(pageID) else { return }
+        endTextSelection()
+        dismissShapeEditor()
+        deselectLink()
+        var texts = model.texts(of: pageID)
+        var links = model.links(of: pageID)
+        let present = Set(texts.map { $0.id })
+        let chosen = Set(texts.filter { ids.contains($0.id) && !$0.isMarkdownPage }.map { $0.id })
+        var degree: [UUID: Int] = [:]
+        for link in links where present.contains(link.from) && present.contains(link.to) {
+            if chosen.contains(link.from) { degree[link.from, default: 0] += 1 }
+            if chosen.contains(link.to) { degree[link.to, default: 0] += 1 }
+        }
+        let top = degree.values.max() ?? 0
+        guard chosen.count >= 2, top > 0 else {
+            showMessage("wand.and.stars", "圈到的文字方塊之間沒有連線，沒有東西可以整理")
+            return
+        }
+        let base = texts.filter { chosen.contains($0.id) }.map { $0.fontSize }.min() ?? 16
+        let plain: [Double] = page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
+        let hubFill: [Double] = [0.27, 0.33, 0.83]
+        let midFill: [Double] = [0.53, 0.58, 0.95]
+        let leafFill: [Double] = [0.5, 0.5, 0.5]
+        var hubs = 0
+        for i in texts.indices where chosen.contains(texts[i].id) {
+            let d = degree[texts[i].id] ?? 0
+            let before = PageRenderer.textFrameRect(texts[i], page: page)
+            var size = base
+            var bold = false
+            var fill = leafFill
+            var mode = 2
+            if d >= 3 && Double(d) >= Double(top) * 0.75 {
+                size = base * 1.5
+                bold = true
+                fill = hubFill
+                mode = 0
+                hubs += 1
+            } else if d >= 3 {
+                size = base * 1.25
+                bold = true
+                fill = midFill
+                mode = 0
+            } else if d == 2 {
+                fill = midFill
+            }
+            let ratio = size / max(texts[i].fontSize, 1)
+            texts[i].fontSize = size
+            texts[i].bold = bold
+            texts[i].fill = fill
+            texts[i].fillMode = mode
+            texts[i].shape = texts[i].shape ?? 1
+            texts[i].rgba = TextBoxStyle.readable(text: plain, fill: fill, mode: mode)
+            texts[i].width *= ratio
+            if let fixed = texts[i].fixedWidth { texts[i].fixedWidth = fixed * ratio }
+            let after = PageRenderer.textFrameRect(texts[i], page: page)
+            texts[i].x = max(texts[i].x + before.midX - after.midX, 0)
+            texts[i].y = max(texts[i].y + before.midY - after.midY, 0)
+        }
+        var frames: [UUID: CGRect] = [:]
+        for t in texts where chosen.contains(t.id) { frames[t.id] = PageRenderer.textFrameRect(t, page: page) }
+        for i in links.indices {
+            guard let a = frames[links[i].from], let b = frames[links[i].to] else { continue }
+            let sides = BoxLinkPath.facingSides(a, b)
+            links[i].fromSide = sides.0
+            links[i].toSide = sides.1
+        }
+        setTextsRecorded(texts, pageID: pageID)
+        setLinksRecorded(links, pageID: pageID)
+        showMessage("wand.and.stars", "整理了 \(chosen.count) 個方塊：接最多線的 \(hubs) 個放大、上色。不喜歡按復原 ↶")
     }
 
     private func applyTextStyle(fill: [Double]?, mode: Int, shape: Int) {
@@ -1376,6 +1572,51 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if panel {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showTextStyle() }
         }
+    }
+
+    /// 自動測試（linkedit、texttidy 場景）：先放跟 selfTestLinks 一樣的東西。
+    /// tidy = false：兩條線改樣子（紅色虛線、曲線兩端箭頭），再選取一條線（看藍色的光和小工具列）；
+    /// tidy = true：全部圈起來一鍵整理，回報每個方塊的字級
+    func selfTestLinkEdit(tidy: Bool) -> String {
+        selfTestLinks(panel: false)
+        endTextSelection()
+        guard let pv = boardPV ?? pageViews.values.first else { return "沒有頁面" }
+        let id = pv.page.id
+        var links = model.links(of: id)
+        guard links.count >= 4 else { return "連線沒有放上去（\(links.count) 條）" }
+        if tidy {
+            tidyTexts(Set(model.texts(of: id).map { $0.id }), pageID: id)
+            let k = pageScaleFactor(pv.page.spec)
+            let lines = model.texts(of: id).map { t -> String in
+                let name = t.text.isEmpty ? "（空的）" : t.text.replacingOccurrences(of: "\n", with: " ")
+                return "\(name)：字級 \(Int((t.fontSize / k).rounded()))\(t.bold ? " 粗體" : "")、樣式 \(t.fillMode ?? -1)"
+            }
+            let once = model.texts(of: id)
+            tidyTexts(Set(once.map { $0.id }), pageID: id)
+            let same = model.texts(of: id) == once
+            return (lines + [same ? "再整理一次：結果一樣（對）" : "再整理一次：結果不一樣（不對）"]).joined(separator: "\n")
+        }
+        links[0].rgb = [1.0, 0.45, 0.45]
+        links[0].dash = true
+        links[1].route = 2
+        links[1].arrow = 2
+        links[1].rgb = [0.97, 0.78, 0.31]
+        links[2].route = 1
+        links[2].width = 4
+        setLinksRecorded(links, pageID: id)
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        if let from = pv.textViews[links[3].from], let to = pv.textViews[links[3].to] {
+            // 第四條線中間的一點：照「手指點一下」的路走（先找點到哪一條，再選取）
+            let a = BoxLinkPath.anchor(from.linkRect, side: links[3].fromSide)
+            let b = BoxLinkPath.anchor(to.linkRect, side: links[3].toSide)
+            let middle = convert(CGPoint(x: (a.x + b.x) / 2 * s, y: (a.y + b.y) / 2 * s), from: pv)
+            if let hit = linkHit(at: middle) {
+                selectLink(hit.1, on: hit.0, at: middle)
+                return hit.1.id == links[3].id ? "點線的中間：選到了那一條（對）" : "點線的中間：選到別條"
+            }
+            return "點線的中間：沒有選到（不對）"
+        }
+        return "找不到第四條線的兩個方塊"
     }
 
     // 工具列的功能
@@ -1711,6 +1952,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard isBoard, !readOnly else { return }
         insertLocation = CGPoint(x: bounds.midX, y: bounds.midY)
         model.cardRequest = request
+    }
+
+    /// 一次放好幾張卡片（匯入文件）：從剛剛長按的位置往右排，一列 4 張
+    func placeCards(for metas: [NotebookMeta]) {
+        guard isBoard, !metas.isEmpty else { return }
+        let base = insertLocation ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        let step = PaperRenderer.gridUnit * 8 * scale
+        for (i, meta) in metas.enumerated() {
+            placeCard(for: meta, at: CGPoint(x: base.x + CGFloat(i % 4) * step, y: base.y + CGFloat(i / 4) * step * 1.6))
+        }
+        showMessage("doc.badge.plus", metas.count == 1 ? "已匯入「\(metas[0].title)」：點卡片選取，再按左上角打開"
+                                                       : "已匯入 \(metas.count) 份文件")
     }
 
     /// 在白板上放一張筆記本的卡片：一張帶連結的圖片（封面＋標題），放在剛剛長按的位置（或畫面中間）。可以復原

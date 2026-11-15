@@ -271,7 +271,7 @@ struct LibraryView: View {
             Button {
                 showImporter = true
             } label: {
-                Label("匯入 PDF", systemImage: "doc.richtext")
+                Label("匯入 PDF、Markdown", systemImage: "doc.richtext")
             }
             if !library.copiedAlive.isEmpty {
                 Button {
@@ -370,12 +370,12 @@ struct LibraryView: View {
 
     private var sheetsB: some View {
         Color.clear
-            .fileImporter(isPresented: $showImporter, allowedContentTypes: [.pdf]) { result in
+            .fileImporter(isPresented: $showImporter, allowedContentTypes: importableDocumentTypes) { result in
                 if case .success(let url) = result {
-                    importFailed = !library.importPDF(from: url, into: folderID)
+                    importFailed = library.importDocument(from: url, into: folderID) == nil
                 }
             }
-            .alert("PDF 匯入失敗", isPresented: $importFailed) {
+            .alert("匯入失敗（只收 PDF、Markdown、純文字檔）", isPresented: $importFailed) {
                 Button("好", role: .cancel) { }
             }
             .confirmationDialog("把選取的 \(selected.count) 個項目移到最近刪除？", isPresented: $showDeleteSelected,

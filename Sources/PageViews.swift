@@ -652,6 +652,20 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     private var linkLayers: [UUID: CAShapeLayer] = [:]
     private let linkPreview = CAShapeLayer()
     private var linkLayoutPaused = false             // 一次改很多個方塊時先不要每個都重畫
+    private var linkPaths: [UUID: CGPath] = [:]      // 每一條線目前的樣子（這個視圖的座標；判斷點到哪一條用）
+    var selectedLink: UUID? {                        // 選取中的線：外面一圈藍色的光
+        didSet { if selectedLink != oldValue { layoutLinks() } }
+    }
+
+    /// 點到哪一條線（p：這個視圖的座標）；線很細，旁邊 14 點以內都算
+    func linkHit(at p: CGPoint) -> BoxLink? {
+        for link in links.reversed() {
+            guard let path = linkPaths[link.id] else { continue }
+            let fat = path.copy(strokingWithWidth: 28, lineCap: .round, lineJoin: .round, miterLimit: 2)
+            if fat.contains(p) { return link }
+        }
+        return nil
+    }
 
     func syncLinks(_ list: [BoxLink]) {
         links = list
@@ -692,7 +706,9 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             let ra = a.linkRect.applying(CGAffineTransform(scaleX: s, y: s))
             let rb = b.linkRect.applying(CGAffineTransform(scaleX: s, y: s))
             let path = BoxLinkPath.path(from: BoxLinkPath.anchor(ra, side: link.fromSide), fromSide: link.fromSide,
-                                        to: BoxLinkPath.anchor(rb, side: link.toSide), toSide: link.toSide, scale: s)
+                                        to: BoxLinkPath.anchor(rb, side: link.toSide), toSide: link.toSide, scale: s,
+                                        route: link.route ?? 0, arrow: link.arrow ?? 0)
+            linkPaths[link.id] = path
             let shape: CAShapeLayer
             if let existing = linkLayers[link.id] {
                 shape = existing
@@ -702,7 +718,15 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
                 linkLayers[link.id] = shape
             }
             styleLinkLayer(shape, scale: s)
-            let box = path.boundingBoxOfPath.insetBy(dx: -4 * s - 2, dy: -4 * s - 2)
+            shape.strokeColor = BoxLinkPath.color(link).cgColor
+            shape.lineWidth = max(CGFloat(link.width ?? 2) * s, 1)
+            shape.lineDashPattern = link.dash == true ? [NSNumber(value: Double(7 * s)), NSNumber(value: Double(6 * s))] : nil
+            let chosen = link.id == selectedLink
+            shape.shadowColor = UIColor.systemBlue.cgColor
+            shape.shadowOffset = CGSize.zero
+            shape.shadowRadius = 5
+            shape.shadowOpacity = chosen ? 1 : 0
+            let box = path.boundingBoxOfPath.insetBy(dx: -6 * s - 8, dy: -6 * s - 8)
             shape.frame = box
             var shift = CGAffineTransform(translationX: -box.minX, y: -box.minY)
             shape.path = path.copy(using: &shift)
@@ -711,6 +735,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         for (id, shape) in linkLayers where !alive.contains(id) {
             shape.removeFromSuperlayer()
             linkLayers[id] = nil
+            linkPaths[id] = nil
         }
         CATransaction.commit()
     }
@@ -1536,14 +1561,16 @@ enum PageRenderer {
             frames[t.id] = CGRect(x: rect.minX + f.minX * k, y: rect.minY + f.minY * k, width: f.width * k, height: f.height * k)
         }
         ctx.saveGState()
-        ctx.setStrokeColor(UIColor(white: 0.62, alpha: 1).cgColor)
-        ctx.setLineWidth(max(2 * k, 0.5))
         ctx.setLineJoin(.round)
         ctx.setLineCap(.round)
         for link in page.links ?? [] {
             guard let a = frames[link.from], let b = frames[link.to] else { continue }
+            ctx.setStrokeColor(BoxLinkPath.color(link).cgColor)
+            ctx.setLineWidth(max(CGFloat(link.width ?? 2) * k, 0.5))
+            ctx.setLineDash(phase: 0, lengths: link.dash == true ? [7 * k, 6 * k] : [])
             ctx.addPath(BoxLinkPath.path(from: BoxLinkPath.anchor(a, side: link.fromSide), fromSide: link.fromSide,
-                                         to: BoxLinkPath.anchor(b, side: link.toSide), toSide: link.toSide, scale: k))
+                                         to: BoxLinkPath.anchor(b, side: link.toSide), toSide: link.toSide, scale: k,
+                                         route: link.route ?? 0, arrow: link.arrow ?? 0))
             ctx.strokePath()
         }
         ctx.restoreGState()

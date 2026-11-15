@@ -1,4 +1,4 @@
 board
-cards
-textlinks
+linkedit
+texttidy
 textstyle

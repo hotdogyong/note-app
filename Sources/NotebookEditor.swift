@@ -239,7 +239,7 @@ enum TextDefaults {
     /// 某一本筆記本的預設（v12.9：每本各自記住）
     static func size(_ id: UUID?) -> CGFloat {
         let v = (NotebookPrefs.object(sizeKey, id) as? Double) ?? 0
-        return v > 0 ? CGFloat(v) : 20             // v12.12.3：沒設定過的預設字級 14 → 20（使用者要求）
+        return v > 0 ? CGFloat(v) : 16             // v12.14.0：沒設定過的預設字級 16（使用者要求；v12.12.3 是 20）
     }
 
     static func bold(_ id: UUID?) -> Bool { (NotebookPrefs.object(boldKey, id) as? Bool) ?? false }
@@ -253,7 +253,7 @@ enum TextDefaults {
     /// 字級（以 A4 為準）；沒設定過＝20
     static var size: CGFloat {
         let v = UserDefaults.standard.double(forKey: sizeKey)
-        return v > 0 ? CGFloat(v) : 20             // v12.12.3：沒設定過的預設字級 14 → 20（使用者要求）
+        return v > 0 ? CGFloat(v) : 16             // v12.14.0：沒設定過的預設字級 16（使用者要求；v12.12.3 是 20）
     }
 
     static var bold: Bool { UserDefaults.standard.bool(forKey: boldKey) }
@@ -1296,15 +1296,6 @@ struct NotebookEditorView: View {
                                           model.documentView?.showMessage("house", "「\(window.meta.title)」搬到首頁了，卡片還是連得到")
                                       },
                                       isInBoard: { library.notebook($0.meta.id)?.boardID != nil })
-                        .fileImporter(isPresented: $showCardPDF, allowedContentTypes: [.pdf]) { result in
-                            guard case .success(let url) = result else { return }
-                            guard let created = library.importPDFNotebook(from: url, into: model.meta.folderID) else {
-                                model.documentView?.showMessage("exclamationmark.triangle", "這份 PDF 讀不進來")
-                                return
-                            }
-                            library.setBoardHome(created.id, board: model.meta.id)
-                            model.documentView?.placeCard(for: created)
-                        }
                 }
             }
             .overlay {
@@ -1460,7 +1451,9 @@ struct NotebookEditorView: View {
         case .importExisting:
             showCardPicker = true
         case .importPDF:
-            showCardPDF = true
+            // v12.14.0：跟「文件」同一個選取畫面（白板上可以選 PDF、Markdown、圖片）。
+            // 以前另外掛一個選取畫面，同一個畫面掛兩個同類的只有一個會作用
+            model.documentView?.insertFromToolbar(InsertKind.filesMany)
         }
     }
 
@@ -2373,7 +2366,7 @@ struct BoardToolbarButtons: View {
                 Button {
                     model.documentView?.insertFromToolbar(InsertKind.filesMany)
                 } label: {
-                    Label("檔案裡的圖片（一次選很多個）", systemImage: "folder.badge.plus")
+                    Label("檔案：圖片、PDF、Markdown（一次選很多個）", systemImage: "folder.badge.plus")
                 }
             }
             Section("筆記本（變成白板上的一張卡片，點了開浮動視窗）") {
@@ -2390,7 +2383,7 @@ struct BoardToolbarButtons: View {
                 Button {
                     model.documentView?.requestCard(CardRequest.importPDF)
                 } label: {
-                    Label("匯入 PDF（放在這張白板裡）", systemImage: "doc.richtext")
+                    Label("匯入文件：PDF、Markdown（放在這張白板裡）", systemImage: "doc.richtext")
                 }
             }
             Section("下一版") {

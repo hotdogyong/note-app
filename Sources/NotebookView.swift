@@ -973,7 +973,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         pv.syncTexts(model.texts(of: pv.page.id))
         guard let tv = pv.textViews[box.id] else { return }
         textSnapshot = (pv.page.id, before)
-        activate(tv, edit: true)
+        // v12.12.3（使用者要求，照 GUGA）：點兩下只建一個空白的框（裡面有「輸入文字」的提示），先是選取的狀態；
+        // 再點一下框裡面才開始輸入。點旁邊：空的框自動消失
+        activate(tv, edit: false)
     }
 
     private func activate(_ tv: TextBoxView, edit: Bool) {

@@ -739,7 +739,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
         textView.text = box.text
         textView.delegate = self
         textView.overrideUserInterfaceStyle = .light
-        placeholder.text = "用 Pencil 在這裡寫字"
+        placeholder.text = "輸入文字"
         placeholder.textColor = UIColor.systemGray
         placeholder.isUserInteractionEnabled = false
         addSubview(textView)

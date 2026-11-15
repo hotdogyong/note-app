@@ -146,6 +146,9 @@ final class ImageEditorView: UIView {
         ]
         var all = items
         if box.link != nil {
+            // 卡片（v12.12.4）：拿掉「縮成小圖」。那顆的圖示看起來像「打開」，使用者按了之後卡片縮成一小塊、
+            // 再點只會彈出封面的大圖，以為卡片不見、視窗打不開
+            all.remove(at: 4)
             // 卡片（v12.12.3）：改卡片下面顯示的名稱（不會改到筆記本的檔名）
             all.insert(("pencil", .white, { [weak self] in self?.host?.editCardCaption() }), at: 0)
         }

@@ -819,6 +819,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             if hit.1.isMini {
                 endTextSelection()
                 endImageSelection()
+                if hit.1.link != nil {
+                    expandMiniImage(hit.1.id, pageID: hit.0.page.id)     // 被縮成小圖的卡片（v12.12.4）：點一下變回卡片
+                    return
+                }
                 showImageViewer(hit.1, on: hit.0)
                 return
             }
@@ -1523,6 +1527,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 一張一張慢慢做，不要卡住畫面
     func refreshCardCovers() {
         guard isBoard, let pv = boardPV else { return }
+        // 之前被縮成小圖的卡片（v12.12.2 以前按到「縮成小圖」）：放回原本的大小（v12.12.4）
+        var images = model.images(of: pv.page.id)
+        var restored = 0
+        for i in images.indices where images[i].link != nil && images[i].isMini {
+            images[i].mini = nil
+            restored += 1
+        }
+        if restored > 0 {
+            model.setImages(images, pageID: pv.page.id)
+            pv.syncImages(images)
+            showMessage("rectangle.portrait.on.rectangle.portrait", "有 \(restored) 張被縮成小圖的卡片，已經放回原本的大小")
+        }
         let links = Set(model.images(of: pv.page.id).compactMap { $0.link })
         for (i, link) in links.enumerated() {
             guard let meta = Store.libraryCache.notebooks.first(where: { $0.id == link && $0.deletedAt == nil }) else { continue }

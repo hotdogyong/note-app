@@ -105,6 +105,10 @@ enum SelfTest {
                 // 連線改樣子＋選取一條線；一鍵整理（v12.14.0）
                 library.openNotebook = library.addBoard(in: nil, title: scene == "texttidy" ? "整理測試白板" : "線的樣子測試白板",
                                                         width: 100 * 842, height: 100 * 595)
+            case "importdoc", "subboard":
+                // 白板匯入文件（Markdown、PDF）、子白板（v12.14.0）：notebookOpened 裡匯入、放卡片、開一個視窗
+                library.openNotebook = library.addBoard(in: nil, title: scene == "subboard" ? "子白板測試" : "匯入文件測試",
+                                                        width: 100 * 842, height: 100 * 595)
             case "textlinks":
                 // 文字方塊的外框樣式、連線（v12.13.0）：白板上放幾個方塊和線，選取其中一個（看四邊的點）
                 library.openNotebook = library.addBoard(in: nil, title: "連線測試白板", width: 100 * 842, height: 100 * 595)
@@ -138,6 +142,51 @@ enum SelfTest {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
                     view?.selfTestSelectCard(second.id, preview: true)   // 另一張卡片選取＋預覽：看左上角的按鈕、翻頁鈕、頁碼
                 }
+            }
+            return
+        }
+        if scene == "importdoc" || scene == "subboard", view.model.isBoard, let library = library {
+            let sub = scene == "subboard"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                var lines: [String] = []
+                var metas: [NotebookMeta] = []
+                // 一份 Markdown（走跟「檔案」選到的一樣的 importDocument）
+                let md = FileManager.default.temporaryDirectory.appendingPathComponent("電磁學重點.md")
+                let text = "# 電磁學重點\n\n## 高斯定律\n\n- 封閉曲面的電通量 $\\oint \\vec E \\cdot d\\vec A = Q/\\varepsilon_0$\n- **對稱性**決定高斯面\n\n| 情況 | 電場 |\n|---|---|\n| 點電荷 | $kq/r^2$ |\n"
+                try? Data(text.utf8).write(to: md)
+                if let meta = library.importDocument(from: md, into: view.model.meta.folderID) {
+                    library.setBoardHome(meta.id, board: view.model.meta.id)
+                    metas.append(library.notebook(meta.id) ?? meta)
+                    lines.append("Markdown：匯入成「\(meta.title)」")
+                } else {
+                    lines.append("Markdown：失敗")
+                }
+                if let pdf = makeOutlinePDF(), let meta = library.importDocument(from: pdf, into: view.model.meta.folderID) {
+                    library.setBoardHome(meta.id, board: view.model.meta.id)
+                    metas.append(library.notebook(meta.id) ?? meta)
+                    lines.append("PDF：匯入成「\(meta.title)」，\(CardCover.pageCount(meta)) 頁")
+                } else {
+                    lines.append("PDF：失敗")
+                }
+                let txt = FileManager.default.temporaryDirectory.appendingPathComponent("不收的格式.docx")
+                try? Data("x".utf8).write(to: txt)
+                lines.append("docx：" + (library.importDocument(from: txt, into: nil) == nil ? "不收（對）" : "收了（不對）"))
+                var subBoard: NotebookMeta?
+                if sub {
+                    let board = library.addBoard(in: view.model.meta.folderID, title: "第一章 子白板", width: 100 * 842, height: 100 * 595)
+                    library.setBoardHome(board.id, board: view.model.meta.id)
+                    subBoard = library.notebook(board.id) ?? board
+                    if let b = subBoard { metas.append(b) }
+                    let inside = library.boardFiles(view.model.meta.id).map { $0.title }.joined(separator: "、")
+                    lines.append("白板裡的檔案：" + inside)
+                    lines.append("首頁列不列子白板：" + (library.items(in: nil).contains(ItemRef.notebook(board.id)) ? "列（不對）" : "不列（對）"))
+                }
+                view.insertLocationForTest(CGPoint(x: view.bounds.width * 0.12, y: view.bounds.height * 0.3))
+                view.placeCards(for: metas)
+                // 開一個視窗：importdoc 開 Markdown 那一本、subboard 開子白板
+                if let open = sub ? subBoard : metas.first { view.model.openCard(open.id) }
+                show(lines.joined(separator: "\n"))
             }
             return
         }

@@ -1862,7 +1862,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         hidePasteButton()
         insertLocation = p
         // 八格，順時針：貼上、圖釘、文件、相冊（外圈：相機）、錄音、新筆記本、子白板、新卡片（照使用者在 GUGA 習慣的順序）。
-        // 筆記本裡「新筆記本」那一格空著。圖釘、錄音、新筆記本、子白板還沒做，選到會提示
+        // 筆記本裡「新筆記本」「子白板」那兩格空著。錄音還沒做，選到會提示
         let later: (String) -> (() -> Void) = { [weak self] name in
             return { self?.showMessage("hourglass", name + "還沒做，之後的版本會加") }
         }
@@ -1889,10 +1889,16 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         } else {
             items.append(nil)                                       // 筆記本裡：新筆記本那一格空著
         }
-        items.append(RadialMenuView.Item(symbol: "rectangle.on.rectangle.angled", title: "子白板", tint: UIColor.systemTeal,
-                                         action: later("子白板"),
-                                         outerSymbol: "square.and.arrow.down.fill", outerTitle: "匯入現有的",
-                                         outerTint: UIColor.systemTeal, outerAction: later("匯入現有的白板")))
+        if isBoard {
+            // 子白板（v12.14.0）：新的白板／外圈「匯入現有的」白板，都變成這張白板上的一張卡片
+            items.append(RadialMenuView.Item(symbol: "rectangle.on.rectangle.angled", title: "子白板", tint: UIColor.systemTeal,
+                                             action: { [weak self] in self?.model.cardRequest = CardRequest.newBoard },
+                                             outerSymbol: "square.and.arrow.down.fill", outerTitle: "匯入現有的",
+                                             outerTint: UIColor.systemTeal,
+                                             outerAction: { [weak self] in self?.model.cardRequest = CardRequest.importBoard }))
+        } else {
+            items.append(nil)                                       // 筆記本裡：子白板那一格空著
+        }
         items.append(RadialMenuView.Item(symbol: "character.textbox", title: "新卡片", tint: UIColor.systemOrange,
                                          action: { [weak self] in self?.createText(at: p) }))
         let menu = RadialMenuView(frame: bounds, at: p, items: items)
@@ -1952,6 +1958,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard isBoard, !readOnly else { return }
         insertLocation = CGPoint(x: bounds.midX, y: bounds.midY)
         model.cardRequest = request
+    }
+
+    /// 自動測試：指定接下來放卡片的位置
+    func insertLocationForTest(_ p: CGPoint) {
+        insertLocation = p
     }
 
     /// 一次放好幾張卡片（匯入文件）：從剛剛長按的位置往右排，一列 4 張

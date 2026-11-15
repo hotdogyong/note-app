@@ -1093,6 +1093,7 @@ struct NotebookEditorView: View {
     @State private var windows: [BoardWindow] = []
     @State private var windowsTucked = false
     @State private var showCardPicker = false
+    @State private var cardPickerBoards = false        // 選取畫面列的是白板（子白板的「匯入現有的」）
     @State private var showCardPDF = false
 
     /// 開在浮動視窗裡時：工具列最左邊的「關閉、放大」由視窗提供（v12.12.3，照 GUGA 排成一排）
@@ -1432,7 +1433,7 @@ struct NotebookEditorView: View {
                 library.expandOpen(meta)
             }
             .sheet(isPresented: $showCardPicker) {
-                CardNotebookPicker(library: library, boardID: model.meta.id) { meta in
+                CardNotebookPicker(library: library, boardID: model.meta.id, boards: cardPickerBoards) { meta in
                     model.documentView?.placeCard(for: meta)
                 }
             }
@@ -1449,7 +1450,20 @@ struct NotebookEditorView: View {
                 openWindow(created.id)
             }
         case .importExisting:
+            cardPickerBoards = false
             showCardPicker = true
+        case .importBoard:
+            cardPickerBoards = true
+            showCardPicker = true
+        case .newBoard:
+            // 子白板（v12.14.0）：一張新的白板，家在這張白板裡（首頁不列，「白板裡的檔案」看得到），跟新白板一樣大
+            TextPrompt.show(title: "子白板的名稱（放在這張白板裡）", initial: "未命名白板") { text in
+                let created = library.addBoard(in: model.meta.folderID, title: text, width: 100 * 842, height: 100 * 595)
+                library.setBoardHome(created.id, board: model.meta.id)
+                let meta = library.notebook(created.id) ?? created
+                model.documentView?.placeCard(for: meta)
+                openWindow(meta.id)
+            }
         case .importPDF:
             // v12.14.0：跟「文件」同一個選取畫面（白板上可以選 PDF、Markdown、圖片）。
             // 以前另外掛一個選取畫面，同一個畫面掛兩個同類的只有一個會作用
@@ -2386,11 +2400,17 @@ struct BoardToolbarButtons: View {
                     Label("匯入文件：PDF、Markdown（放在這張白板裡）", systemImage: "doc.richtext")
                 }
             }
-            Section("下一版") {
-                Button {} label: {
-                    Label("子白板", systemImage: "rectangle.on.rectangle.angled")
+            Section("白板（變成一張卡片，點了開浮動視窗）") {
+                Button {
+                    model.documentView?.requestCard(CardRequest.newBoard)
+                } label: {
+                    Label("子白板（放在這張白板裡）", systemImage: "rectangle.on.rectangle.angled")
                 }
-                .disabled(true)
+                Button {
+                    model.documentView?.requestCard(CardRequest.importBoard)
+                } label: {
+                    Label("現有的白板", systemImage: "square.and.arrow.down")
+                }
             }
         } label: {
             Image(systemName: "plus")

@@ -21,6 +21,8 @@ enum CardRequest: Equatable {
     case newNotebook       // 新筆記本（家在這張白板裡）
     case importExisting    // 現有的筆記本（只是連結，家不變）
     case importPDF         // 匯入一份 PDF（家在這張白板裡）
+    case newBoard          // 子白板（v12.14.0）：新的白板，家在這張白板裡
+    case importBoard       // 現有的白板（只是連結，家不變）
 }
 
 /// 要打開哪一本的浮動視窗（stamp 每次加一，同一本連點兩次也會通知）
@@ -479,6 +481,7 @@ struct BoardWindowMenu: View {
 struct CardNotebookPicker: View {
     @ObservedObject var library: LibraryModel
     let boardID: UUID
+    var boards = false                     // true：列白板（子白板「匯入現有的」；v12.14.0）
     let pick: (NotebookMeta) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var searchText = ""
@@ -487,7 +490,7 @@ struct CardNotebookPicker: View {
         let key = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         var byPath: [String: [NotebookMeta]] = [:]
         for meta in library.library.notebooks {
-            guard meta.deletedAt == nil, meta.isBoard != true, meta.id != boardID else { continue }
+            guard meta.deletedAt == nil, (meta.isBoard == true) == boards, meta.id != boardID else { continue }
             if !key.isEmpty && !meta.title.lowercased().contains(key) { continue }
             var path = library.folderPathText(meta.folderID)
             if let board = meta.boardID, let owner = library.notebook(board) {
@@ -507,7 +510,8 @@ struct CardNotebookPicker: View {
         NavigationStack {
             List {
                 if groups.isEmpty {
-                    Text(searchText.isEmpty ? "還沒有可以放的筆記本" : "找不到名稱裡有「\(searchText)」的筆記本")
+                    Text(searchText.isEmpty ? (boards ? "沒有別的白板可以放" : "還沒有可以放的筆記本")
+                                            : "找不到名稱裡有「\(searchText)」的" + (boards ? "白板" : "筆記本"))
                         .foregroundStyle(.secondary)
                 }
                 ForEach(groups, id: \.path) { group in
@@ -517,15 +521,15 @@ struct CardNotebookPicker: View {
                                 dismiss()
                                 pick(meta)
                             } label: {
-                                Label(meta.title, systemImage: "book.closed")
+                                Label(meta.title, systemImage: boards ? "rectangle.dashed" : "book.closed")
                                     .foregroundStyle(Color.primary)
                             }
                         }
                     }
                 }
             }
-            .searchable(text: $searchText, prompt: "搜尋筆記本")
-            .navigationTitle("放哪一本到白板上？")
+            .searchable(text: $searchText, prompt: boards ? "搜尋白板" : "搜尋筆記本")
+            .navigationTitle(boards ? "放哪一張白板到這裡？" : "放哪一本到白板上？")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

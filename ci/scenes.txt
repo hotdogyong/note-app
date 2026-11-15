@@ -1,2 +1,7 @@
-markdown
+board
+cards
 importdoc
+subboard
+linkedit
+texttidy
+markdown

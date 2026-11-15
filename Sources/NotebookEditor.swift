@@ -487,7 +487,7 @@ struct NotebookMoreMenu: View {
     private var backdrop: Binding<String> {
         prefBinding("notebookBackdrop", "dark", onSet: { model.documentView?.applyBackdrop() })
     }
-    private var textSize: Binding<Double> { prefBinding(TextDefaults.sizeKey, 14.0) }
+    private var textSize: Binding<Double> { prefBinding(TextDefaults.sizeKey, 16.0) }   // v12.14.0：跟實際的預設一樣是 16（以前顯示 14）
     private var textColor: Binding<String> { prefBinding(TextDefaults.colorKey, "auto") }
     private var textBold: Binding<Bool> { prefBinding(TextDefaults.boldKey, false) }
     @State private var showHistory = false

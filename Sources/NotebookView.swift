@@ -815,21 +815,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         // 點到圖片：選取它（可以移動、縮放、旋轉）；縮成小圖的：彈出大圖（v12.8.3）
         if let hit = imageHit(at: p) {
-            // 白板上的筆記本卡片：左上角兩顆按鈕（v12.12.2，照 GUGA）——第一顆開浮動視窗、第二顆開成分頁。
-            // 點卡片其他地方：跟圖片一樣選取（可以搬、拉大小、刪除）
-            if let link = hit.1.link, let view = hit.0.imageViews[hit.1.id] {
-                let local = view.convert(p, from: self)
-                let fx = local.x / max(view.bounds.width, 1)
-                let fy = local.y / max(view.bounds.height, 1)
-                let imageHeight = CardCover.width * hit.1.height / max(hit.1.width, 1)
-                let zoneX = CardCover.buttonZone / CardCover.width
-                if fy >= 0, fy < CardCover.buttonZone / max(imageHeight, 1), fx >= 0, fx < zoneX * 2 {
-                    endTextSelection()
-                    endImageSelection()
-                    if fx < zoneX { model.openCard(link) } else { model.openCardAsTab(link) }
-                    return
-                }
-            }
+            // 白板上的筆記本卡片（v12.12.3）：點一下跟圖片一樣是選取；選取後左上角出現的按鈕才是打開（見 ImageEditorView）
             if hit.1.isMini {
                 endTextSelection()
                 endImageSelection()
@@ -1381,7 +1367,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             showTapeDelete(at: p, pageID: hit.0.page.id, id: hit.1.id)
             return
         }
-        // 長按白板上的筆記本卡片（v12.12.0）：選取它（跟圖片一樣可以搬、拉大小、刪除）；點一下是開浮動視窗
+        // 長按白板上的筆記本卡片（v12.12.0）：選取它（跟圖片一樣可以搬、拉大小、刪除）；點一下也是選取（v12.12.3）
         if let hit = imageHit(at: p), hit.1.link != nil {
             hidePasteButton()
             endTextSelection()
@@ -1544,15 +1530,63 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
     }
 
-    /// 連到這一本的卡片：封面換成最新的。caption 有值：順便改卡片上的標題
-    func updateCards(for meta: NotebookMeta, caption: String?) {
+    /// 選取中的卡片上的按鈕（ImageEditorView 呼叫）：0 開浮動視窗、1 在卡片上預覽／回到封面、2 上一頁、3 下一頁
+    func cardButton(_ index: Int, box: ImageBox) {
+        guard isBoard, let link = box.link, let pv = boardPV else { return }
+        if index == 0 {
+            endImageSelection()
+            model.openCard(link)
+            return
+        }
+        guard let meta = Store.libraryCache.notebooks.first(where: { $0.id == link && $0.deletedAt == nil }) else {
+            showMessage("questionmark.folder", "找不到這本筆記本（可能被刪掉了）")
+            return
+        }
+        var changed = box
+        switch index {
+        case 1: changed.previewPage = box.previewPage == nil ? CardCover.lastPageIndex(meta) : nil
+        case 2: changed.previewPage = max((box.previewPage ?? 0) - 1, 0)
+        default: changed.previewPage = min((box.previewPage ?? 0) + 1, max(CardCover.pageCount(meta) - 1, 0))
+        }
+        guard changed != box else { return }
+        let id = pv.page.id
+        var images = model.images(of: id)
+        guard let i = images.firstIndex(where: { $0.id == box.id }) else { return }
+        images[i] = changed
+        let image = CardCover.image(for: meta, caption: changed.caption ?? meta.title, previewPage: changed.previewPage)
+        Store.overwriteImage(image, file: changed.file, pageID: id)
+        model.setImages(images, pageID: id)
+        pv.syncImages(images)
+        pv.imageViews[changed.id]?.image = image
+        imageEditor?.update(changed)
+        imageSnapshot = (id, images)                     // 預覽、翻頁不算一步復原
+    }
+
+    /// 選取中的卡片：改卡片下面顯示的名稱（不會改到筆記本的檔名）
+    func editCardCaption() {
+        guard let box = imageEditor?.box, let link = box.link,
+              let meta = Store.libraryCache.notebooks.first(where: { $0.id == link }) else { return }
+        TextPrompt.show(title: "卡片下面的名稱（不會改到筆記本的檔名）", initial: box.caption ?? meta.title) { [weak self] text in
+            self?.updateCards(for: meta, caption: text, only: box.id)
+        }
+    }
+
+    /// 自動測試：選取連到這一本的卡片（看選取後左上角的按鈕）
+    func selfTestSelectCard(_ link: UUID, preview: Bool) {
+        guard let pv = boardPV, let box = model.images(of: pv.page.id).first(where: { $0.link == link }) else { return }
+        selectImage(box, on: pv)
+        if preview { cardButton(1, box: box) }
+    }
+
+    /// 連到這一本的卡片：封面換成最新的。caption 有值：順便改卡片上的標題（only 有值：只改那一張）
+    func updateCards(for meta: NotebookMeta, caption: String?, only: UUID? = nil) {
         guard isBoard, let pv = boardPV else { return }
         let id = pv.page.id
         var images = model.images(of: id)
         var touched = false
         for i in images.indices where images[i].link == meta.id {
-            if let caption = caption { images[i].caption = caption }
-            let image = CardCover.image(for: meta, caption: images[i].caption ?? meta.title)
+            if let caption = caption, only == nil || only == images[i].id { images[i].caption = caption }
+            let image = CardCover.image(for: meta, caption: images[i].caption ?? meta.title, previewPage: images[i].previewPage)
             Store.overwriteImage(image, file: images[i].file, pageID: id)
             pv.imageViews[images[i].id]?.image = image
             touched = true

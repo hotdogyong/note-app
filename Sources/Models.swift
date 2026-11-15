@@ -237,6 +237,7 @@ struct ImageBox: Codable, Hashable, Identifiable {
     var mini: Bool? = nil           // 縮成小圖（v12.8.3）：頁面上只顯示一個小縮圖，點了彈出大圖
     var link: UUID? = nil           // 白板上的筆記本卡片（v12.12.0）：連到哪一本筆記本；圖是封面＋標題（BoardCards.swift）
     var caption: String? = nil      // 卡片上的標題（預設是筆記本的名稱，可以另外改）
+    var previewPage: Int? = nil     // 卡片正在預覽第幾頁（v12.12.3；從 0 開始）；nil：顯示封面
 
     var isLocked: Bool { locked ?? false }
     var isMini: Bool { mini ?? false }

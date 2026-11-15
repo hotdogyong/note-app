@@ -1,5 +1,3 @@
 board
 cards
-strokes30000
-strokes65000
-strokes66000
+notebook

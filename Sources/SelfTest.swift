@@ -124,7 +124,10 @@ enum SelfTest {
                 let second = library.addNotebook(inBoard: view.model.meta, title: "例題本")
                 view.placeCard(for: first, at: CGPoint(x: view.bounds.width * 0.2, y: view.bounds.height * 0.3))
                 view.placeCard(for: second, at: CGPoint(x: view.bounds.width * 0.2, y: view.bounds.height * 0.62))
-                view.model.openCard(first.id)                // 只開一個視窗，另一張卡片露出來看左上角的按鈕
+                view.model.openCard(first.id)                // 只開一個視窗
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
+                    view?.selfTestSelectCard(second.id, preview: true)   // 另一張卡片選取＋預覽：看左上角的按鈕、翻頁鈕、頁碼
+                }
             }
             return
         }

@@ -8,8 +8,8 @@ import UniformTypeIdentifiers
 //
 // 卡片：白板上的一張「帶連結的圖片」（ImageBox.link＝筆記本的編號；圖是封面＋標題）。
 //   所以移動、縮放、刪除、復原、跟著區塊搬、匯出都跟一般圖片一樣，不用另外寫一套。
-//   v12.12.2（照 GUGA，使用者要求）：卡片左上角有兩顆按鈕——第一顆開浮動視窗、第二顆開成分頁（整個畫面）。
-//   點卡片其他地方（或長按）：選取，跟圖片一樣可以搬、拉大小、刪除。
+//   v12.12.3（照 GUGA，使用者給了截圖）：平常卡片上沒有按鈕；點一下（或長按）選取，選取後左上角才出現兩顆——
+//   第一顆開浮動視窗、第二顆直接在卡片上預覽（可以翻頁；再按一次回到封面）。按鈕畫在選取框 ImageEditorView 上。
 // 浮動視窗：固定在畫面上（不跟著白板捲動），裡面是完整的筆記本（NotebookEditorView 的內嵌模式）。
 //   可以同時開好幾個（最多 3 個，超過會收掉最早開的）；抓上面那一條移動、右下角拉大小、可以開成分頁。
 //   筆盒用白板的那一個：選什麼筆，視窗裡就用什麼筆。
@@ -40,83 +40,115 @@ struct BoardWindow: Identifiable, Equatable {
     }
 }
 
-/// 卡片的圖：筆記本第一頁的縮圖，下面一條標題
+/// 卡片的圖：筆記本第一頁的縮圖（或正在預覽的那一頁），下面是標題；四個角是圓的
 @MainActor
 enum CardCover {
     static let width: CGFloat = 240
-    static let captionHeight: CGFloat = 46
-    /// 左上角兩顆按鈕（畫在圖上；點在哪一顆由 NotebookView 用位置判斷）：每顆佔 buttonZone × buttonZone（圖的座標）
-    static let buttonZone: CGFloat = 54
-    static let buttonSize: CGFloat = 40
+    static let captionHeight: CGFloat = 52
 
-    static func image(for meta: NotebookMeta, caption: String) -> UIImage {
-        let data = Store.loadNotebook(meta.id)
-        var page: NotePage?
-        if let row = data.rows.first {
-            page = row.pages.indices.contains(row.mainIndex) ? row.pages[row.mainIndex] : row.pages.first
+    /// 每一列的主頁（卡片上預覽翻頁用的頁）
+    static func mainPages(_ data: NotebookData) -> [NotePage] {
+        data.rows.compactMap { row in
+            row.pages.indices.contains(row.mainIndex) ? row.pages[row.mainIndex] : row.pages.first
         }
+    }
+
+    static func pageCount(_ meta: NotebookMeta) -> Int {
+        mainPages(Store.loadNotebook(meta.id)).count
+    }
+
+    /// 上次看到第幾頁（開始預覽時從這一頁看起）
+    static func lastPageIndex(_ meta: NotebookMeta) -> Int {
+        let data = Store.loadNotebook(meta.id)
+        guard let last = data.lastPage else { return 0 }
+        return data.rows.firstIndex(where: { row in row.pages.contains(where: { $0.id == last }) }) ?? 0
+    }
+
+    /// previewPage：在卡片上預覽第幾頁（從 0 開始）；nil：封面（第一頁）
+    static func image(for meta: NotebookMeta, caption: String, previewPage: Int? = nil) -> UIImage {
+        let data = Store.loadNotebook(meta.id)
+        let pages = mainPages(data)
+        let isBoard = data.board == true
         var coverHeight = width * 842 / 595
-        var cover: UIImage?
-        if let page = page, data.board != true {
+        if let first = pages.first, !isBoard {
             // 太長的頁（Markdown 頁會往下長）只取上面一段
-            coverHeight = min(width * page.spec.height / max(page.spec.width, 1), width * 1.5)
-            cover = Thumbnail.image(for: page, width: width)
+            coverHeight = min(width * first.spec.height / max(first.spec.width, 1), width * 1.5)
+        }
+        var shown: NotePage?
+        if !isBoard {
+            if let k = previewPage, pages.indices.contains(k) { shown = pages[k] } else { shown = pages.first }
         }
         let size = CGSize(width: width, height: coverHeight + captionHeight)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 2
-        format.opaque = true
+        format.opaque = false
         return UIGraphicsImageRenderer(size: size, format: format).image { ctx in
-            UIColor(white: 0.16, alpha: 1).setFill()
-            ctx.fill(CGRect(origin: CGPoint.zero, size: size))
+            let full = CGRect(origin: CGPoint.zero, size: size)
+            UIBezierPath(roundedRect: full, cornerRadius: 16).addClip()
+            UIColor(white: 0.2, alpha: 1).setFill()
+            ctx.fill(full)
             let coverRect = CGRect(x: 0, y: 0, width: width, height: coverHeight)
-            if let cover = cover {
+            if let page = shown {
+                let thumb = Thumbnail.image(for: page, width: width)
                 ctx.cgContext.saveGState()
                 ctx.cgContext.clip(to: coverRect)
-                let h = width * cover.size.height / max(cover.size.width, 1)
-                cover.draw(in: CGRect(x: 0, y: 0, width: width, height: h))
+                let h = width * thumb.size.height / max(thumb.size.width, 1)
+                if previewPage == nil || h <= coverHeight {
+                    thumb.draw(in: CGRect(x: 0, y: 0, width: width, height: h))            // 寬度填滿、從上面開始
+                } else {
+                    let w = width * coverHeight / h                                         // 預覽：整頁縮到放得進去、置中
+                    thumb.draw(in: CGRect(x: (width - w) / 2, y: 0, width: w, height: coverHeight))
+                }
                 ctx.cgContext.restoreGState()
             } else {
-                let symbol = UIImage(systemName: data.board == true ? "rectangle.dashed" : "book.closed",
+                let symbol = UIImage(systemName: isBoard ? "rectangle.dashed" : "book.closed",
                                      withConfiguration: UIImage.SymbolConfiguration(pointSize: 64, weight: .regular))?
                     .withTintColor(UIColor(white: 0.7, alpha: 1), renderingMode: .alwaysOriginal)
                 if let symbol = symbol {
                     symbol.draw(at: CGPoint(x: coverRect.midX - symbol.size.width / 2, y: coverRect.midY - symbol.size.height / 2))
                 }
             }
-            // 標題
+            // 預覽中：右上角寫第幾頁
+            if let k = previewPage, !pages.isEmpty {
+                let text = "\(min(k, pages.count - 1) + 1)/\(pages.count)" as NSString
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold),
+                    .foregroundColor: UIColor.white
+                ]
+                let textSize = text.size(withAttributes: attrs)
+                let pill = CGRect(x: width - textSize.width - 30, y: 10, width: textSize.width + 20, height: 24)
+                UIColor(white: 0.1, alpha: 0.8).setFill()
+                UIBezierPath(roundedRect: pill, cornerRadius: 12).fill()
+                text.draw(at: CGPoint(x: pill.minX + 10, y: pill.midY - textSize.height / 2), withAttributes: attrs)
+            }
+            // 標題：靠左，最多兩行
             let style = NSMutableParagraphStyle()
-            style.alignment = .center
-            style.lineBreakMode = .byTruncatingMiddle
+            style.alignment = .left
+            style.lineBreakMode = .byTruncatingTail
             let attrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 17, weight: .semibold),
-                .foregroundColor: UIColor.white,
+                .font: UIFont.systemFont(ofSize: 14, weight: .medium),
+                .foregroundColor: UIColor(white: 0.92, alpha: 1),
                 .paragraphStyle: style
             ]
-            let text = caption as NSString
-            text.draw(in: CGRect(x: 10, y: coverHeight + 12, width: width - 20, height: 24), withAttributes: attrs)
-            // 左上角的兩顆按鈕：開浮動視窗、開成分頁
-            let inset = (buttonZone - buttonSize) / 2
-            for (i, name) in ["rectangle.on.rectangle", "book"].enumerated() {
-                let rect = CGRect(x: CGFloat(i) * buttonZone + inset, y: inset, width: buttonSize, height: buttonSize)
-                UIColor(white: 0.1, alpha: 0.82).setFill()
-                UIBezierPath(roundedRect: rect, cornerRadius: 9).fill()
-                let icon = UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19, weight: .semibold))?
-                    .withTintColor(UIColor.white, renderingMode: .alwaysOriginal)
-                if let icon = icon {
-                    icon.draw(at: CGPoint(x: rect.midX - icon.size.width / 2, y: rect.midY - icon.size.height / 2))
-                }
-            }
-            // 外框
-            UIColor(white: 1, alpha: 0.35).setStroke()
-            let border = UIBezierPath(rect: CGRect(origin: CGPoint.zero, size: size).insetBy(dx: 1, dy: 1))
-            border.lineWidth = 2
-            border.stroke()
+            (caption as NSString).draw(with: CGRect(x: 14, y: coverHeight + 8, width: width - 28, height: captionHeight - 14),
+                                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                                       attributes: attrs, context: nil)
         }
     }
 }
 
 // MARK: - 浮動視窗
+
+/// 浮動視窗交給裡面那本筆記本的動作：它工具列最左邊的「關閉、放大」
+struct BoardWindowActions {
+    let close: () -> Void
+    let expand: () -> Void
+}
+
+/// 視窗靠到哪一邊
+enum BoardWindowSnap {
+    case left, right, top, bottom, mini
+}
 
 /// 白板上所有開著的浮動視窗（蓋在白板上面、筆盒下面）
 struct BoardWindowsLayer: View {
@@ -142,11 +174,12 @@ struct BoardWindowsLayer: View {
                                     moveHome: { moveHome(window) })
                 }
                 .opacity(tucked ? 0 : 1)
+                .scaleEffect(tucked ? 0.97 : 1)
                 .allowsHitTesting(!tucked)
                 if !windows.isEmpty {
                     // 左上角：全部收到旁邊／放回來（照 GUGA 的虛線方框）
                     Button {
-                        withAnimation(.easeOut(duration: 0.15)) { tucked.toggle() }
+                        withAnimation(BoardWindowView.spring) { tucked.toggle() }
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: tucked ? "rectangle.on.rectangle" : "rectangle.dashed")
@@ -160,6 +193,7 @@ struct BoardWindowsLayer: View {
                     }
                     .buttonStyle(.plain)
                     .offset(x: 16, y: 6)
+                    .transition(.opacity)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
@@ -173,7 +207,9 @@ struct BoardWindowsLayer: View {
     }
 }
 
-/// 一個浮動視窗：上面一條（抓著移動、標題、選單、開成分頁、關閉），下面是筆記本，右下角拉大小
+/// 一個浮動視窗（v12.12.3 照 GUGA 重排）：
+/// 最上面中間三個點的小把手（點一下出選單：位置、模式、關閉；按住拖著移動），下面直接是筆記本（它的工具列最左邊是關閉、放大），
+/// 右下角一小段弧線拉大小
 struct BoardWindowView: View {
     @Binding var window: BoardWindow
     let container: CGSize
@@ -186,9 +222,13 @@ struct BoardWindowView: View {
     let moveHome: () -> Void
     @GestureState private var moveBy: CGSize = .zero
     @GestureState private var growBy: CGSize = .zero
+    @State private var showMenu = false
+    @State private var shown = false               // 打開時彈出來、關掉時縮回去
 
     static let minSize = CGSize(width: 440, height: 360)
-    static let barHeight: CGFloat = 38
+    static let gripHeight: CGFloat = 26
+    static let corner: CGFloat = 18
+    static let spring = Animation.spring(response: 0.32, dampingFraction: 0.86)
 
     /// 還沒擺過的視窗：靠右、一個比一個往左下錯開
     static func defaultFrame(_ container: CGSize, _ index: Int) -> CGRect {
@@ -204,28 +244,53 @@ struct BoardWindowView: View {
         var r = rect
         r.size.width = min(max(r.width, Self.minSize.width), max(container.width, Self.minSize.width))
         r.size.height = min(max(r.height, Self.minSize.height), max(container.height - 60, Self.minSize.height))
-        // 上面那一條至少留 120 點在畫面裡，才抓得回來；不要鑽到最上面的工具列底下
-        r.origin.x = min(max(r.minX, 120 - r.width), container.width - 120)
-        r.origin.y = min(max(r.minY, 56), container.height - Self.barHeight - 8)
+        // 上面的把手至少留在畫面裡，才抓得回來；不要鑽到最上面的工具列底下
+        r.origin.x = min(max(r.minX, 160 - r.width), container.width - 160)
+        r.origin.y = min(max(r.minY, 56), container.height - Self.gripHeight - 8)
         return r
+    }
+
+    private func snapFrame(_ snap: BoardWindowSnap, from base: CGRect) -> CGRect {
+        let top: CGFloat = 104                     // 讓開最上面的分頁和工具列
+        let margin: CGFloat = 10
+        let fullH = max(container.height - top - margin, Self.minSize.height)
+        let fullW = max(container.width - margin * 2, Self.minSize.width)
+        let halfW = max((container.width - margin * 3) / 2, Self.minSize.width)
+        let halfH = max((container.height - top - margin * 2) / 2, Self.minSize.height)
+        switch snap {
+        case .left: return CGRect(x: margin, y: top, width: halfW, height: fullH)
+        case .right: return CGRect(x: container.width - margin - halfW, y: top, width: halfW, height: fullH)
+        case .top: return CGRect(x: margin, y: top, width: fullW, height: halfH)
+        case .bottom: return CGRect(x: margin, y: container.height - margin - halfH, width: fullW, height: halfH)
+        case .mini: return CGRect(x: base.minX, y: base.minY, width: Self.minSize.width, height: Self.minSize.height)
+        }
+    }
+
+    /// 縮回去再關（動畫做完才真的拿掉）
+    private func animateOut(_ then: @escaping () -> Void) {
+        withAnimation(.easeIn(duration: 0.16)) { shown = false }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.17) { then() }
     }
 
     var body: some View {
         let base = clamped(window.frame ?? Self.defaultFrame(container, index))
+        let shape = RoundedRectangle(cornerRadius: Self.corner, style: .continuous)
         return VStack(spacing: 0) {
-            titleBar(base)
-            NotebookEditorView(meta: window.meta, embedded: true)
+            grip(base)
+            NotebookEditorView(meta: window.meta, embedded: true,
+                               windowActions: BoardWindowActions(close: { animateOut(close) },
+                                                                 expand: { animateOut(openAsTab) }))
                 .id(window.meta.id)
         }
         .frame(width: base.width, height: base.height)
-        .background(Color(uiColor: UIColor.systemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(Color.white.opacity(0.28), lineWidth: 1))
-        .shadow(color: Color.black.opacity(0.5), radius: 14, y: 6)
+        .clipShape(shape)
+        // 影子畫在後面那塊單純的圓角方塊上（畫在整個視窗上的話，拖的時候每一格都要重算，會頓）
+        .background(shape.fill(Color.black).shadow(color: Color.black.opacity(0.45), radius: 12, y: 5))
+        .overlay(shape.stroke(Color.white.opacity(0.2), lineWidth: 1))
         .overlay(alignment: .topLeading) {
             // 拉大小的時候只畫一個虛線框，放手才真的改（筆記本重排很花時間）
             if growBy != .zero {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                shape
                     .stroke(Color.orange, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                     .frame(width: max(base.width + growBy.width, Self.minSize.width),
                            height: max(base.height + growBy.height, Self.minSize.height))
@@ -233,90 +298,167 @@ struct BoardWindowView: View {
             }
         }
         .overlay(alignment: .bottomTrailing) { resizeHandle(base) }
+        .transaction { $0.animation = nil }        // 大小的改變不做動畫（裡面的筆記本每一格都重排會頓）；位置、彈出才做
+        .scaleEffect(shown ? 1 : 0.9)
+        .opacity(shown ? 1 : 0)
         .offset(x: base.minX + moveBy.width, y: base.minY + moveBy.height)
+        .onAppear {
+            withAnimation(Self.spring) { shown = true }
+        }
     }
 
-    private func titleBar(_ base: CGRect) -> some View {
-        HStack(spacing: 4) {
-            // v12.12.2：照 GUGA，關閉、開成整個畫面放在左上角
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .frame(width: 36, height: Self.barHeight)
-                    .contentShape(Rectangle())
-            }
-            Button(action: openAsTab) {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .frame(width: 36, height: Self.barHeight)
-                    .contentShape(Rectangle())
-            }
-            Text(window.meta.title)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.white)
-                .lineLimit(1)
-                .padding(.leading, 6)
-            Spacer(minLength: 4)
-            Menu {
-                Button(action: renameCard) {
-                    Label("改卡片上的標題", systemImage: "pencil")
+    /// 最上面那一條：中間三個點的小把手。點一下：選單；按住拖：移動視窗
+    private func grip(_ base: CGRect) -> some View {
+        ZStack {
+            Color.black
+            HStack(spacing: 4) {
+                ForEach(0 ..< 3, id: \.self) { _ in
+                    Circle()
+                        .fill(Color.white.opacity(0.95))
+                        .frame(width: 5, height: 5)
                 }
-                Button(action: openAsTab) {
-                    Label("開成分頁（整個畫面）", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
-                if inBoard {
-                    Button(action: moveHome) {
-                        Label("搬到首頁（跟白板同一個資料夾）", systemImage: "house")
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .frame(width: 36, height: Self.barHeight)
-                    .contentShape(Rectangle())
             }
+            .padding(.horizontal, 11)
+            .frame(height: 14)
+            .background(Capsule().fill(Color(white: 0.48)))
         }
-        .font(.system(size: 15, weight: .semibold))
-        .tint(Color.white)
-        .foregroundStyle(Color.white)
-        .padding(.horizontal, 4)
-        .frame(height: Self.barHeight)
-        .background(Color(white: 0.22))
-        .overlay(alignment: .top) {
-            // 中間上面的小把手：提示這一條可以抓著移動
-            Capsule()
-                .fill(Color.white.opacity(0.45))
-                .frame(width: 36, height: 4)
-                .padding(.top, 4)
-                .allowsHitTesting(false)
-        }
+        .frame(height: Self.gripHeight)
         .contentShape(Rectangle())
+        .onTapGesture {
+            toFront()
+            showMenu = true
+        }
         .gesture(
-            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            DragGesture(minimumDistance: 3, coordinateSpace: .global)
                 .updating($moveBy) { value, state, _ in state = value.translation }
                 .onEnded { value in
                     window.frame = clamped(base.offsetBy(dx: value.translation.width, dy: value.translation.height))
                     toFront()
                 }
         )
+        .popover(isPresented: $showMenu, arrowEdge: .top) {
+            BoardWindowMenu(inBoard: inBoard,
+                            snap: { snap in
+                                showMenu = false
+                                withAnimation(Self.spring) { window.frame = clamped(snapFrame(snap, from: base)) }
+                            },
+                            fullScreen: {
+                                showMenu = false
+                                animateOut(openAsTab)
+                            },
+                            rename: {
+                                showMenu = false
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { renameCard() }
+                            },
+                            moveHome: {
+                                showMenu = false
+                                moveHome()
+                            },
+                            close: {
+                                showMenu = false
+                                animateOut(close)
+                            })
+        }
     }
 
+    /// 右下角：沿著圓角的一小段粗弧線（照 GUGA），拖它改大小
     private func resizeHandle(_ base: CGRect) -> some View {
-        Image(systemName: "arrow.down.right")
-            .font(.system(size: 13, weight: .bold))
-            .foregroundStyle(Color.white)
-            .frame(width: 30, height: 30)
-            .background(Circle().fill(Color(white: 0.3)))
-            .padding(4)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 2, coordinateSpace: .global)
-                    .updating($growBy) { value, state, _ in state = value.translation }
-                    .onEnded { value in
-                        var r = base
-                        r.size.width += value.translation.width
-                        r.size.height += value.translation.height
-                        window.frame = clamped(r)
-                        toFront()
-                    }
-            )
+        Path { path in
+            path.addArc(center: CGPoint(x: 12, y: 12), radius: 14,
+                        startAngle: Angle.degrees(12), endAngle: Angle.degrees(78), clockwise: false)
+        }
+        .stroke(Color.white.opacity(0.92), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+        .shadow(color: Color.black.opacity(0.7), radius: 1.5)
+        .frame(width: 30, height: 30)
+        .padding(.trailing, 4)
+        .padding(.bottom, 4)
+        .frame(width: 50, height: 50, alignment: .bottomTrailing)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                .updating($growBy) { value, state, _ in state = value.translation }
+                .onEnded { value in
+                    var r = base
+                    r.size.width += value.translation.width
+                    r.size.height += value.translation.height
+                    window.frame = clamped(r)
+                    toFront()
+                }
+        )
+    }
+}
+
+/// 點視窗上面三個點跳出來的選單（照 GUGA）：位置、模式、卡片、關閉
+struct BoardWindowMenu: View {
+    let inBoard: Bool
+    let snap: (BoardWindowSnap) -> Void
+    let fullScreen: () -> Void
+    let rename: () -> Void
+    let moveHome: () -> Void
+    let close: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            title("位置")
+            HStack(spacing: 10) {
+                tile("左", "rectangle.lefthalf.inset.filled") { snap(BoardWindowSnap.left) }
+                tile("右", "rectangle.righthalf.inset.filled") { snap(BoardWindowSnap.right) }
+            }
+            HStack(spacing: 10) {
+                tile("頂", "rectangle.tophalf.inset.filled") { snap(BoardWindowSnap.top) }
+                tile("底", "rectangle.bottomhalf.inset.filled") { snap(BoardWindowSnap.bottom) }
+            }
+            Divider()
+            title("模式")
+            tile("全屏", "arrow.up.left.and.arrow.down.right", action: fullScreen)
+            tile("Mini 浮窗", "arrow.down.right.and.arrow.up.left") { snap(BoardWindowSnap.mini) }
+            Divider()
+            title("卡片")
+            tile("改卡片上的標題", "pencil", action: rename)
+            if inBoard {
+                tile("搬到首頁", "house", action: moveHome)
+            }
+            Divider()
+            Button(action: close) {
+                HStack {
+                    Text("關閉浮窗")
+                    Spacer()
+                    Image(systemName: "xmark")
+                }
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Color.red)
+                .padding(.horizontal, 14)
+                .frame(height: 44)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.red.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(16)
+        .frame(width: 270)
+        .presentationCompactAdaptation(.popover)
+    }
+
+    private func title(_ text: String) -> some View {
+        Text(text)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+    }
+
+    private func tile(_ text: String, _ symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack {
+                Text(text)
+                Spacer(minLength: 6)
+                Image(systemName: symbol)
+            }
+            .font(.system(size: 16, weight: .medium))
+            .foregroundStyle(Color.primary)
+            .padding(.horizontal, 14)
+            .frame(height: 44)
+            .frame(maxWidth: .infinity)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.16)))
+        }
+        .buttonStyle(.plain)
     }
 }
 

@@ -22,7 +22,23 @@ final class ImageEditorView: UIView {
     private let press = UILongPressGestureRecognizer()
     private let yield = ScrollYield()
 
-    private enum Mode { case idle, move, scale, rotate }
+    private enum Mode { case idle, move, scale, rotate, cardOpen, cardPreview, cardPrev, cardNext }
+    private static let cardModes: [Mode] = [.cardOpen, .cardPreview, .cardPrev, .cardNext]
+    // 白板上的筆記本卡片（v12.12.3，照 GUGA）：選取之後左上角才出現兩顆按鈕——開浮動視窗、在卡片上預覽；
+    // 預覽中，封面下緣左右各多一顆翻頁。按鈕只是圖，按到哪一顆由 modeAt 判斷（跟拖曳用同一個手勢）
+    private static let cardButtonSide: CGFloat = 38
+    private let cardButtons: [UIImageView] = ["macwindow.on.rectangle", "book", "chevron.left", "chevron.right"].map { name in
+        let view = UIImageView(image: UIImage(systemName: name,
+                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)))
+        view.contentMode = .center
+        view.tintColor = UIColor.white
+        view.backgroundColor = UIColor(white: 0.08, alpha: 0.86)
+        view.layer.cornerRadius = 10
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        view.isHidden = true
+        return view
+    }
     private var mode = Mode.idle
     private var startBox: ImageBox
     private var startPoint = CGPoint.zero
@@ -51,7 +67,30 @@ final class ImageEditorView: UIView {
         press.delegate = yield
         press.addTarget(self, action: #selector(handlePress(_:)))
         addGestureRecognizer(press)
+        for button in cardButtons { addSubview(button) }
         setUpBar()
+    }
+
+    /// 卡片按鈕的中心（頁面座標）。0、1：左上角由左到右；2、3：封面下緣的左、右
+    private func cardButtonCenter(_ index: Int) -> CGPoint {
+        let s = max(scale, 0.0001)
+        let side = Self.cardButtonSide / s
+        let gap = 8 / s
+        let w = box.width / 2
+        let h = box.height / 2
+        let caption = CardCover.captionHeight * box.width / CardCover.width      // 標題那一條在頁面上的高度
+        switch index {
+        case 0: return rotated(CGPoint(x: -w + gap + side / 2, y: -h + gap + side / 2))
+        case 1: return rotated(CGPoint(x: -w + gap * 2 + side * 1.5, y: -h + gap + side / 2))
+        case 2: return rotated(CGPoint(x: -w + gap + side / 2, y: h - caption - gap - side / 2))
+        default: return rotated(CGPoint(x: w - gap - side / 2, y: h - caption - gap - side / 2))
+        }
+    }
+
+    /// 現在有幾顆卡片按鈕（不是卡片、或固定住：0）
+    private var cardButtonCount: Int {
+        guard box.link != nil, !box.isLocked else { return 0 }
+        return box.previewPage != nil ? 4 : 2
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -105,7 +144,12 @@ final class ImageEditorView: UIView {
             ("arrow.down.right.and.arrow.up.left", .white, { [weak self] in self?.host?.miniImage() }),   // 縮成小圖（v12.8.3）
             ("trash", .systemRed, { [weak self] in self?.host?.deleteImage() })
         ]
-        for item in items {
+        var all = items
+        if box.link != nil {
+            // 卡片（v12.12.3）：改卡片下面顯示的名稱（不會改到筆記本的檔名）
+            all.insert(("pencil", .white, { [weak self] in self?.host?.editCardCaption() }), at: 0)
+        }
+        for item in all {
             let b = UIButton(type: .system)
             b.setImage(UIImage(systemName: item.0), for: .normal)
             b.tintColor = item.1
@@ -153,6 +197,15 @@ final class ImageEditorView: UIView {
         for (i, b) in barItems.enumerated() {
             b.frame = CGRect(x: CGFloat(i) * 50, y: 0, width: 50, height: 44)
         }
+        // 卡片的按鈕
+        let visible = cardButtonCount
+        for (i, button) in cardButtons.enumerated() {
+            button.isHidden = i >= visible
+            guard i < visible else { continue }
+            button.bounds = CGRect(x: 0, y: 0, width: Self.cardButtonSide, height: Self.cardButtonSide)
+            button.center = toView(cardButtonCenter(i))
+            bringSubviewToFront(button)
+        }
     }
 
     /// 只有圖片、控制點、工具列的地方才攔觸控；其他地方照常（寫字、捲動）
@@ -167,6 +220,10 @@ final class ImageEditorView: UIView {
         let p = CGPoint(x: v.x / s, y: v.y / s)
         if hypot((p.x - rotateHandle.x) * s, (p.y - rotateHandle.y) * s) < 26 { return .rotate }
         for c in corners where hypot((p.x - c.x) * s, (p.y - c.y) * s) < 24 { return .scale }
+        for i in 0 ..< cardButtonCount {
+            let c = cardButtonCenter(i)
+            if abs((p.x - c.x) * s) <= 23 && abs((p.y - c.y) * s) <= 23 { return Self.cardModes[i] }
+        }
         // 轉回圖片自己的方向，看是不是在圖片裡
         let dx = p.x - imageCenter.x
         let dy = p.y - imageCenter.y
@@ -227,12 +284,19 @@ final class ImageEditorView: UIView {
                 let nearest = (angle / quarter).rounded() * quarter
                 if abs(angle - nearest) < 0.06 { angle = nearest }
                 box.rotation = angle
-            case .idle:
+            case .idle, .cardOpen, .cardPreview, .cardPrev, .cardNext:
                 return
             }
             setNeedsLayout()
             host?.imageEdited(box, commit: false)
         case .ended, .cancelled, .failed:
+            if let index = Self.cardModes.firstIndex(of: mode) {
+                // 卡片的按鈕：手指放開時還在同一顆上才算按到
+                let pressed = mode
+                mode = .idle
+                if g.state == .ended, modeAt(v) == pressed { host?.cardButton(index, box: box) }
+                return
+            }
             if mode != .idle, box != startBox { host?.imageEdited(box, commit: true) }
             mode = .idle
         default:

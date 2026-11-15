@@ -1079,10 +1079,15 @@ struct NotebookEditorView: View {
     @State private var showCardPicker = false
     @State private var showCardPDF = false
 
-    init(meta: NotebookMeta, onClose: (() -> Void)? = nil, embedded: Bool = false) {
+    /// 開在浮動視窗裡時：工具列最左邊的「關閉、放大」由視窗提供（v12.12.3，照 GUGA 排成一排）
+    private let windowActions: BoardWindowActions?
+
+    init(meta: NotebookMeta, onClose: (() -> Void)? = nil, embedded: Bool = false,
+         windowActions: BoardWindowActions? = nil) {
         _model = StateObject(wrappedValue: NotebookModel(meta: meta))
         self.onClose = onClose
         self.embedded = embedded
+        self.windowActions = windowActions
     }
 
     /// 分頁下面那一排工具（v12.8.4，以前在系統的工具列裡）
@@ -1111,6 +1116,16 @@ struct NotebookEditorView: View {
         HStack(spacing: embedded ? 8 : (gap < 15 ? 8 : 12)) {
             if tabsCollapsed && !embedded {
                 closeAndTitle(titleMax)                            // 分頁收起來時：左上「× │ 名稱」（照 GUGA）
+            }
+            if embedded, let actions = windowActions {
+                toolCapsule(gap) {                                 // 浮動視窗：關閉、放大（開成整個畫面）
+                    Button(action: actions.close) {
+                        Image(systemName: "xmark")
+                    }
+                    Button(action: actions.expand) {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                }
             }
             if !model.isBoard {
                 toolCapsule(gap) { leadingTools }

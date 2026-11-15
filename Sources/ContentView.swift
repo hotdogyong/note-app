@@ -78,7 +78,9 @@ struct ContentView: View {
             // 筆記本：整個蓋在首頁（含側邊欄）上面，打開筆記本時完全看不到資料夾側邊欄
             if let meta = library.openNotebook {
                 notebookCover(meta)
-                    .transition(.move(edge: .trailing))
+                    .transition(library.zoomTransition
+                                ? AnyTransition.scale(scale: 0.88).combined(with: .opacity)
+                                : AnyTransition.move(edge: .trailing))
                     .zIndex(1)
             }
         }

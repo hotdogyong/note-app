@@ -239,7 +239,7 @@ enum TextDefaults {
     /// 某一本筆記本的預設（v12.9：每本各自記住）
     static func size(_ id: UUID?) -> CGFloat {
         let v = (NotebookPrefs.object(sizeKey, id) as? Double) ?? 0
-        return v > 0 ? CGFloat(v) : 14
+        return v > 0 ? CGFloat(v) : 20             // v12.12.3：沒設定過的預設字級 14 → 20（使用者要求）
     }
 
     static func bold(_ id: UUID?) -> Bool { (NotebookPrefs.object(boldKey, id) as? Bool) ?? false }
@@ -250,10 +250,10 @@ enum TextDefaults {
         return [c[0], c[1], c[2], 1]
     }
 
-    /// 字級（以 A4 為準）；沒設定過＝14
+    /// 字級（以 A4 為準）；沒設定過＝20
     static var size: CGFloat {
         let v = UserDefaults.standard.double(forKey: sizeKey)
-        return v > 0 ? CGFloat(v) : 14
+        return v > 0 ? CGFloat(v) : 20             // v12.12.3：沒設定過的預設字級 14 → 20（使用者要求）
     }
 
     static var bold: Bool { UserDefaults.standard.bool(forKey: boldKey) }
@@ -1266,7 +1266,8 @@ struct NotebookEditorView: View {
                                       close: { closeWindow($0) },
                                       openAsTab: { window in
                                           closeWindow(window)
-                                          library.openRequest = window.meta
+                                          model.documentView?.flushAll()
+                                          library.expandOpen(window.meta)       // 放大成整個畫面（v12.12.3：從中間放大，不是從右邊滑進來）
                                       },
                                       renameCard: { window in
                                           TextPrompt.show(title: "卡片上的標題", initial: window.meta.title) { text in
@@ -1420,7 +1421,7 @@ struct NotebookEditorView: View {
                 }
                 if let window = windows.first(where: { $0.meta.id == meta.id }) { closeWindow(window) }
                 model.documentView?.flushAll()
-                library.openRequest = meta
+                library.expandOpen(meta)
             }
             .sheet(isPresented: $showCardPicker) {
                 CardNotebookPicker(library: library, boardID: model.meta.id) { meta in

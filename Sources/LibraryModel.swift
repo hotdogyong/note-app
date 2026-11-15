@@ -21,6 +21,16 @@ final class LibraryModel: ObservableObject {
             if let meta = openNotebook { addTab(meta.id) }     // 打開的筆記本都放進上面的分頁（v12.8.2）
         }
     }
+    /// 這一次換筆記本用「從中間放大」的動畫（白板上的浮動視窗放大成整個畫面；v12.12.3）
+    @Published var zoomTransition = false
+
+    /// 從白板的浮動視窗放大成整個畫面：馬上換過去，用放大的動畫
+    func expandOpen(_ meta: NotebookMeta) {
+        zoomTransition = true
+        withAnimation(.spring(response: 0.36, dampingFraction: 0.9)) { openNotebook = meta }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.zoomTransition = false }
+    }
+
     /// 上面的分頁（v12.8.2，照 GoodNotes）：打開過、還沒關掉的筆記本和白板，照打開的順序。存在 UserDefaults，重開 App 還在
     @Published private(set) var openTabs: [UUID] = []
 

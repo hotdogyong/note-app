@@ -2379,6 +2379,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     private func saveBoardView() {
         guard let row = model.notebook.rows.first, let rv = rowViews[row.id], rv.ranges.indices.contains(0) else { return }
+        guard bounds.width > 50, bounds.height > 50 else { return }   // 畫面正在收起來（大小不正常）：不要把錯的位置存進去（v12.12.3）
         let s = max(scale, 0.0001)
         let x = (rv.contentOffset.x - rv.ranges[0].lo) / s
         let y = outer.contentOffset.y / s

@@ -1097,7 +1097,8 @@ final class TextBoxView: UIView, UITextViewDelegate {
 final class MathRenderer: NSObject, WKNavigationDelegate {
     static let shared = MathRenderer()
     static let katexVersion = "0.16.11"
-    static let layoutRevision = "4"           // 排版方式改了就換：舊的快取圖片不再使用（4：v12.14.0 等字型、等畫完才拍）
+    static let layoutRevision = "5"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果）
+    static let webTop: CGFloat = 160          // 看不到的網頁放在離畫面頂端這麼遠的地方（避開狀態列底下的邊緣效果）
     /// 排版時放大的倍數（圖片比較清楚）：頁面上 1 點 = 網頁裡 2 px
     static let scaleFactor: CGFloat = 2
 
@@ -1445,13 +1446,15 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
               let window = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first else { return nil }
         let web = webView ?? {
             let config = WKWebViewConfiguration()
-            let w = WKWebView(frame: CGRect(x: 0, y: 0, width: 1200, height: 1600), configuration: config)
+            let w = WKWebView(frame: CGRect(x: 0, y: Self.webTop, width: 1200, height: 1600), configuration: config)
             w.isOpaque = false
             w.backgroundColor = .clear
             w.scrollView.backgroundColor = .clear
             w.scrollView.isScrollEnabled = false
             w.scrollView.contentInsetAdjustmentBehavior = .never   // 不要因為狀態列往下推（v11.28 排好的式子被切掉下半）
             w.insetsLayoutMarginsFromSafeArea = false
+            w.scrollView.topEdgeEffect.isHidden = true          // iPadOS 26 的頂端邊緣效果（見 renderNow）
+            w.scrollView.bottomEdgeEffect.isHidden = true
             w.isUserInteractionEnabled = false
             w.navigationDelegate = self
             return w
@@ -1483,7 +1486,9 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     private func renderNow(_ k: String, _ r: Request, in web: WKWebView) {
         let f = Self.scaleFactor
         let layoutWidth = r.width * f
-        web.frame = CGRect(x: 0, y: 0, width: layoutWidth + 40, height: 3000)
+        // v12.14.0：網頁不要放在畫面最上面（狀態列底下）。iPadOS 26 會在捲動畫面的頂端加一層模糊、變暗的邊緣效果，
+        // 拍出來第一行（Markdown 的大標題）上面就多一條黑色、糊掉的字
+        web.frame = CGRect(x: 0, y: Self.webTop, width: layoutWidth + 40, height: 3000)
         web.scrollView.contentInset = .zero
         web.scrollView.contentOffset = .zero
         let args: [String: Any] = [

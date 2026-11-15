@@ -1097,7 +1097,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
 final class MathRenderer: NSObject, WKNavigationDelegate {
     static let shared = MathRenderer()
     static let katexVersion = "0.16.11"
-    static let layoutRevision = "3"           // 排版方式改了就換：舊的快取圖片不再使用
+    static let layoutRevision = "4"           // 排版方式改了就換：舊的快取圖片不再使用（4：v12.14.0 等字型、等畫完才拍）
     /// 排版時放大的倍數（圖片比較清楚）：頁面上 1 點 = 網頁裡 2 px
     static let scaleFactor: CGFloat = 2
 
@@ -1427,7 +1427,12 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         throwOnError: false,
         macros: {'\\\\arraystretch': '1.35'}
       });
+      // v12.14.0：先排一次版（這時候網頁才知道要哪些字型、開始載入），等字型都到了，再等兩個畫面更新才量、才拍。
+      // 以前直接等 fonts.ready：字型還沒開始載入就算「好了」，拍到的式子少了斜體的字母（E、A、q…）；
+      // 第一行的大標題上面也會多一條黑色、殘留的舊內容（網頁還沒畫完就拍）
+      b.getBoundingClientRect();
       await document.fonts.ready;
+      await new Promise(function(done) { requestAnimationFrame(function() { requestAnimationFrame(done); }); });
       var r = b.getBoundingClientRect();
       return [Math.ceil(r.width), Math.ceil(r.height)];
     }

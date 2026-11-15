@@ -13,6 +13,7 @@ enum SelfTest {
     static var scene: String? { UserDefaults.standard.string(forKey: "selftest") }
 
     static weak var library: LibraryModel?
+    static var sceneDone = false
 
     static func run(_ library: LibraryModel) {
         Self.library = library
@@ -145,7 +146,8 @@ enum SelfTest {
             }
             return
         }
-        if scene == "importdoc" || scene == "subboard", view.model.isBoard, let library = library {
+        if scene == "importdoc" || scene == "subboard", view.model.isBoard, !sceneDone, let library = library {
+            sceneDone = true                 // 開在視窗裡的子白板也會走到這裡：只做一次
             let sub = scene == "subboard"
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
                 guard let view = view else { return }

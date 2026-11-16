@@ -1252,7 +1252,7 @@ struct NotebookEditorView: View {
     private var showsCloseCapsule: Bool { !embedded && (tabsCollapsed || hasSplitWindow) }
 
     /// 白板藏了狀態列（v12.15.4）：上面那兩排離螢幕上緣留一點距離（v12.15.5，使用者：不要太貼）
-    static let topGap: CGFloat = 10
+    static let topGap: CGFloat = 14
     private var boardTopGap: CGFloat { model.isBoard && !embedded ? Self.topGap : 0 }
 
     /// 浮動視窗分屏、全屏時蓋到螢幕最上面：它自己的工具列也往下留一點

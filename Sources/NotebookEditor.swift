@@ -797,7 +797,11 @@ final class NotebookModel: ObservableObject {
 
     var embedded = false                               // 開在白板的浮動視窗裡（v12.15.0：不顯示左下角的百分比和鎖頭）
     /// 浮動視窗裡剪刀的「貼到白板」（v12.15.0）：圖、哪一本、哪一頁、頁面上的範圍
-    var pasteToBoard: ((UIImage, UUID, UUID, CGRect) -> Void)?
+    var pasteToBoard: ((UIImage, UUID, UUID, CGRect) -> UUID?)?
+    /// 剪去白板的框右下角的 →（v12.15.2）：外面的白板跳到那張圖
+    var revealOnBoard: ((UUID) -> Void)?
+    /// 這個浮動視窗現在在畫面上的位置（v12.15.2：貼到白板時讓開。以前只記得剛開時的位置，移動、分屏後就貼到視窗後面）
+    var windowFrame = CGRect.zero
 
     func openCardAsTab(_ id: UUID) {
         cardTab = CardOpen(notebookID: id, stamp: (cardTab?.stamp ?? 0) + 1)
@@ -1135,7 +1139,15 @@ struct NotebookEditorView: View {
          windowActions: BoardWindowActions? = nil, jump: WindowJump? = nil) {
         let made = NotebookModel(meta: meta)
         made.embedded = embedded
-        made.pasteToBoard = windowActions?.pasteToBoard
+        if let actions = windowActions {
+            made.windowFrame = actions.frame
+            let paste = actions.pasteToBoard
+            let reveal = actions.revealOnBoard
+            made.pasteToBoard = { [weak made] image, notebook, page, rect in
+                paste(image, notebook, page, rect, made?.windowFrame ?? CGRect.zero)
+            }
+            made.revealOnBoard = { [weak made] id in reveal(id, made?.windowFrame ?? CGRect.zero) }
+        }
         _model = StateObject(wrappedValue: made)
         self.onClose = onClose
         self.embedded = embedded
@@ -1246,7 +1258,12 @@ struct NotebookEditorView: View {
     }
 
     /// 分屏時白板的東西讓到右半邊
-    private var splitPad: CGFloat { hasSplitWindow ? (barWidth / 2).rounded() : 0 }
+    private var splitPad: CGFloat {
+        guard hasSplitWindow else { return 0 }
+        let fraction = windows.first(where: { $0.mode == .split })?.split ?? 0.5
+        let width = max(barWidth, model.documentView?.bounds.width ?? 0)
+        return (width * fraction).rounded()
+    }
 
     /// 白板上有分屏的浮動視窗
     private var hasSplitWindow: Bool { model.isBoard && !embedded && windows.contains(where: { $0.mode == .split }) }
@@ -1391,6 +1408,9 @@ struct NotebookEditorView: View {
                                           model.documentView?.placeClip(image, notebook: notebook, page: page, rect: rect,
                                                                         avoiding: windowFrame)
                                       },
+                                      revealOnBoard: { id, windowFrame in
+                                          model.documentView?.revealBoardImage(id, avoiding: windowFrame)
+                                      },
                                       close: { closeWindow($0) },
                                       openAsTab: { window in
                                           closeWindow(window)
@@ -1455,7 +1475,8 @@ struct NotebookEditorView: View {
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
                     // 分頁那一排可以收起來（︿）；浮動視窗裡沒有；白板分屏時先藏起來（v12.15.1，左半邊整個給視窗）
-                    if !tabsCollapsed && !embedded && !hasSplitWindow { NotebookTabBar() }
+                    // 全屏（v12.15.2，使用者要求）也先把分頁那一排收起來
+                    if !tabsCollapsed && !embedded && !hasSplitWindow && !hasFullWindow { NotebookTabBar() }
                     // 白板上有全屏的視窗：白板自己的工具列先收起來（v12.15.0）；兩個膠囊都收起來也不佔位置（v12.15.1）
                     if !hasFullWindow && !boardToolsFloating {
                         toolRow
@@ -1473,11 +1494,12 @@ struct NotebookEditorView: View {
                         Color.clear
                             .onAppear {
                                 model.documentView?.topBarHeight = g.size.height
-                                barWidth = g.size.width
+                                if g.size.width > 0 { barWidth = g.size.width }
                             }
                             .onChange(of: g.size) { _, size in
                                 model.documentView?.topBarHeight = size.height
-                                barWidth = size.width
+                                // 上面兩排都藏起來時這裡量到 0：保留上一次的寬度（v12.15.2：分屏時左邊的小圓鈕跑到視窗上面）
+                                if size.width > 0 { barWidth = size.width }
                             }
                     }
                 )
@@ -1572,7 +1594,8 @@ struct NotebookEditorView: View {
             .onChange(of: windows) { _, list in
                 // 分屏（v12.15.0）：白板左下角的按鈕讓到右半邊
                 guard let doc = model.documentView else { return }
-                doc.boardLeftInset = list.contains(where: { $0.mode == .split }) ? (doc.bounds.width / 2).rounded() : 0
+                let fraction = list.first(where: { $0.mode == .split })?.split
+                doc.boardLeftInset = fraction.map { (doc.bounds.width * $0).rounded() } ?? 0
                 // 左下角第一顆「收起視窗」：有視窗才出現
                 doc.boardWindowCount = list.count
                 let tucked = $windowsTucked
@@ -1583,6 +1606,9 @@ struct NotebookEditorView: View {
             }
             .onChange(of: windowsTucked) { _, tucked in
                 model.documentView?.boardWindowsTucked = tucked
+            }
+            .onChange(of: windowActions?.frame) { _, frame in
+                if let frame = frame { model.windowFrame = frame }
             }
             .onChange(of: jump) { _, target in
                 if let target = target { model.documentView?.jumpTo(pageID: target.page, rect: target.rect) }

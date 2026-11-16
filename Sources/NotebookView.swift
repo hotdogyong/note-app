@@ -194,6 +194,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                      .NSUndoManagerDidRedoChange, .NSUndoManagerCheckpoint] {
             NotificationCenter.default.addObserver(self, selector: #selector(historyChanged), name: name, object: history)
         }
+        NotificationCenter.default.addObserver(self, selector: #selector(otherSurfaceTapped(_:)), name: Self.surfaceTapped, object: nil)
 
         selectPress.addTarget(self, action: #selector(handleSelectPress(_:)))
         selectPress.minimumPressDuration = 0.25          // v12.9.8：0.4 → 0.25（使用者：按下去到跳出來要短一點）
@@ -353,6 +354,39 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         return u
     }
 
+    static let surfaceTapped = Notification.Name("NotebookViewSurfaceTapped")
+
+    /// 別的畫面（白板或浮動視窗）被點了：這裡選取中的文字方塊、圖片、選取框都結束
+    @objc private func otherSurfaceTapped(_ note: Notification) {
+        guard let other = note.object as? NotebookView, other !== self else { return }
+        if activeText != nil { endTextSelection() }
+        if imageEditor != nil { endImageSelection() }
+        dismissShapeEditor()
+    }
+
+    /// 浮動視窗裡剪去白板的框按 →（v12.15.2）：白板跳到那張圖（放在視窗旁邊空著的地方）並選取它
+    func revealBoardImage(_ id: UUID, avoiding window: CGRect) {
+        guard isBoard, let pv = boardPV, let box = model.images(of: pv.page.id).first(where: { $0.id == id }) else {
+            showMessage("questionmark.square.dashed", "白板上找不到這張圖（可能被刪掉了）")
+            return
+        }
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        let leftRoom = window.minX
+        let rightRoom = bounds.width - window.maxX
+        var targetX = bounds.midX
+        if max(leftRoom, rightRoom) > 160 {
+            targetX = rightRoom >= leftRoom ? window.maxX + rightRoom / 2 : leftRoom / 2
+        }
+        let center = CGPoint(x: box.x + box.width / 2 - (targetX - bounds.midX) / s, y: box.y + box.height / 2)
+        boardShow(center: center, zoom: zoom)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            guard let self = self, let pv = self.boardPV,
+                  let now = self.model.images(of: pv.page.id).first(where: { $0.id == id }) else { return }
+            self.endTextSelection()
+            self.selectImage(now, on: pv)
+        }
+    }
+
     /// 跳到某一頁的某一塊（白板上剪下來的圖的 ‹；v12.15.0），那一塊閃一下黃框
     func jumpTo(pageID: UUID, rect: CGRect) {
         guard model.page(pageID) != nil else {
@@ -447,6 +481,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if let v = touch.view, v.isDescendant(of: textBar) { return false }      // 文字工具列上的按鈕
         if let v = touch.view, v.isDescendant(of: linkBar) { return false }      // 連線的小工具列（v12.14.0）
         if touch.view?.tag == TextBoxView.handleTag { return false }            // 文字方塊的角
+        if touch.view?.tag == NotePageView.clipButtonTag { return false }       // 剪去白板的框的 →（v12.15.2）
         // Pencil 在文字方塊裡寫字（手寫轉文字）：不要當成畫線、停筆變形或套索
         if gestureRecognizer === holdTracker || gestureRecognizer === lassoPan,
            let v = touch.view, sequence(first: v, next: { $0.superview }).contains(where: { $0 is TextBoxView }) {
@@ -792,6 +827,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     // 手指點一下：點到筆跡就選取，點到空白就退出編輯
     // 手指點一下：點到文字方塊就選取它；其他地方收起選取框和文字方塊（選取筆跡要長按或用套索）
     @objc private func handleSingleTap(_ g: UITapGestureRecognizer) {
+        // 告訴其他開著的畫面（白板 ↔ 浮動視窗）：點了這裡，它們選取中的東西要結束（v12.15.2：視窗裡的空文字方塊點白板不會消失）
+        NotificationCenter.default.post(name: NotebookView.surfaceTapped, object: self)
         hidePasteButton()
         let p = g.location(in: self)
         if cropMode {
@@ -953,6 +990,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     @objc private func handleDoubleTap(_ g: UITapGestureRecognizer) {
         if readOnly { return }                                 // 最近刪除裡打開的：只能看
+        if cropMode { return }                                 // 剪刀開著（v12.15.2）：點兩下不新增文字方塊
+        NotificationCenter.default.post(name: NotebookView.surfaceTapped, object: self)
         let p = g.location(in: self)
         if let tv = textBox(at: p) {
             // 點兩下文字方塊：直接進入輸入，游標放在點的位置
@@ -1507,6 +1546,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         func width(_ id: UUID) -> CGFloat { sizes[id]?.width ?? 0 }
         func height(_ id: UUID) -> CGFloat { sizes[id]?.height ?? 0 }
         var target: [UUID: CGRect] = [:]
+        var sideOf: [UUID: CGFloat] = [:]                          // 在根的右邊 +1、左邊 −1、根 0
+        var membersOf: [UUID: [UUID]] = [:]                        // 每一群有哪些方塊
         for root in roots {
             guard let rootRect = original[root] else { continue }
             var span: [UUID: CGFloat] = [:]
@@ -1548,6 +1589,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             let rootSize = sizes[root] ?? rootRect.size
             target[root] = CGRect(x: rootRect.midX - rootSize.width / 2, y: rootRect.midY - rootSize.height / 2,
                                   width: rootSize.width, height: rootSize.height)
+            sideOf[root] = 0
+            membersOf[root] = [root]
             for (kids, dir) in [(right, CGFloat(1)), (left, CGFloat(-1))] where !kids.isEmpty {
                 // 這一邊每一層最寬多少 → 每一層靠根那一邊離根中心多遠
                 var levelW: [Int: CGFloat] = [:]
@@ -1569,6 +1612,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                     let h = height(id)
                     let near = rootRect.midX + dir * (edge[depth[id] ?? 1] ?? 0)
                     target[id] = CGRect(x: dir > 0 ? near : near - w, y: top + mine / 2 - h / 2, width: w, height: h)
+                    sideOf[id] = dir
+                    membersOf[root, default: []].append(id)
                     let sub = children[id] ?? []
                     var total: CGFloat = 0
                     for (k, child) in sub.enumerated() { total += (span[child] ?? 0) + (k > 0 ? gapCross : 0) }
@@ -1587,6 +1632,32 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 }
             }
         }
+        // 不同群之間不要疊在一起（v12.15.2）：照原本的上下順序，後面的群跟前面的重疊就往下移
+        var placedBoxes: [CGRect] = []
+        let orderedRoots = roots.sorted { (original[$0]?.midY ?? 0) < (original[$1]?.midY ?? 0) }
+        for root in orderedRoots {
+            let members = membersOf[root] ?? []
+            var box = CGRect.null
+            for id in members { if let r = target[id] { box = box.union(r) } }
+            guard !box.isNull else { continue }
+            var shift: CGFloat = 0
+            var moved = true
+            var guardCount = 0
+            while moved && guardCount < 50 {
+                moved = false
+                guardCount += 1
+                let now = box.offsetBy(dx: 0, dy: shift)
+                for other in placedBoxes where now.insetBy(dx: -gapCross, dy: -gapCross).intersects(other) {
+                    shift += other.maxY + gapCross * 2 - now.minY
+                    moved = true
+                    break
+                }
+            }
+            if shift != 0 {
+                for id in members { if let r = target[id] { target[id] = r.offsetBy(dx: 0, dy: shift) } }
+            }
+            placedBoxes.append(box.offsetBy(dx: 0, dy: shift))
+        }
         for (id, rect) in target {
             guard let i = index[id] else { continue }
             let now = PageRenderer.textFrameRect(texts[i], page: page)
@@ -1603,11 +1674,21 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // 4. 線接到互相面對的兩邊
         var frames: [UUID: CGRect] = [:]
         for t in texts where chosen.contains(t.id) { frames[t.id] = PageRenderer.textFrameRect(t, page: page) }
+        // 心智圖（v12.15.2）：線一律接左右兩邊。上下排在同一欄的兩個，從外側繞（不要穿過中間的方塊）
         for i in links.indices {
             guard let a = frames[links[i].from], let b = frames[links[i].to] else { continue }
-            let sides = BoxLinkPath.facingSides(a, b)
-            links[i].fromSide = sides.0
-            links[i].toSide = sides.1
+            if a.minX < b.maxX && b.minX < a.maxX {
+                let s = sideOf[links[i].from] ?? sideOf[links[i].to] ?? 1
+                let outer = (s != 0 ? s : (sideOf[links[i].to] ?? 1)) < 0 ? 3 : 1
+                links[i].fromSide = outer
+                links[i].toSide = outer
+            } else if b.midX > a.midX {
+                links[i].fromSide = 1
+                links[i].toSide = 3
+            } else {
+                links[i].fromSide = 3
+                links[i].toSide = 1
+            }
         }
         setTextsRecorded(texts, pageID: pageID)
         setLinksRecorded(links, pageID: pageID)
@@ -2214,8 +2295,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// 浮動視窗裡剪刀的「貼到白板」（v12.15.0）：貼在視窗旁邊空著的地方，記住從哪裡剪的
     /// （選取這張圖，左下角的 ‹ 會打開那一本並跳回那裡）。avoiding：那個視窗在畫面上的位置
-    func placeClip(_ image: UIImage, notebook: UUID, page: UUID, rect: CGRect, avoiding window: CGRect) {
-        guard isBoard, !readOnly else { return }
+    @discardableResult
+    func placeClip(_ image: UIImage, notebook: UUID, page: UUID, rect: CGRect, avoiding window: CGRect) -> UUID? {
+        guard isBoard, !readOnly else { return nil }
         // v12.15.1（使用者：貼到沒開視窗那邊、比較空的地方的中間）：視窗旁邊比較大的那一塊空地，
         // 在裡面找一個跟已經有的東西重疊最少、又靠近中間的位置
         let top = safeAreaInsets.top + topBarHeight + 16
@@ -2229,7 +2311,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 : CGRect(x: 0, y: top, width: leftRoom, height: region.height)
         }
         pasteImage(image, at: CGPoint(x: region.midX, y: region.midY))
-        guard let editor = imageEditor, let pv = editor.pageView else { return }
+        guard let editor = imageEditor, let pv = editor.pageView else { return nil }
         var box = editor.box
         let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
         // 空地放不下：縮小到放得下
@@ -2284,6 +2366,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         pv.syncImages(images)
         editor.update(box)
         showMessage("square.and.arrow.down.on.square", "已貼到白板：選取這張圖，按左下角的 ‹ 會回到剪下來的地方")
+        return box.id
     }
 
     /// 選取中的圖片左下角的 ‹（ImageEditorView 呼叫）：開剪下來的那一本的浮動視窗，跳到那一塊
@@ -6506,10 +6589,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 浮動視窗裡：框到的範圍貼到外面的白板上（記住從哪裡剪的）
     private func cropToBoard() {
         guard let result = croppedImage(), let paste = model.pasteToBoard else { return }
-        paste(result.image, model.meta.id, result.page.id, result.rect)
+        let imageID = paste(result.image, model.meta.id, result.page.id, result.rect)
         // 這一頁記下剪去的範圍（v12.15.1，照 GUGA）：頁面上一個灰色虛線框，書籤面板「剪去白板的」也列出來
         let pageID = result.page.id
-        let clips = model.clips(of: pageID) + [PageClip(rect: result.rect)]
+        let clips = model.clips(of: pageID) + [PageClip(rect: result.rect, imageID: imageID)]
         model.setClips(clips, pageID: pageID)
         pageViews[pageID]?.syncClips(clips)
         clearCropRect()                                         // 留在截圖模式，可以接著剪下一塊

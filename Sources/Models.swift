@@ -230,6 +230,7 @@ struct PageClip: Codable, Hashable, Identifiable {
     var id = UUID()
     var rect: CGRect
     var date = Date()
+    var imageID: UUID? = nil        // 貼到白板上的那張圖（v12.15.2：框右下角的 → 跳到白板上那張圖）
 }
 
 /// 頁面上的圖片（位置、大小是頁面座標；檔案放在筆記本資料夾的「圖片」裡）

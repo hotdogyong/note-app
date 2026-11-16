@@ -234,7 +234,12 @@ enum BoxLinkPath {
         var points: [CGPoint] = [a, p1]
         let aHorizontal = na.x != 0
         let bHorizontal = nb.x != 0
-        if aHorizontal && bHorizontal {
+        if aHorizontal && bHorizontal && na.x == nb.x {
+            // 兩頭都從同一側出來（v12.15.2：心智圖裡同一欄上下兩個）：往外繞成ㄈ字形，不要穿過中間
+            let x = na.x < 0 ? min(p1.x, q.x) : max(p1.x, q.x)
+            points.append(CGPoint(x: x, y: p1.y))
+            points.append(CGPoint(x: x, y: q.y))
+        } else if aHorizontal && bHorizontal {
             if (q.x - p1.x) * na.x >= 0 && na.x != nb.x {
                 let midX = (p1.x + q.x) / 2
                 points.append(CGPoint(x: midX, y: p1.y))

@@ -115,7 +115,7 @@ enum SelfTest {
                                                         width: 100 * 842, height: 100 * 595)
             case "winsplit", "winfull", "clip", "tidytree", "pills":
                 // v12.15.0：分屏、全屏的浮動視窗；視窗裡剪一塊貼到白板；四層的一鍵整理
-                if scene == "winsplit" { windowMode = .split }
+                if scene == "winsplit" || scene == "pills" { windowMode = .split }
                 if scene == "winfull" { windowMode = .full }
                 library.openNotebook = library.addBoard(in: nil, title: "視窗測試 " + scene, width: 100 * 842, height: 100 * 595)
             case "textzone":

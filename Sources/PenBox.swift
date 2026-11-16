@@ -940,21 +940,21 @@ struct PenBoxView: View {
         }
     }
 
-    /// 把手：點一下切換筆盒（收合時點一下展開）；拖曳可以移到上下左右任一邊，拖到角落會縮成圓鈕
+    /// 把手（v12.15.2 使用者要求）：點一下＝暫時把筆盒收進這三條線（再點一下放回來）；長按＝切換筆盒的視窗；
+    /// 拖曳可以移到上下左右任一邊，拖到角落會縮成圓鈕
     private var handle: some View {
-        Image(systemName: box.collapsed ? "pencil.tip.crop.circle" : "line.3.horizontal")
+        Image(systemName: "line.3.horizontal")
             .font(.system(size: 15, weight: .bold))
             .foregroundStyle(Color.black.opacity(0.75))
             .frame(width: 40, height: 28)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.yellow.opacity(0.9)))
             .contentShape(Rectangle())
             .onTapGesture {
-                if box.collapsed {
-                    box.collapsed = false
-                    box.save()
-                } else {
-                    showSwitcher = true
-                }
+                withAnimation(.easeInOut(duration: 0.2)) { box.collapsed.toggle() }
+                box.save()
+            }
+            .onLongPressGesture(minimumDuration: 0.4) {
+                showSwitcher = true
             }
             .gesture(dragToDock)
             .popover(isPresented: $showSwitcher) {

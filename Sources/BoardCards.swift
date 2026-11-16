@@ -61,6 +61,7 @@ struct BoardWindow: Identifiable, Equatable {
     var mode = BoardWindowMode.float
     var jump: WindowJump? = nil
     var aspect: CGFloat? = nil  // 第一頁的高÷寬（v12.15.1：預設的視窗照這個比例，之後直接放大縮小就好）；白板：nil
+    var split: CGFloat = 0.5    // 分屏時佔左邊多少（v12.15.2：右下角的 ‹› 可以拉）
 
     static func == (a: BoardWindow, b: BoardWindow) -> Bool {
         a.id == b.id && a.frame == b.frame && a.meta == b.meta && a.mode == b.mode && a.jump == b.jump
@@ -179,7 +180,10 @@ struct BoardWindowActions {
     let back: () -> Void               // 全屏、分屏時左上角的 ‹：回到浮著的大小
     let mode: BoardWindowMode
     let openCard: (UUID, WindowJump?) -> Void   // 視窗裡是白板：按它上面的卡片，交給外面的白板再開一個視窗（v12.13.0）
-    let pasteToBoard: (UIImage, UUID, UUID, CGRect) -> Void   // 剪刀「貼到白板」（v12.15.0）：圖、哪一本、哪一頁、頁面上的範圍
+    // 剪刀「貼到白板」（v12.15.0）：圖、哪一本、哪一頁、頁面上的範圍、這個視窗現在在畫面上的位置；回傳貼上的那張圖
+    let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> UUID?
+    let revealOnBoard: (UUID, CGRect) -> Void   // 剪去白板的框 → 白板跳到那張圖（v12.15.2）
+    let frame: CGRect                           // 這個視窗現在在畫面上的位置（v12.15.2：以前只記得剛開時的位置）
 }
 
 /// 視窗靠到哪一邊
@@ -193,7 +197,8 @@ struct BoardWindowsLayer: View {
     @Binding var tucked: Bool                      // 全部先收到旁邊（還開著，只是看不到）
     let topExtend: CGFloat                         // 分屏時往上多蓋多少（白板工具列那一條的高度）
     let openCard: (UUID, WindowJump?) -> Void
-    let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> Void   // 最後一個：那個視窗在畫面上的位置（貼的時候讓開）
+    let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> UUID?   // 最後一個：那個視窗在畫面上的位置（貼的時候讓開）
+    let revealOnBoard: (UUID, CGRect) -> Void
     let close: (BoardWindow) -> Void
     let openAsTab: (BoardWindow) -> Void
     let renameCard: (BoardWindow) -> Void
@@ -210,6 +215,7 @@ struct BoardWindowsLayer: View {
                                     topExtend: topExtend,
                                     openCard: openCard,
                                     pasteToBoard: pasteToBoard,
+                                    revealOnBoard: revealOnBoard,
                                     close: { close(window) },
                                     toFront: { bringToFront(window.id) },
                                     openAsTab: { openAsTab(window) },
@@ -242,7 +248,8 @@ struct BoardWindowView: View {
     let inBoard: Bool
     let topExtend: CGFloat
     let openCard: (UUID, WindowJump?) -> Void
-    let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> Void
+    let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> UUID?
+    let revealOnBoard: (UUID, CGRect) -> Void
     let close: () -> Void
     let toFront: () -> Void
     let openAsTab: () -> Void
@@ -250,6 +257,7 @@ struct BoardWindowView: View {
     let moveHome: () -> Void
     @GestureState private var moveBy: CGSize = .zero
     @GestureState private var growBy: CGSize = .zero
+    @GestureState private var splitBy: CGFloat = 0
     @State private var showMenu = false
     @State private var shown = false               // 打開時彈出來、關掉時縮回去
 
@@ -321,7 +329,7 @@ struct BoardWindowView: View {
         case .full: return CGRect(origin: CGPoint.zero, size: container)
         case .split:
             // 左半邊吃滿（v12.15.1，照 GUGA）：分頁那一排先收起來，往上蓋過白板工具列那一條（白板的工具列移到右半邊）
-            return CGRect(x: 0, y: -topExtend, width: (container.width / 2).rounded(), height: container.height + topExtend)
+            return CGRect(x: 0, y: -topExtend, width: (container.width * window.split).rounded(), height: container.height + topExtend)
         }
     }
 
@@ -343,9 +351,9 @@ struct BoardWindowView: View {
                                                                  back: { setMode(.float) },
                                                                  mode: window.mode,
                                                                  openCard: openCard,
-                                                                 pasteToBoard: { image, nb, page, rect in
-                                                                     pasteToBoard(image, nb, page, rect, frameNow)
-                                                                 }),
+                                                                 pasteToBoard: pasteToBoard,
+                                                                 revealOnBoard: revealOnBoard,
+                                                                 frame: frameNow),
                                jump: window.jump)
                 .id(window.meta.id)
         }
@@ -373,12 +381,48 @@ struct BoardWindowView: View {
                 Rectangle().fill(Color.white.opacity(0.25)).frame(width: 1)
             }
         }
+        .overlay(alignment: .bottomTrailing) {
+            if window.mode == .split { splitHandle(base) }
+        }
         .transaction { $0.animation = nil }        // 大小的改變不做動畫（裡面的筆記本每一格都重排會頓）；位置、彈出才做
         .scaleEffect(shown ? 1 : 0.9)
         .opacity(shown ? 1 : 0)
         .offset(x: base.minX + moveBy.width, y: base.minY + moveBy.height)
         .onAppear {
             withAnimation(Self.spring) { shown = true }
+        }
+    }
+
+    /// 分屏時右下角的 ‹›（v12.15.2，照 GUGA）：左右拉改變兩邊的寬度。拉的時候只畫一條虛線，放手才真的改
+    private func splitHandle(_ base: CGRect) -> some View {
+        ZStack(alignment: .bottomTrailing) {
+            if splitBy != 0 {
+                Rectangle()
+                    .stroke(Color.orange, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                    .frame(width: 2, height: base.height)
+                    .offset(x: splitBy - 1)
+                    .allowsHitTesting(false)
+            }
+            HStack(spacing: 2) {
+                Image(systemName: "chevron.left")
+                Image(systemName: "chevron.right")
+            }
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(Color.primary)
+            .frame(width: 52, height: 40)
+            .background(Capsule().fill(.regularMaterial))
+            .shadow(color: Color.black.opacity(0.25), radius: 4)
+            .contentShape(Capsule())
+            .offset(x: 26 + splitBy, y: -60)
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .updating($splitBy) { value, state, _ in state = value.translation.width }
+                    .onEnded { value in
+                        let width = max(container.width, 1)
+                        let k = (base.width + value.translation.width) / width
+                        window.split = min(max(k, 0.3), 0.75)
+                    }
+            )
         }
     }
 

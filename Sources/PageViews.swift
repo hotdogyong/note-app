@@ -357,6 +357,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         clipShape.lineDashPattern = [6, 4]
         clipView.layer.addSublayer(clipShape)
         clips = page.clips ?? []
+        DispatchQueue.main.async { [weak self] in self?.layoutClips() }   // host 接上之後才知道要不要放 →
         linkView.isUserInteractionEnabled = false
         addSubview(linkView)                         // 文字方塊之間的連線（v12.13.0）：在筆跡上面、文字方塊下面
         links = page.links ?? []
@@ -669,6 +670,8 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     private let clipView = UIView()
     private let clipShape = CAShapeLayer()
     private var clips: [PageClip] = []
+    private var clipButtons: [UUID: UIButton] = [:]      // 框右下角的 →：白板跳到那張圖（只有開在白板浮動視窗裡才有）
+    static let clipButtonTag = 4343
 
     func syncClips(_ list: [PageClip]) {
         clips = list
@@ -688,6 +691,35 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         CATransaction.setDisableActions(true)
         clipShape.path = clips.isEmpty ? nil : path.cgPath
         CATransaction.commit()
+        // →（v12.15.2，使用者要求）：在白板的浮動視窗裡，點框右下角的 → 白板跳到貼上去的那張圖
+        let canReveal = host?.model.revealOnBoard != nil
+        var alive = Set<UUID>()
+        for clip in clips {
+            guard canReveal, let imageID = clip.imageID else { continue }
+            alive.insert(clip.id)
+            let button: UIButton
+            if let existing = clipButtons[clip.id] {
+                button = existing
+            } else {
+                button = UIButton(type: .system)
+                button.tag = Self.clipButtonTag
+                button.setImage(UIImage(systemName: "arrow.right",
+                                        withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold)), for: .normal)
+                button.tintColor = UIColor.white
+                button.backgroundColor = UIColor(white: 0.4, alpha: 0.9)
+                button.layer.cornerRadius = 13
+                button.addAction(UIAction { [weak self] _ in self?.host?.model.revealOnBoard?(imageID) }, for: .touchUpInside)
+                addSubview(button)
+                clipButtons[clip.id] = button
+            }
+            let r = clip.rect
+            button.frame = CGRect(x: r.maxX * s - 30, y: r.maxY * s - 30, width: 26, height: 26)
+            bringSubviewToFront(button)
+        }
+        for (id, button) in clipButtons where !alive.contains(id) {
+            button.removeFromSuperview()
+            clipButtons[id] = nil
+        }
     }
 
     // MARK: 文字方塊之間的連線（v12.13.0；TextLinks.swift）

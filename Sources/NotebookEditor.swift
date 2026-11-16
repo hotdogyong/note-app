@@ -970,7 +970,10 @@ final class NotebookModel: ObservableObject {
     /// 剪去白板的範圍（v12.15.1）
     func clips(of pageID: UUID) -> [PageClip] {
         guard let loc = location(of: pageID) else { return [] }
-        return notebook.rows[loc.row].pages[loc.page].clips ?? []
+        let list = notebook.rows[loc.row].pages[loc.page].clips ?? []
+        guard list.contains(where: { $0.imageID != nil }) else { return list }
+        let gone = ClipSync.removed                            // 白板上那張圖刪掉了：框不顯示（v12.15.3）
+        return list.filter { clip in clip.imageID.map { !gone.contains($0) } ?? true }
     }
 
     func setClips(_ clips: [PageClip], pageID: UUID) {
@@ -1002,9 +1005,16 @@ final class NotebookModel: ObservableObject {
 
     func setImages(_ images: [ImageBox], pageID: UUID) {
         guard let loc = location(of: pageID) else { return }
-        if notebook.rows[loc.row].pages[loc.page].images ?? [] != images {
+        let previous = notebook.rows[loc.row].pages[loc.page].images ?? []
+        if previous != images {
             notebook.rows[loc.row].pages[loc.page].modified = Date()
             ActivityLog.touch(pageID: pageID)                  // 修改紀錄（v12.9.5）
+            if isBoard {
+                // 從筆記本剪過來的圖刪掉／拿回來：告訴筆記本那邊的框（v12.15.3）
+                let before = Set(previous.filter { $0.sourceNotebook != nil }.map(\.id))
+                let after = Set(images.filter { $0.sourceNotebook != nil }.map(\.id))
+                ClipSync.update(removed: before.subtracting(after), added: after.subtracting(before))
+            }
         }
         notebook.rows[loc.row].pages[loc.page].images = images
         save()
@@ -1115,6 +1125,7 @@ struct NotebookEditorView: View {
     @State private var showPins = false                     // 白板的圖釘清單（v12.7）
     @State private var showFrames = false                   // 白板的區塊清單
     @AppStorage("tabsCollapsed") private var tabsCollapsed = false      // 分頁那一排收起來（v12.8.4）
+    @State private var fullTabsShown = false        // 白板全屏時把分頁那一排叫回來（v12.15.3，視窗左上的 ﹀）
     // 白板上面左右兩個膠囊可以收起來（v12.15.1，使用者要求）：都收起來時那一條不佔位置，浮動視窗可以往上放
     @AppStorage("boardLeftToolsHidden") private var leftToolsHidden = false
     @AppStorage("boardRightToolsHidden") private var rightToolsHidden = false
@@ -1207,6 +1218,11 @@ struct NotebookEditorView: View {
                         Button(action: actions.expand) {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
                         }
+                    } else if let toggle = actions.toggleTabs {
+                        // 全屏：分頁那一排先收起來，﹀ 叫回來、︿ 再收（v12.15.3，使用者要求）
+                        Button(action: toggle) {
+                            Image(systemName: actions.tabsShown ? "chevron.up" : "chevron.down")
+                        }
                     }
                 }
             }
@@ -1234,6 +1250,9 @@ struct NotebookEditorView: View {
 
     /// 左上「× │ 名稱」那一個膠囊有沒有出來：分頁收起來、或白板分屏（分頁那一排先藏起來）
     private var showsCloseCapsule: Bool { !embedded && (tabsCollapsed || hasSplitWindow) }
+
+    /// 白板工具列那一條的高度（分屏的視窗往上蓋過它；左上空著時浮著的視窗也可以往上移進去）
+    private var windowTopExtend: CGFloat { (hasFullWindow || boardToolsFloating) ? 0 : toolRowHeight }
 
     /// 白板（不是浮動視窗裡的）上面的膠囊可以收起來
     private var boardCollapsible: Bool { model.isBoard && !embedded }
@@ -1281,6 +1300,18 @@ struct NotebookEditorView: View {
     }
 
     /// 分頁收起來時左上角（v12.8.8，照 GUGA）：× 回首頁，右邊是名稱
+    /// 改這一本的名字（左上的名稱點兩下）
+    private func renameThis() {
+        let id = model.meta.id
+        let current = library.notebook(id)?.title ?? model.meta.title
+        TextPrompt.show(title: model.isBoard ? "白板名稱" : "筆記本名稱", initial: current) { text in
+            let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name != current else { return }
+            model.documentView?.flushAll()
+            library.renameNotebook(id, to: name)
+        }
+    }
+
     private func closeAndTitle(_ titleMax: Int) -> some View {
         HStack(spacing: 14) {
             Button {
@@ -1292,10 +1323,13 @@ struct NotebookEditorView: View {
                 Rectangle()
                     .fill(Color.secondary.opacity(0.4))
                     .frame(width: 1, height: 22)
-                Text(model.meta.title.count > titleMax ? String(model.meta.title.prefix(titleMax - 1)) + "…" : model.meta.title)
+                let title = library.notebook(model.meta.id)?.title ?? model.meta.title
+                Text(title.count > titleMax ? String(title.prefix(titleMax - 1)) + "…" : title)
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
+                    .contentShape(Rectangle())
+                    .onTapGesture(count: 2) { renameThis() }       // 點兩下改名（v12.15.3，使用者要求）
             }
             if boardCollapsible {
                 Button {
@@ -1402,7 +1436,10 @@ struct NotebookEditorView: View {
                 // 白板上的浮動視窗（v12.12.0）：在白板上面、筆盒下面
                 if model.isBoard && !embedded {
                     BoardWindowsLayer(windows: $windows, tucked: $windowsTucked,
-                                      topExtend: (hasFullWindow || boardToolsFloating) ? 0 : toolRowHeight,
+                                      topExtend: windowTopExtend,
+                                      floatTop: (showsCloseCapsule && !leftToolsHidden) ? 8 : 6 - windowTopExtend,
+                                      tabsShown: fullTabsShown,
+                                      toggleTabs: { withAnimation(.easeInOut(duration: 0.2)) { fullTabsShown.toggle() } },
                                       openCard: { id, target in openWindow(id, jump: target) },
                                       pasteToBoard: { image, notebook, page, rect, windowFrame in
                                           model.documentView?.placeClip(image, notebook: notebook, page: page, rect: rect,
@@ -1476,7 +1513,8 @@ struct NotebookEditorView: View {
                 VStack(spacing: 0) {
                     // 分頁那一排可以收起來（︿）；浮動視窗裡沒有；白板分屏時先藏起來（v12.15.1，左半邊整個給視窗）
                     // 全屏（v12.15.2，使用者要求）也先把分頁那一排收起來
-                    if !tabsCollapsed && !embedded && !hasSplitWindow && !hasFullWindow { NotebookTabBar() }
+                    // 全屏時可以從視窗左上的 ﹀ 叫回來（v12.15.3）
+                    if !embedded && !hasSplitWindow && (hasFullWindow ? fullTabsShown : !tabsCollapsed) { NotebookTabBar() }
                     // 白板上有全屏的視窗：白板自己的工具列先收起來（v12.15.0）；兩個膠囊都收起來也不佔位置（v12.15.1）
                     if !hasFullWindow && !boardToolsFloating {
                         toolRow
@@ -1590,6 +1628,9 @@ struct NotebookEditorView: View {
             }
             .onChange(of: model.cardOpen) { _, open in
                 if let open = open { openWindow(open.notebookID, jump: open.jump) }
+            }
+            .onChange(of: hasFullWindow) { _, full in
+                if full { fullTabsShown = false }
             }
             .onChange(of: windows) { _, list in
                 // 分屏（v12.15.0）：白板左下角的按鈕讓到右半邊

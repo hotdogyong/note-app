@@ -65,6 +65,7 @@ struct BoardWindow: Identifiable, Equatable {
 
     static func == (a: BoardWindow, b: BoardWindow) -> Bool {
         a.id == b.id && a.frame == b.frame && a.meta == b.meta && a.mode == b.mode && a.jump == b.jump
+            && a.split == b.split && a.aspect == b.aspect     // v12.15.3：以前漏了 split，拉分隔線 SwiftUI 以為沒變、不重畫
     }
 }
 
@@ -183,7 +184,9 @@ struct BoardWindowActions {
     // 剪刀「貼到白板」（v12.15.0）：圖、哪一本、哪一頁、頁面上的範圍、這個視窗現在在畫面上的位置；回傳貼上的那張圖
     let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> UUID?
     let revealOnBoard: (UUID, CGRect) -> Void   // 剪去白板的框 → 白板跳到那張圖（v12.15.2）
-    let frame: CGRect                           // 這個視窗現在在畫面上的位置（v12.15.2：以前只記得剛開時的位置）
+    let frame: CGRect                           // 這個視窗現在在畫面上的位置（v12.15.2：以前只記得剛開時的位置）；v12.15.3：螢幕（window）座標
+    var tabsShown = false                       // 全屏時白板的分頁那一排有沒有叫回來（v12.15.3）
+    var toggleTabs: (() -> Void)? = nil         // 全屏時左上的 ﹀／︿：叫回、收起分頁那一排
 }
 
 /// 視窗靠到哪一邊
@@ -196,6 +199,9 @@ struct BoardWindowsLayer: View {
     @Binding var windows: [BoardWindow]
     @Binding var tucked: Bool                      // 全部先收到旁邊（還開著，只是看不到）
     let topExtend: CGFloat                         // 分屏時往上多蓋多少（白板工具列那一條的高度）
+    let floatTop: CGFloat                          // 浮著的視窗最高可以到哪（v12.15.3：左上收起來時可以往上蓋過工具列那一條）
+    let tabsShown: Bool
+    let toggleTabs: () -> Void
     let openCard: (UUID, WindowJump?) -> Void
     let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> UUID?   // 最後一個：那個視窗在畫面上的位置（貼的時候讓開）
     let revealOnBoard: (UUID, CGRect) -> Void
@@ -210,9 +216,13 @@ struct BoardWindowsLayer: View {
             ZStack(alignment: .topLeading) {
                 ForEach($windows) { $window in
                     BoardWindowView(window: $window, container: geo.size,
+                                    origin: geo.frame(in: .global).origin,
                                     index: windows.firstIndex(where: { $0.id == window.id }) ?? 0,
                                     inBoard: isInBoard(window),
                                     topExtend: topExtend,
+                                    floatTop: floatTop,
+                                    tabsShown: tabsShown,
+                                    toggleTabs: toggleTabs,
                                     openCard: openCard,
                                     pasteToBoard: pasteToBoard,
                                     revealOnBoard: revealOnBoard,
@@ -229,6 +239,8 @@ struct BoardWindowsLayer: View {
             .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
             // 「收起視窗」在白板左下角那一排的第一顆（v12.15.0，照 GUGA；NotebookView.windowsButton）
         }
+        // 下面一路到螢幕底（v12.15.3，使用者：分屏、全屏下面沒有滿版）
+        .ignoresSafeArea(.container, edges: .bottom)
     }
 
     private func bringToFront(_ id: UUID) {
@@ -244,9 +256,13 @@ struct BoardWindowsLayer: View {
 struct BoardWindowView: View {
     @Binding var window: BoardWindow
     let container: CGSize
+    let origin: CGPoint                            // 這一層在螢幕上的左上角（貼到白板時換算視窗的位置）
     let index: Int
     let inBoard: Bool
     let topExtend: CGFloat
+    let floatTop: CGFloat
+    let tabsShown: Bool
+    let toggleTabs: () -> Void
     let openCard: (UUID, WindowJump?) -> Void
     let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> UUID?
     let revealOnBoard: (UUID, CGRect) -> Void
@@ -257,7 +273,7 @@ struct BoardWindowView: View {
     let moveHome: () -> Void
     @GestureState private var moveBy: CGSize = .zero
     @GestureState private var growBy: CGSize = .zero
-    @GestureState private var splitBy: CGFloat = 0
+    @State private var splitStart: CGFloat?
     @State private var showMenu = false
     @State private var shown = false               // 打開時彈出來、關掉時縮回去
 
@@ -273,7 +289,7 @@ struct BoardWindowView: View {
         if let a = aspect, a > 0 {
             // 照頁面的比例（v12.15.1）：頁面寬約是視窗寬的 94%，上面加三個點那一條和工具列
             let chrome = gripHeight + 54
-            let maxH = max(container.height - 140, minSize.height)
+            let maxH = max(container.height - 50, minSize.height)
             w = min(max(container.width * 0.5, minSize.width), 600, container.width - 24)
             h = w * 0.94 * a + chrome + 20
             if h > maxH {
@@ -283,22 +299,22 @@ struct BoardWindowView: View {
         }
         let shift = CGFloat(index) * 44
         let x = max(container.width - w - 84 - shift, 12)
-        let y = min(110 + shift, max(container.height - h - 20, 60))
+        let y = min(24 + shift, max(container.height - h - 20, 12))
         return CGRect(x: x, y: y, width: w, height: h)
     }
 
     private func clamped(_ rect: CGRect) -> CGRect {
         var r = rect
         r.size.width = min(max(r.width, Self.minSize.width), max(container.width, Self.minSize.width))
-        r.size.height = min(max(r.height, Self.minSize.height), max(container.height - 60, Self.minSize.height))
-        // 上面的把手至少留在畫面裡，才抓得回來；不要鑽到最上面的工具列底下
+        r.size.height = min(max(r.height, Self.minSize.height), max(container.height - floatTop - 4, Self.minSize.height))
+        // 上面的把手至少留在畫面裡，才抓得回來；不要鑽到最上面的工具列底下（左上收起來時可以往上蓋過那一條，v12.15.3）
         r.origin.x = min(max(r.minX, 160 - r.width), container.width - 160)
-        r.origin.y = min(max(r.minY, 56), container.height - Self.gripHeight - 8)
+        r.origin.y = min(max(r.minY, floatTop), container.height - Self.gripHeight - 8)
         return r
     }
 
     private func snapFrame(_ snap: BoardWindowSnap, from base: CGRect) -> CGRect {
-        let top: CGFloat = 104                     // 讓開最上面的分頁和工具列
+        let top: CGFloat = floatTop                // 讓開最上面的分頁和工具列
         let margin: CGFloat = 10
         let fullH = max(container.height - top - margin, Self.minSize.height)
         let fullW = max(container.width - margin * 2, Self.minSize.width)
@@ -342,7 +358,7 @@ struct BoardWindowView: View {
         let floating = window.mode == .float
         let base = shownFrame
         let shape = RoundedRectangle(cornerRadius: floating ? Self.corner : 0, style: .continuous)
-        let frameNow = base
+        let frameNow = base.offsetBy(dx: origin.x, dy: origin.y)     // 螢幕座標（白板那邊換算，v12.15.3）
         return VStack(spacing: 0) {
             if floating { grip(base) }
             NotebookEditorView(meta: window.meta, embedded: true,
@@ -353,7 +369,9 @@ struct BoardWindowView: View {
                                                                  openCard: openCard,
                                                                  pasteToBoard: pasteToBoard,
                                                                  revealOnBoard: revealOnBoard,
-                                                                 frame: frameNow),
+                                                                 frame: frameNow,
+                                                                 tabsShown: tabsShown,
+                                                                 toggleTabs: toggleTabs),
                                jump: window.jump)
                 .id(window.meta.id)
         }
@@ -393,37 +411,32 @@ struct BoardWindowView: View {
         }
     }
 
-    /// 分屏時右下角的 ‹›（v12.15.2，照 GUGA）：左右拉改變兩邊的寬度。拉的時候只畫一條虛線，放手才真的改
+    /// 分屏時右下角的 ‹›（v12.15.2，照 GUGA）：左右拉改變兩邊的寬度。
+    /// v12.15.3（使用者：邊拖邊改）：拉的時候兩邊直接跟著變（每 0.5% 才更新一次，不要每一格都重排）
     private func splitHandle(_ base: CGRect) -> some View {
-        ZStack(alignment: .bottomTrailing) {
-            if splitBy != 0 {
-                Rectangle()
-                    .stroke(Color.orange, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
-                    .frame(width: 2, height: base.height)
-                    .offset(x: splitBy - 1)
-                    .allowsHitTesting(false)
-            }
-            HStack(spacing: 2) {
-                Image(systemName: "chevron.left")
-                Image(systemName: "chevron.right")
-            }
-            .font(.system(size: 13, weight: .bold))
-            .foregroundStyle(Color.primary)
-            .frame(width: 52, height: 40)
-            .background(Capsule().fill(.regularMaterial))
-            .shadow(color: Color.black.opacity(0.25), radius: 4)
-            .contentShape(Capsule())
-            .offset(x: 26 + splitBy, y: -60)
-            .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                    .updating($splitBy) { value, state, _ in state = value.translation.width }
-                    .onEnded { value in
-                        let width = max(container.width, 1)
-                        let k = (base.width + value.translation.width) / width
-                        window.split = min(max(k, 0.3), 0.75)
-                    }
-            )
+        HStack(spacing: 2) {
+            Image(systemName: "chevron.left")
+            Image(systemName: "chevron.right")
         }
+        .font(.system(size: 13, weight: .bold))
+        .foregroundStyle(Color.primary)
+        .frame(width: 52, height: 40)
+        .background(Capsule().fill(.regularMaterial))
+        .shadow(color: Color.black.opacity(0.25), radius: 4)
+        .contentShape(Capsule())
+        .offset(x: 26, y: -60)
+        .gesture(
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { value in
+                    let start = splitStart ?? window.split
+                    if splitStart == nil { splitStart = start }
+                    let width = max(container.width, 1)
+                    let k = min(max(start + value.translation.width / width, 0.3), 0.75)
+                    let q = (k * 200).rounded() / 200
+                    if q != window.split { window.split = q }
+                }
+                .onEnded { _ in splitStart = nil }
+        )
     }
 
     /// 最上面那一條：中間三個點的小把手。點一下：選單；按住拖：移動視窗

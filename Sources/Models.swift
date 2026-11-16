@@ -231,6 +231,30 @@ struct PageClip: Codable, Hashable, Identifiable {
     var rect: CGRect
     var date = Date()
     var imageID: UUID? = nil        // 貼到白板上的那張圖（v12.15.2：框右下角的 → 跳到白板上那張圖）
+    var rgb: UInt32? = nil          // 框的顏色（v12.15.3：點框 → 改顏色）；nil＝灰色
+}
+
+/// 筆記本剪去白板的框跟白板上的圖同步（v12.15.3，使用者要求）：白板上那張圖刪掉了，筆記本那邊的框就不顯示；
+/// 復原把圖拿回來，框也回來。記在一張「被刪掉的圖」的清單（UserDefaults），筆記本讀框的時候濾掉
+enum ClipSync {
+    static let changed = Notification.Name("ClipSyncChanged")
+    private static let key = "removedClipImages"
+
+    static var removed: Set<UUID> {
+        Set((UserDefaults.standard.stringArray(forKey: key) ?? []).compactMap { UUID(uuidString: $0) })
+    }
+
+    /// 白板的圖片改了：拿掉的記下來、拿回來的劃掉
+    static func update(removed gone: Set<UUID>, added back: Set<UUID>) {
+        guard !gone.isEmpty || !back.isEmpty else { return }
+        var set = removed
+        let before = set
+        set.formUnion(gone)
+        set.subtract(back)
+        guard set != before else { return }
+        UserDefaults.standard.set(set.map { $0.uuidString }, forKey: key)
+        NotificationCenter.default.post(name: changed, object: nil)
+    }
 }
 
 /// 頁面上的圖片（位置、大小是頁面座標；檔案放在筆記本資料夾的「圖片」裡）

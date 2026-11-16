@@ -703,6 +703,7 @@ struct PenBoxView: View {
     @State private var movingFrom = 0              // 開始拖的時候它排第幾個
     @State private var askResetPens = false        // 「回到預設」先問一次（v12.4）
     @State private var askDefaultPens = false      // 「設成預設」先問一次
+    @State private var openLength: CGFloat = 0     // 展開時筆盒的長度（v12.15.3：收進三條線時把手留在原位，不要跑到中間）
 
     var body: some View {
         Group {
@@ -785,6 +786,18 @@ struct PenBoxView: View {
         .padding(6)
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.regularMaterial))
         .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { if !box.collapsed { openLength = box.dock.isVertical ? g.size.height : g.size.width } }
+                .onChange(of: g.size) { _, size in
+                    if !box.collapsed { openLength = box.dock.isVertical ? size.height : size.width }
+                }
+        })
+        // 收起來的時候佔住展開時的長度，把手留在原本的位置（上面／左邊那一端）
+        .frame(width: !box.dock.isVertical && box.collapsed && openLength > 0 ? openLength : nil,
+               height: box.dock.isVertical && box.collapsed && openLength > 0 ? openLength : nil,
+               alignment: .topLeading)
+        .onChange(of: box.dock) { _, _ in openLength = 0 }
         .offset(dragOffset)
         .padding(edgePadding)
     }

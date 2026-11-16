@@ -350,14 +350,13 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         }
         syncImages(page.images ?? [])
         clipView.isUserInteractionEnabled = false
-        addSubview(clipView)                         // 剪去白板的範圍（v12.15.1）：灰色虛線框
-        clipShape.fillColor = UIColor.systemGray.withAlphaComponent(0.1).cgColor
-        clipShape.strokeColor = UIColor.systemGray.cgColor
-        clipShape.lineWidth = 1.5
-        clipShape.lineDashPattern = [6, 4]
-        clipView.layer.addSublayer(clipShape)
+        addSubview(clipView)                         // 剪去白板的範圍（v12.15.1）：灰色虛線框（v12.15.3：每個框自己的顏色）
         clips = page.clips ?? []
-        DispatchQueue.main.async { [weak self] in self?.layoutClips() }   // host 接上之後才知道要不要放 →
+        DispatchQueue.main.async { [weak self] in   // host 接上之後才知道要不要放 →、哪些框的圖已經在白板刪掉了
+            guard let self else { return }
+            if let host = self.host { self.clips = host.model.clips(of: self.page.id) }
+            self.layoutClips()
+        }
         linkView.isUserInteractionEnabled = false
         addSubview(linkView)                         // 文字方塊之間的連線（v12.13.0）：在筆跡上面、文字方塊下面
         links = page.links ?? []
@@ -668,13 +667,37 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     // MARK: 剪去白板的範圍（v12.15.1）
 
     private let clipView = UIView()
-    private let clipShape = CAShapeLayer()
-    private var clips: [PageClip] = []
-    private var clipButtons: [UUID: UIButton] = [:]      // 框右下角的 →：白板跳到那張圖（只有開在白板浮動視窗裡才有）
+    private var clipLayers: [UUID: CAShapeLayer] = [:]
+    private(set) var clips: [PageClip] = []
+    private(set) var selectedClipID: UUID?               // 點了的框（v12.15.3：點一下才出現 → 和顏色）
+    private var clipButtons: [UIButton] = []
+    private var clipButtonsFor: PageClip?                // 按鈕是為哪個框做的（一樣的話只移位置，不重做：選單開著時不會被關掉）
     static let clipButtonTag = 4343
+
+    /// 框可以選的顏色（nil＝灰色）
+    static let clipColors: [(String, UInt32?)] = [("灰色", nil), ("紅色", 0xE0584F), ("橘色", 0xEE9A3A), ("黃色", 0xE8C43A),
+                                                   ("綠色", 0x5BB36A), ("藍色", 0x4A8FE0), ("紫色", 0x9B6BD6)]
+
+    static func clipColor(_ rgb: UInt32?) -> UIColor {
+        guard let rgb else { return UIColor.systemGray }
+        return UIColor(red: CGFloat((rgb >> 16) & 0xFF) / 255, green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                       blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+    }
 
     func syncClips(_ list: [PageClip]) {
         clips = list
+        if let id = selectedClipID, !list.contains(where: { $0.id == id }) { selectedClipID = nil }
+        layoutClips()
+    }
+
+    /// 頁面座標的這一點落在哪個框裡（後畫的在上面）
+    func clip(atPagePoint q: CGPoint) -> PageClip? {
+        clips.last(where: { $0.rect.insetBy(dx: -4, dy: -4).contains(q) })
+    }
+
+    func selectClip(_ id: UUID?) {
+        guard selectedClipID != id else { return }
+        selectedClipID = id
         layoutClips()
     }
 
@@ -682,44 +705,94 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         let s = bounds.width / max(page.spec.width, 1)
         guard s > 0 else { return }
         clipView.frame = bounds
-        let path = UIBezierPath()
-        for clip in clips {
-            let r = clip.rect
-            path.append(UIBezierPath(rect: CGRect(x: r.minX * s, y: r.minY * s, width: r.width * s, height: r.height * s)))
-        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        clipShape.path = clips.isEmpty ? nil : path.cgPath
-        CATransaction.commit()
-        // →（v12.15.2，使用者要求）：在白板的浮動視窗裡，點框右下角的 → 白板跳到貼上去的那張圖
-        let canReveal = host?.model.revealOnBoard != nil
         var alive = Set<UUID>()
         for clip in clips {
-            guard canReveal, let imageID = clip.imageID else { continue }
             alive.insert(clip.id)
-            let button: UIButton
-            if let existing = clipButtons[clip.id] {
-                button = existing
+            let layer: CAShapeLayer
+            if let existing = clipLayers[clip.id] {
+                layer = existing
             } else {
-                button = UIButton(type: .system)
-                button.tag = Self.clipButtonTag
-                button.setImage(UIImage(systemName: "arrow.right",
-                                        withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold)), for: .normal)
-                button.tintColor = UIColor.white
-                button.backgroundColor = UIColor(white: 0.4, alpha: 0.9)
-                button.layer.cornerRadius = 13
-                button.addAction(UIAction { [weak self] _ in self?.host?.model.revealOnBoard?(imageID) }, for: .touchUpInside)
-                addSubview(button)
-                clipButtons[clip.id] = button
+                layer = CAShapeLayer()
+                layer.lineDashPattern = [6, 4]
+                clipView.layer.addSublayer(layer)
+                clipLayers[clip.id] = layer
             }
+            let color = Self.clipColor(clip.rgb)
+            let selected = clip.id == selectedClipID
             let r = clip.rect
-            button.frame = CGRect(x: r.maxX * s - 30, y: r.maxY * s - 30, width: 26, height: 26)
-            bringSubviewToFront(button)
+            layer.path = UIBezierPath(rect: CGRect(x: r.minX * s, y: r.minY * s, width: r.width * s, height: r.height * s)).cgPath
+            layer.strokeColor = color.cgColor
+            layer.fillColor = color.withAlphaComponent(selected ? 0.16 : 0.08).cgColor
+            layer.lineWidth = selected ? 2.5 : 1.5
         }
-        for (id, button) in clipButtons where !alive.contains(id) {
-            button.removeFromSuperview()
-            clipButtons[id] = nil
+        for (id, layer) in clipLayers where !alive.contains(id) {
+            layer.removeFromSuperlayer()
+            clipLayers[id] = nil
         }
+        CATransaction.commit()
+        // 選了的框：右下角 → （在白板的浮動視窗裡：白板跳到那張圖）和 ● 顏色（v12.15.3，使用者要求：點了框才出現）
+        let chosen = selectedClipID.flatMap { id in clips.first(where: { $0.id == id }) }
+        if chosen == nil || chosen != clipButtonsFor {
+            for button in clipButtons { button.removeFromSuperview() }
+            clipButtons = []
+            clipButtonsFor = nil
+        }
+        guard let clip = chosen else { return }
+        let id = clip.id
+        let r = clip.rect
+        var x = r.maxX * s - 30
+        let y = r.maxY * s - 30
+        if !clipButtons.isEmpty {
+            for button in clipButtons {
+                button.frame = CGRect(x: x, y: y, width: 26, height: 26)
+                bringSubviewToFront(button)
+                x -= 32
+            }
+            return
+        }
+        clipButtonsFor = clip
+        if host?.model.revealOnBoard != nil, let imageID = clip.imageID {
+            let button = clipButton("arrow.right")
+            button.addAction(UIAction { [weak self] _ in
+                self?.selectClip(nil)
+                self?.host?.model.revealOnBoard?(imageID)
+            }, for: .touchUpInside)
+            button.frame = CGRect(x: x, y: y, width: 26, height: 26)
+            x -= 32
+        }
+        let paint = clipButton("paintpalette.fill")
+        let pageID = page.id
+        var items: [UIMenuElement] = Self.clipColors.map { name, rgb in
+            UIAction(title: name, image: UIImage(systemName: "circle.fill")?
+                        .withTintColor(Self.clipColor(rgb), renderingMode: .alwaysOriginal),
+                     state: clip.rgb == rgb ? .on : .off) { [weak self] _ in
+                self?.host?.setClipColor(id, rgb: rgb, pageID: pageID)
+            }
+        }
+        items.append(UIMenu(options: .displayInline, children: [
+            UIAction(title: "拿掉這個框", image: UIImage(systemName: "trash"), attributes: .destructive) { [weak self] _ in
+                self?.host?.removeClipMark(id, pageID: pageID)
+            }
+        ]))
+        paint.menu = UIMenu(children: items)
+        paint.showsMenuAsPrimaryAction = true
+        paint.frame = CGRect(x: x, y: y, width: 26, height: 26)
+    }
+
+    private func clipButton(_ symbol: String) -> UIButton {
+        let button = UIButton(type: .system)
+        button.tag = Self.clipButtonTag
+        button.setImage(UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold)),
+                        for: .normal)
+        button.tintColor = UIColor.white
+        button.backgroundColor = UIColor(white: 0.35, alpha: 0.92)
+        button.layer.cornerRadius = 13
+        addSubview(button)
+        bringSubviewToFront(button)
+        clipButtons.append(button)
+        return button
     }
 
     // MARK: 文字方塊之間的連線（v12.13.0；TextLinks.swift）

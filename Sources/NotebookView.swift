@@ -3833,12 +3833,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard isBoard, hud.superview != nil, let page = model.notebook.rows.first?.pages.first else { return }
         positionFrameBar()
         positionPinBar()
-        // v12.15.3（使用者）：一直寫目前的百分比。點一下 → 100%；已經是 100% 再點一下 → 回原點
-        let percent = Int((boardPercent * 100).rounded())
+        // v12.15.4（使用者）：點第一次 → 100%，按鈕寫「100%」；再點一次 → 回原點，按鈕寫「原點」。
+        // 只有真的在原點（100%、畫面中間是白板的正中間）才寫「原點」；捲開了就寫百分比
+        var atOrigin = false
+        if abs(boardPercent - 1) <= 0.01, let v = boardVisibleRect() {
+            let tolerance = max(v.width, v.height) * 0.02
+            atOrigin = abs(v.midX - page.spec.width / 2) <= tolerance && abs(v.midY - page.spec.height / 2) <= tolerance
+        }
+        let percent = atOrigin ? -100 : Int((boardPercent * 100).rounded())
         if percent != shownPercent {                          // 捲動時每一格都會呼叫：數字沒變就不要重設（按鈕換字會閃）
             shownPercent = percent
             UIView.performWithoutAnimation {
-                percentButton.setTitle("\(percent)%", for: .normal)
+                percentButton.setTitle(atOrigin ? "原點" : "\(percent)%", for: .normal)
                 percentButton.layoutIfNeeded()
             }
         }
@@ -5308,6 +5314,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         container.bringSubviewToFront(topPull)
         container.bringSubviewToFront(bottomPull)
         outer.showsVerticalScrollIndicator = false                     // 白板的位置條自己畫（v12.6，系統的會跑錯位置）
+        // 白板：點最上面（狀態列、左上的名稱附近）不要捲到最上面（v12.15.4，使用者：點名稱會跳到白板別的地方）
+        outer.scrollsToTop = !isBoard
         if isBoard { setUpBoardHUD() } else { setUpPageZoomHUD() }
         layoutDocument()
         updateLoadedPages()

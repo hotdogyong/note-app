@@ -38,6 +38,7 @@ final class PageRowView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizer
         showsVerticalScrollIndicator = false
         alwaysBounceHorizontal = true
         alwaysBounceVertical = false
+        scrollsToTop = false                         // 一排旁頁是左右捲的，點狀態列不要動它
         decelerationRate = .fast
         delaysContentTouches = false
         clipsToBounds = false
@@ -319,6 +320,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         canvas.drawingPolicy = .pencilOnly          // 只有 Pencil 能寫
         canvas.overrideUserInterfaceStyle = .light  // 顏色照實顯示
         canvas.isScrollEnabled = false
+        canvas.scrollsToTop = false
         canvas.showsVerticalScrollIndicator = false
         canvas.showsHorizontalScrollIndicator = false
         canvas.bouncesZoom = false

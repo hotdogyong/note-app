@@ -1432,6 +1432,7 @@ struct NotebookEditorView: View {
         DocumentRepresentable(model: model)
             // 白板（v12.8）：白板一路鋪到最上面，工具列浮在白板上（上面不要有一條黑色）
             .ignoresSafeArea(edges: embedded ? Edge.Set() : (model.isBoard ? Edge.Set.all : Edge.Set.bottom))
+            .modifier(BoardStatusBar(hidden: model.isBoard && !embedded))   // 白板：最上面時間、網路那一列拿掉（v12.15.4，使用者要求）
             .overlay {
                 // 白板上的浮動視窗（v12.12.0）：在白板上面、筆盒下面
                 if model.isBoard && !embedded {
@@ -1955,6 +1956,19 @@ enum PDFOutlineReader {
 
 /// 輸入一段文字的小視窗（可以用鍵盤，也可以用 Apple Pencil 直接在框裡手寫）
 @MainActor
+/// 白板把狀態列藏起來；其他時候（包括白板上的浮動視窗）完全不碰，免得蓋掉白板的設定
+struct BoardStatusBar: ViewModifier {
+    let hidden: Bool
+
+    func body(content: Content) -> some View {
+        if hidden {
+            content.statusBarHidden(true)
+        } else {
+            content
+        }
+    }
+}
+
 enum TextPrompt {
     static func show(title: String, initial: String, done: @escaping (String) -> Void) {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,

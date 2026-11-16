@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.15.3"
+let appVersion = "v12.15.4"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序

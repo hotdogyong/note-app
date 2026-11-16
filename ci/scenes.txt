@@ -1,5 +1,3 @@
 board
-winsplit
-winfull
 clip
-pills
+winsplit

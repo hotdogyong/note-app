@@ -2313,8 +2313,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             box.text = name
             box.fontSize = 16 * k
             box.rgba = pv.page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
-            box.x = center.x - 300 * k + CGFloat((i * 137) % 520) * k
-            box.y = center.y - 260 * k + CGFloat((i * 89) % 430) * k
+            box.x = i == 0 ? center.x - 40 * k : center.x - 300 * k + CGFloat((i * 137) % 520) * k
+            box.y = i == 0 ? center.y : center.y - 260 * k + CGFloat((i * 89) % 430) * k
             boxes.append(box)
         }
         var links: [BoxLink] = []
@@ -2852,8 +2852,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let unit = PaperRenderer.gridUnit
         let boardW: CGFloat = (w >= h ? 10 : 6) * unit
         let boardH: CGFloat = (w >= h ? 6 : 10) * unit
-        let capW: CGFloat = flat ? min(pw * 0.8, boardW) : pw * 0.8
-        let capH: CGFloat = flat ? min(ph * 0.8, boardH) : ph * 0.8
+        // 筆記本（v12.15.1，使用者：貼照片不要太大）：最寬半頁、最高四成頁高；本來就比較小的圖不放大
+        let capW: CGFloat = flat ? min(pw * 0.8, boardW) : pw * 0.5
+        let capH: CGFloat = flat ? min(ph * 0.8, boardH) : ph * 0.4
         if w > capW { h *= capW / w; w = capW }
         if h > capH { w *= capH / h; h = capH }
         var box = ImageBox(file: file)

@@ -341,6 +341,7 @@ struct TextBox: Codable, Hashable, Identifiable {
     var fill: [Double]? = nil        // 外框樣式的顏色（v12.13.0；TextLinks.swift）；nil＝沒有外框，就是單純的字
     var fillMode: Int? = nil         // 0 整個填滿、1 外框＋上面一條、2 只有外框
     var shape: Int? = nil            // 0 方、1 圓角、2 圓頭
+    var tidyLevel: Int? = nil        // 一鍵整理排在第幾層（v12.15.0；-1＝沒接線）。再整理時用來算回原本的字級
 
     var isLocked: Bool { locked ?? false }
     var isMarkdown: Bool { markdown ?? false }

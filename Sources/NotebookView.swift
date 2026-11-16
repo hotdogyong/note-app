@@ -1432,11 +1432,35 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let maxDepth = depth.values.max() ?? 0
 
         // 2. 樣子
-        let base = texts.filter { chosen.contains($0.id) }.map { $0.fontSize }.min() ?? 16
-        let plain: [Double] = page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
         let hubFill: [Double] = [0.27, 0.33, 0.83]
         let midFill: [Double] = [0.53, 0.58, 0.95]
         let leafFill: [Double] = [0.5, 0.5, 0.5]
+        func factor(_ level: Int?) -> CGFloat {
+            switch level {
+            case 0?: return 1.5
+            case 1?: return 1.25
+            case 2?: return 1.1
+            default: return 1
+            }
+        }
+        func styleFill(_ level: Int?) -> ([Double], Int) {
+            switch level {
+            case 0?: return (hubFill, 0)
+            case 1?: return (midFill, 0)
+            case 2?: return (midFill, 2)
+            default: return (leafFill, 2)
+            }
+        }
+        // 原本的字級：已經整理過（樣子跟這一層的一樣）的方塊，先除掉放大的倍數，所以再整理一次結果一樣
+        var base = CGFloat.greatestFiniteMagnitude
+        for t in texts where chosen.contains(t.id) {
+            let level = depth[t.id]
+            let style = styleFill(level)
+            let tidied = t.fill == style.0 && (t.fillMode ?? 0) == style.1
+            base = min(base, tidied ? t.fontSize / factor(level) : t.fontSize)
+        }
+        if base == CGFloat.greatestFiniteMagnitude { base = 16 }
+        let plain: [Double] = page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
         for i in texts.indices where chosen.contains(texts[i].id) {
             let level = depth[texts[i].id]
             var size = base
@@ -2137,6 +2161,12 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         pasteImage(image, at: CGPoint(x: x, y: bounds.midY))
         guard let editor = imageEditor, let pv = editor.pageView else { return }
         var box = editor.box
+        // 緊貼在視窗旁邊（空間比較大的那一邊），盡量不要被視窗蓋住
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        let w = box.width * s
+        var cx = right >= window.minX ? window.maxX + 24 + w / 2 : window.minX - 24 - w / 2
+        cx = min(max(cx, w / 2 + 12), max(bounds.width - w / 2 - 12, w / 2 + 12))
+        box.x = max(pv.convert(CGPoint(x: cx, y: 0), from: self).x / s - box.width / 2, 0)
         box.sourceNotebook = notebook
         box.sourcePage = page
         box.sourceRect = rect

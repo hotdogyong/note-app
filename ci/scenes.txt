@@ -1,7 +1,3 @@
 board
-winsplit
-winfull
-clip
-tidytree
 texttidy
-textzone
+clip

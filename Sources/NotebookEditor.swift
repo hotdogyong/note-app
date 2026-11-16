@@ -1251,6 +1251,16 @@ struct NotebookEditorView: View {
     /// 左上「× │ 名稱」那一個膠囊有沒有出來：分頁收起來、或白板分屏（分頁那一排先藏起來）
     private var showsCloseCapsule: Bool { !embedded && (tabsCollapsed || hasSplitWindow) }
 
+    /// 白板藏了狀態列（v12.15.4）：上面那兩排離螢幕上緣留一點距離（v12.15.5，使用者：不要太貼）
+    static let topGap: CGFloat = 10
+    private var boardTopGap: CGFloat { model.isBoard && !embedded ? Self.topGap : 0 }
+
+    /// 浮動視窗分屏、全屏時蓋到螢幕最上面：它自己的工具列也往下留一點
+    private var embeddedTopGap: CGFloat {
+        guard embedded, let mode = windowActions?.mode, mode != .float else { return 0 }
+        return Self.topGap
+    }
+
     /// 白板工具列那一條的高度（分屏的視窗往上蓋過它；左上空著時浮著的視窗也可以往上移進去）
     private var windowTopExtend: CGFloat { (hasFullWindow || boardToolsFloating) ? 0 : toolRowHeight }
 
@@ -1437,7 +1447,7 @@ struct NotebookEditorView: View {
                 // 白板上的浮動視窗（v12.12.0）：在白板上面、筆盒下面
                 if model.isBoard && !embedded {
                     BoardWindowsLayer(windows: $windows, tucked: $windowsTucked,
-                                      topExtend: windowTopExtend,
+                                      topExtend: windowTopExtend + Self.topGap,
                                       floatTop: (showsCloseCapsule && !leftToolsHidden) ? 8 : 6 - windowTopExtend,
                                       tabsShown: fullTabsShown,
                                       toggleTabs: { withAnimation(.easeInOut(duration: 0.2)) { fullTabsShown.toggle() } },
@@ -1479,7 +1489,7 @@ struct NotebookEditorView: View {
                     }
                     .padding(.leading, 16 + splitPad)
                     .padding(.trailing, 16)
-                    .padding(.top, 6)
+                    .padding(.top, 6 + boardTopGap)
                 }
             }
             .overlay {
@@ -1519,6 +1529,7 @@ struct NotebookEditorView: View {
                     // 白板上有全屏的視窗：白板自己的工具列先收起來（v12.15.0）；兩個膠囊都收起來也不佔位置（v12.15.1）
                     if !hasFullWindow && !boardToolsFloating {
                         toolRow
+                            .padding(.top, embeddedTopGap)
                             .padding(.leading, splitPad)
                             .background(GeometryReader { g in
                                 Color.clear
@@ -1527,6 +1538,7 @@ struct NotebookEditorView: View {
                             })
                     }
                 }
+                .padding(.top, boardTopGap)                    // 白板沒有狀態列：上面留一點距離，不要貼著螢幕邊（v12.15.5）
                 .background(
                     // 量上面兩排的高度，告訴白板：那一塊的觸控交給按鈕（v12.8.8）
                     GeometryReader { g in

@@ -342,7 +342,10 @@ struct BoardWindowView: View {
     private var shownFrame: CGRect {
         switch window.mode {
         case .float: return floatFrame
-        case .full: return CGRect(origin: CGPoint.zero, size: container)
+        case .full:
+            // 分頁那一排收著：往上蓋到螢幕最上面（白板上面留的那一點距離也蓋過去，v12.15.5）
+            let up = tabsShown ? 0 : NotebookEditorView.topGap
+            return CGRect(x: 0, y: -up, width: container.width, height: container.height + up)
         case .split:
             // 左半邊吃滿（v12.15.1，照 GUGA）：分頁那一排先收起來，往上蓋過白板工具列那一條（白板的工具列移到右半邊）
             return CGRect(x: 0, y: -topExtend, width: (container.width * window.split).rounded(), height: container.height + topExtend)

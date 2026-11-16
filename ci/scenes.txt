@@ -1,3 +1,5 @@
 board
+winsplit
+clip
+pills
 tidytree
-texttidy

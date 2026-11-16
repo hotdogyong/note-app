@@ -215,6 +215,7 @@ struct NotePage: Codable, Hashable, Identifiable {
     var tapes: [TapeBox]? = nil     // 這一頁的紙膠帶
     var modified: Date? = nil       // 文字、圖片、紙膠帶最後改的時間（v12.9.2；筆跡看筆跡檔的修改時間）
     var links: [BoxLink]? = nil     // 文字方塊之間的連線（v12.13.0；TextLinks.swift）
+    var clips: [PageClip]? = nil    // 剪去白板的範圍（v12.15.1）：頁面上畫灰色虛線框，書籤面板列出來
 
     var paperStyle: PaperStyle { paper ?? PaperStyle() }
 }
@@ -222,6 +223,13 @@ struct NotePage: Codable, Hashable, Identifiable {
 extension NotePage {
     /// 深色背景（深灰紙、封面）；課本 PDF、白紙、米黃紙是淺色。萬用筆、文字方塊的預設顏色都用這個判斷
     var isDarkBackground: Bool { pdf == nil && (cover != nil || paperStyle.isDark) }
+}
+
+/// 這一頁被剪去白板的一塊（v12.15.1，照 GUGA）
+struct PageClip: Codable, Hashable, Identifiable {
+    var id = UUID()
+    var rect: CGRect
+    var date = Date()
 }
 
 /// 頁面上的圖片（位置、大小是頁面座標；檔案放在筆記本資料夾的「圖片」裡）

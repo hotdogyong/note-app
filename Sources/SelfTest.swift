@@ -19,7 +19,9 @@ enum SelfTest {
     static func run(_ library: LibraryModel) {
         Self.library = library
         guard let scene = scene, scene != "home" else { return }
-        UserDefaults.standard.set(scene == "collapsed", forKey: "tabsCollapsed")   // 只有 collapsed 場景把分頁那一排收起來
+        UserDefaults.standard.set(scene == "collapsed" || scene == "pills", forKey: "tabsCollapsed")   // 只有 collapsed、pills 場景把分頁那一排收起來
+        UserDefaults.standard.set(scene == "pills", forKey: "boardLeftToolsHidden")    // pills：白板上面兩個膠囊都收起來（v12.15.1）
+        UserDefaults.standard.set(scene == "pills", forKey: "boardRightToolsHidden")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             if scene.hasPrefix("strokes"), let count = Int(scene.dropFirst(7)) {
                 // 很多筆的白板（例如 strokes66000）：看 PencilKit 一張畫布畫不畫得出這麼多筆。
@@ -111,7 +113,7 @@ enum SelfTest {
                 // 白板匯入文件（Markdown、PDF）、子白板（v12.14.0）：notebookOpened 裡匯入、放卡片、開一個視窗
                 library.openNotebook = library.addBoard(in: nil, title: scene == "subboard" ? "子白板測試" : "匯入文件測試",
                                                         width: 100 * 842, height: 100 * 595)
-            case "winsplit", "winfull", "clip", "tidytree":
+            case "winsplit", "winfull", "clip", "tidytree", "pills":
                 // v12.15.0：分屏、全屏的浮動視窗；視窗裡剪一塊貼到白板；四層的一鍵整理
                 if scene == "winsplit" { windowMode = .split }
                 if scene == "winfull" { windowMode = .full }
@@ -216,7 +218,8 @@ enum SelfTest {
             }
             return
         }
-        if scene == "winsplit" || scene == "winfull" || scene == "clip", view.model.isBoard, !view.model.embedded, !sceneDone,
+        if scene == "winsplit" || scene == "winfull" || scene == "clip" || scene == "pills", view.model.isBoard,
+           !view.model.embedded, !sceneDone,
            let library = library {
             sceneDone = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in

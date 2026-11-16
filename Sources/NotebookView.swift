@@ -1390,7 +1390,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         for (i, t) in texts.enumerated() { index[t.id] = i }
         var original: [UUID: CGRect] = [:]
         for t in texts where chosen.contains(t.id) { original[t.id] = PageRenderer.textFrameRect(t, page: page) }
-        let horizontal = sideVotes >= 0
+        let horizontal = true                                     // 心智圖：一律往左右長（v12.15.1）
+        _ = sideVotes
         func mainCenter(_ r: CGRect) -> CGFloat { horizontal ? r.midX : r.midY }
         func crossCenter(_ r: CGRect) -> CGFloat { horizontal ? r.midY : r.midX }
 
@@ -1499,70 +1500,91 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         func mainSize(_ id: UUID) -> CGFloat { horizontal ? (sizes[id]?.width ?? 0) : (sizes[id]?.height ?? 0) }
         func crossSize(_ id: UUID) -> CGFloat { horizontal ? (sizes[id]?.height ?? 0) : (sizes[id]?.width ?? 0) }
 
-        // 3. 位置：一棵一棵樹排
-        let gapMain = base * (horizontal ? 3.2 : 2.6)
-        let gapCross = base * (horizontal ? 0.9 : 1.4)
+        // 3. 位置（v12.15.1，使用者：要有心智圖的感覺、太擠）：根留在原本的位置，第一層分到左右兩邊
+        //    （原本就在根左邊的放左邊，其他的讓兩邊差不多一樣多），每一邊往外一層一層長、同一層對齊成一欄；間距比較寬
+        let gapMain = base * 4.5
+        let gapCross = base * 1.6
+        func width(_ id: UUID) -> CGFloat { sizes[id]?.width ?? 0 }
+        func height(_ id: UUID) -> CGFloat { sizes[id]?.height ?? 0 }
         var target: [UUID: CGRect] = [:]
         for root in roots {
-            // 這棵樹的方塊、每一層最寬（最高）多少
-            var members: [UUID] = []
-            var stack = [root]
-            while let id = stack.popLast() {
-                members.append(id)
-                stack.append(contentsOf: children[id] ?? [])
-            }
-            var levelMain: [Int: CGFloat] = [:]
-            for id in members { levelMain[depth[id] ?? 0] = max(levelMain[depth[id] ?? 0] ?? 0, mainSize(id)) }
-            var levelStart: [Int: CGFloat] = [0: 0]
-            let deepest = levelMain.keys.max() ?? 0
-            if deepest > 0 {
-                for d in 1 ... deepest { levelStart[d] = (levelStart[d - 1] ?? 0) + (levelMain[d - 1] ?? 0) + gapMain }
-            }
-            // 長的方向：原本子方塊大多在根的哪一邊
-            var lean: CGFloat = 0
-            for id in members where id != root {
-                lean += mainCenter(original[id] ?? CGRect.zero) - mainCenter(original[root] ?? CGRect.zero)
-            }
-            let forward = lean >= 0
-            // 每個子樹在另一個方向要佔多寬
+            guard let rootRect = original[root] else { continue }
             var span: [UUID: CGFloat] = [:]
             func measure(_ id: UUID) -> CGFloat {
                 let kids = children[id] ?? []
                 var total: CGFloat = 0
                 for (k, child) in kids.enumerated() { total += measure(child) + (k > 0 ? gapCross : 0) }
-                let value = max(crossSize(id), total)
+                let value = max(height(id), total)
                 span[id] = value
                 return value
             }
-            _ = measure(root)
-            var crossPos: [UUID: CGFloat] = [:]                   // 每個方塊在另一個方向的中心（先從 0 開始排）
-            func place(_ id: UUID, _ start: CGFloat) {
-                let mine = span[id] ?? crossSize(id)
-                crossPos[id] = start + mine / 2
-                let kids = children[id] ?? []
-                var total: CGFloat = 0
-                for (k, child) in kids.enumerated() { total += (span[child] ?? 0) + (k > 0 ? gapCross : 0) }
-                var cursor = start + (mine - total) / 2
-                for child in kids {
-                    place(child, cursor)
-                    cursor += (span[child] ?? 0) + gapCross
+            let firsts = (children[root] ?? []).sorted { (original[$0]?.midY ?? 0) < (original[$1]?.midY ?? 0) }
+            for c in firsts { _ = measure(c) }
+            let half = firsts.reduce(CGFloat(0)) { $0 + (span[$1] ?? 0) } / 2
+            var right: [UUID] = []
+            var left: [UUID] = []
+            var rightSpan: CGFloat = 0
+            var leftSpan: CGFloat = 0
+            var pending: [UUID] = []
+            for c in firsts {
+                if (original[c]?.midX ?? 0) < rootRect.minX {
+                    left.append(c)
+                    leftSpan += span[c] ?? 0
+                } else {
+                    pending.append(c)
                 }
             }
-            place(root, 0)
-            // 根留在原本的位置（中心不動）
-            guard let rootRect = original[root] else { continue }
-            let shiftCross = crossCenter(rootRect) - (crossPos[root] ?? 0)
-            let rootMain = mainSize(root)
-            let anchorStart = mainCenter(rootRect) - rootMain / 2          // 往前長：每一層的開頭
-            let anchorEnd = mainCenter(rootRect) + rootMain / 2            // 往回長：每一層的結尾
-            for id in members {
-                let d = depth[id] ?? 0
-                let m = mainSize(id)
-                let c = crossSize(id)
-                let mainMin = forward ? anchorStart + (levelStart[d] ?? 0) : anchorEnd - (levelStart[d] ?? 0) - m
-                let crossMin = (crossPos[id] ?? 0) + shiftCross - c / 2
-                target[id] = horizontal ? CGRect(x: mainMin, y: crossMin, width: m, height: c)
-                                        : CGRect(x: crossMin, y: mainMin, width: c, height: m)
+            for c in pending {
+                let size = span[c] ?? 0
+                if rightSpan + size / 2 <= half || leftSpan >= half || pending.count == 1 {
+                    right.append(c)
+                    rightSpan += size
+                } else {
+                    left.append(c)
+                    leftSpan += size
+                }
+            }
+            left.sort { (original[$0]?.midY ?? 0) < (original[$1]?.midY ?? 0) }
+            let rootSize = sizes[root] ?? rootRect.size
+            target[root] = CGRect(x: rootRect.midX - rootSize.width / 2, y: rootRect.midY - rootSize.height / 2,
+                                  width: rootSize.width, height: rootSize.height)
+            for (kids, dir) in [(right, CGFloat(1)), (left, CGFloat(-1))] where !kids.isEmpty {
+                // 這一邊每一層最寬多少 → 每一層靠根那一邊離根中心多遠
+                var levelW: [Int: CGFloat] = [:]
+                var stack = kids
+                while let id = stack.popLast() {
+                    let d = depth[id] ?? 1
+                    levelW[d] = max(levelW[d] ?? 0, width(id))
+                    stack.append(contentsOf: children[id] ?? [])
+                }
+                var edge: [Int: CGFloat] = [:]
+                var cursor = rootSize.width / 2 + gapMain
+                for d in 1 ... max(levelW.keys.max() ?? 1, 1) {
+                    edge[d] = cursor
+                    cursor += (levelW[d] ?? 0) + gapMain
+                }
+                func put(_ id: UUID, _ top: CGFloat) {
+                    let mine = span[id] ?? height(id)
+                    let w = width(id)
+                    let h = height(id)
+                    let near = rootRect.midX + dir * (edge[depth[id] ?? 1] ?? 0)
+                    target[id] = CGRect(x: dir > 0 ? near : near - w, y: top + mine / 2 - h / 2, width: w, height: h)
+                    let sub = children[id] ?? []
+                    var total: CGFloat = 0
+                    for (k, child) in sub.enumerated() { total += (span[child] ?? 0) + (k > 0 ? gapCross : 0) }
+                    var y = top + (mine - total) / 2
+                    for child in sub {
+                        put(child, y)
+                        y += (span[child] ?? 0) + gapCross
+                    }
+                }
+                var sideTotal: CGFloat = 0
+                for (k, c) in kids.enumerated() { sideTotal += (span[c] ?? 0) + (k > 0 ? gapCross : 0) }
+                var y = rootRect.midY - sideTotal / 2
+                for c in kids {
+                    put(c, y)
+                    y += (span[c] ?? 0) + gapCross
+                }
             }
         }
         for (id, rect) in target {
@@ -1643,70 +1665,114 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         return box
     }
 
-    /// 從文字方塊四邊的點往外拉（TextBoxView 呼叫）。point：手指在那一頁視圖上的位置
-    private func handleLink(_ tv: TextBoxView, side: Int, state: UIGestureRecognizer.State, at point: CGPoint) {
-        guard let pv = pageViews[tv.pageID], tv === activeText else { return }
+    /// 連線的起點（v12.15.1：文字方塊或圖片、卡片都可以）：id、外框（頁面座標）、新方塊照誰的字和外框
+    private struct LinkSource {
+        let id: UUID
+        let rect: CGRect
+        let style: TextBox?
+    }
+
+    /// 從圖片、卡片新拉出來的方塊：這一本預設的字，淡紫藍圓角外框
+    private func plainLinkedStyle(_ pv: NotePageView) -> TextBox {
+        var box = TextBox()
+        box.fontSize = TextDefaults.size(model.meta.id) * pageScaleFactor(pv.page.spec)
+        box.bold = TextDefaults.bold(model.meta.id)
+        box.rgba = TextDefaults.rgba(model.meta.id) ?? defaultTextRGBA(pdf: !pv.page.isDarkBackground)
+        return box
+    }
+
+    /// 頁面上可以接線的東西（文字方塊、圖片、卡片）裡，pp 落在哪一個上面（頁面座標）
+    private func linkTarget(at pp: CGPoint, on pv: NotePageView, except: UUID) -> (id: UUID, rect: CGRect)? {
+        for other in pv.textViews.values where other.box.id != except && !other.box.isMarkdownPage {
+            if other.linkRect.insetBy(dx: -8, dy: -8).contains(pp) { return (other.box.id, other.linkRect) }
+        }
+        for image in model.images(of: pv.page.id).reversed() where image.id != except {
+            let r = image.isMini ? image.miniRect : CGRect(x: image.x, y: image.y, width: image.width, height: image.height)
+            if r.insetBy(dx: -8, dy: -8).contains(pp) { return (image.id, r) }
+        }
+        return nil
+    }
+
+    /// 從四邊的點往外拉（文字方塊、圖片共用）。point：手指在那一頁視圖上的位置
+    private func linkDrag(_ src: LinkSource, side: Int, state: UIGestureRecognizer.State, at point: CGPoint,
+                          on pv: NotePageView) {
         let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
         let pp = CGPoint(x: point.x / s, y: point.y / s)
-        let start = BoxLinkPath.anchor(tv.linkRect, side: side)
-        // 拉到另一個文字方塊上：連到它（不另外多一個方塊）
-        let target = pv.textViews.values.first { other in
-            other !== tv && !other.box.isMarkdownPage && other.linkRect.insetBy(dx: -8, dy: -8).contains(pp)
-        }
+        let start = BoxLinkPath.anchor(src.rect, side: side)
+        let target = linkTarget(at: pp, on: pv, except: src.id)
+        let style = src.style ?? plainLinkedStyle(pv)
         switch state {
         case .began, .changed:
             if let target = target {
-                let toSide = BoxLinkPath.nearestSide(target.linkRect, to: start)
-                pv.showLinkPreview(from: start, fromSide: side, to: BoxLinkPath.anchor(target.linkRect, side: toSide),
+                let toSide = BoxLinkPath.nearestSide(target.rect, to: start)
+                pv.showLinkPreview(from: start, fromSide: side, to: BoxLinkPath.anchor(target.rect, side: toSide),
                                    toSide: toSide, ghost: nil)
             } else {
                 let toSide = BoxLinkPath.arrivalSide(from: start, fromSide: side, to: pp)
-                let ghost = PageRenderer.textFrameRect(newLinkedBox(like: tv.box, arrival: toSide, at: pp, page: pv.page), page: pv.page)
+                let ghost = PageRenderer.textFrameRect(newLinkedBox(like: style, arrival: toSide, at: pp, page: pv.page), page: pv.page)
                 pv.showLinkPreview(from: start, fromSide: side, to: pp, toSide: toSide, ghost: ghost)
             }
         case .ended:
             pv.hideLinkPreview()
             if let target = target {
-                toggleLink(from: tv, side: side, to: target, on: pv)
+                toggleLink(from: src, side: side, to: target, on: pv)
                 return
             }
             // 拉得太短（還在點的旁邊）：不算
             guard hypot(pp.x - start.x, pp.y - start.y) * s > 48 else { return }
-            addLinkedText(from: tv, side: side, at: pp, on: pv)
+            addLinkedText(from: src, side: side, at: pp, on: pv)
         default:
             pv.hideLinkPreview()
         }
     }
 
-    /// 兩個方塊之間：沒有線就連起來；已經有線（不管方向）就拿掉
-    private func toggleLink(from tv: TextBoxView, side: Int, to target: TextBoxView, on pv: NotePageView) {
+    /// 從文字方塊四邊的點往外拉（TextBoxView 呼叫）
+    private func handleLink(_ tv: TextBoxView, side: Int, state: UIGestureRecognizer.State, at point: CGPoint) {
+        guard let pv = pageViews[tv.pageID], tv === activeText else { return }
+        linkDrag(LinkSource(id: tv.box.id, rect: tv.linkRect, style: tv.box), side: side, state: state, at: point, on: pv)
+    }
+
+    /// 從選取中的圖片、卡片四邊的點往外拉（ImageEditorView 呼叫；v12.15.1）
+    func imageLinkDrag(_ box: ImageBox, side: Int, state: UIGestureRecognizer.State, at point: CGPoint) {
+        guard let pv = imageEditor?.pageView else { return }
+        let rect = box.isMini ? box.miniRect : CGRect(x: box.x, y: box.y, width: box.width, height: box.height)
+        linkDrag(LinkSource(id: box.id, rect: rect, style: nil), side: side, state: state, at: point, on: pv)
+    }
+
+    /// 兩個東西之間：沒有線就連起來；已經有線（不管方向）就拿掉
+    private func toggleLink(from src: LinkSource, side: Int, to target: (id: UUID, rect: CGRect), on pv: NotePageView) {
         let id = pv.page.id
         var links = model.links(of: id)
-        let a = tv.box.id
-        let b = target.box.id
+        let a = src.id
+        let b = target.id
         if let i = links.firstIndex(where: { ($0.from == a && $0.to == b) || ($0.from == b && $0.to == a) }) {
             links.remove(at: i)
-            showMessage("minus.circle", "這兩個方塊之間的線拿掉了")
+            showMessage("minus.circle", "這兩個之間的線拿掉了")
         } else {
-            let start = BoxLinkPath.anchor(tv.linkRect, side: side)
-            links.append(BoxLink(from: a, fromSide: side, to: b, toSide: BoxLinkPath.nearestSide(target.linkRect, to: start)))
+            let start = BoxLinkPath.anchor(src.rect, side: side)
+            links.append(BoxLink(from: a, fromSide: side, to: b, toSide: BoxLinkPath.nearestSide(target.rect, to: start)))
         }
         model.setLinks(links, pageID: id)
         pv.syncLinks(links)
     }
 
-    /// 放開的地方多一個文字方塊，跟來源連起來；新的方塊變成選取的（再點一下就能打字）
     private func addLinkedText(from tv: TextBoxView, side: Int, at pp: CGPoint, on pv: NotePageView) {
+        addLinkedText(from: LinkSource(id: tv.box.id, rect: tv.linkRect, style: tv.box), side: side, at: pp, on: pv)
+    }
+
+    /// 放開的地方多一個文字方塊，跟來源連起來；新的方塊變成選取的（再點一下就能打字）
+    private func addLinkedText(from src: LinkSource, side: Int, at pp: CGPoint, on pv: NotePageView) {
         let id = pv.page.id
-        let start = BoxLinkPath.anchor(tv.linkRect, side: side)
+        let start = BoxLinkPath.anchor(src.rect, side: side)
         let arrival = BoxLinkPath.arrivalSide(from: start, fromSide: side, to: pp)
-        let box = newLinkedBox(like: tv.box, arrival: arrival, at: pp, page: pv.page)
+        let box = newLinkedBox(like: src.style ?? plainLinkedStyle(pv), arrival: arrival, at: pp, page: pv.page)
         var links = model.links(of: id)
-        links.append(BoxLink(from: tv.box.id, fromSide: side, to: box.id, toSide: arrival))
+        links.append(BoxLink(from: src.id, fromSide: side, to: box.id, toSide: arrival))
         model.setLinks(links, pageID: id)
         model.setTexts(model.texts(of: id) + [box], pageID: id)
         pv.syncLinks(links)
         pv.syncTexts(model.texts(of: id))
+        endImageSelection()
         if let created = pv.textViews[box.id] { activate(created, edit: false) }
     }
 
@@ -1987,6 +2053,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     // 手指長按筆跡：選取（隨時都可以重新叫出選取框）
     // 手指長按：按在筆跡上 → 選取；按在空白處 → 跳出「貼上」
     @objc private func handleSelectPress(_ g: UILongPressGestureRecognizer) {
+        if cropMode && radialMenu == nil { return }       // 剪刀開著（v12.15.1）：長按不跳一圈按鈕，免得拉框時跳出來
         // 一圈按鈕開著（v12.4）：手指不放開，滑到哪一顆就選哪一顆；放開就執行或收起來
         if let menu = radialMenu {
             switch g.state {
@@ -2149,32 +2216,65 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// （選取這張圖，左下角的 ‹ 會打開那一本並跳回那裡）。avoiding：那個視窗在畫面上的位置
     func placeClip(_ image: UIImage, notebook: UUID, page: UUID, rect: CGRect, avoiding window: CGRect) {
         guard isBoard, !readOnly else { return }
-        var x = bounds.midX
-        let right = bounds.width - window.maxX
-        if right > 200 {
-            x = window.maxX + right / 2                    // 視窗右邊空著：放右邊
-        } else if window.minX > 200 {
-            x = window.minX / 2                            // 左邊空著：放左邊
-        } else {
-            x = bounds.width - 140                         // 視窗幾乎蓋滿：放右邊靠邊
+        // v12.15.1（使用者：貼到沒開視窗那邊、比較空的地方的中間）：視窗旁邊比較大的那一塊空地，
+        // 在裡面找一個跟已經有的東西重疊最少、又靠近中間的位置
+        let top = safeAreaInsets.top + topBarHeight + 16
+        let bottom = bounds.height - 90
+        let leftRoom = window.minX
+        let rightRoom = bounds.width - window.maxX
+        var region = CGRect(x: 0, y: top, width: bounds.width, height: max(bottom - top, 100))
+        if max(leftRoom, rightRoom) >= 160 {
+            region = rightRoom >= leftRoom
+                ? CGRect(x: window.maxX, y: top, width: rightRoom, height: region.height)
+                : CGRect(x: 0, y: top, width: leftRoom, height: region.height)
         }
-        pasteImage(image, at: CGPoint(x: x, y: bounds.midY))
+        pasteImage(image, at: CGPoint(x: region.midX, y: region.midY))
         guard let editor = imageEditor, let pv = editor.pageView else { return }
         var box = editor.box
-        // 緊貼在視窗旁邊（空間比較大的那一邊），盡量不要被視窗蓋住
         let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
-        var w = box.width * s
-        let room = max(right, window.minX) - 36
-        if w > room, room > 140 {                         // 旁邊放不下：縮小到放得下
-            let k = room / w
-            box.width *= k
-            box.height *= k
-            w = room
-            box.y += box.height * (1 / k - 1) / 2          // 中心不動
+        // 空地放不下：縮小到放得下
+        let fit = min((region.width - 40) / max(box.width * s, 1), (region.height - 40) / max(box.height * s, 1), 1)
+        if fit < 1 && fit > 0.2 {
+            box.width *= fit
+            box.height *= fit
         }
-        var cx = right >= window.minX ? window.maxX + 24 + w / 2 : window.minX - 24 - w / 2
-        cx = min(max(cx, w / 2 + 12), max(bounds.width - w / 2 - 12, w / 2 + 12))
-        box.x = max(pv.convert(CGPoint(x: cx, y: 0), from: self).x / s - box.width / 2, 0)
+        let w = box.width * s
+        let h = box.height * s
+        // 已經有的東西（畫面座標）
+        func onScreen(_ r: CGRect) -> CGRect {
+            pv.convert(CGRect(x: r.minX * s, y: r.minY * s, width: r.width * s, height: r.height * s), to: self)
+        }
+        var taken: [CGRect] = []
+        for other in model.images(of: pv.page.id) where other.id != box.id {
+            taken.append(onScreen(other.isMini ? other.miniRect : CGRect(x: other.x, y: other.y, width: other.width, height: other.height)))
+        }
+        for t in model.texts(of: pv.page.id) { taken.append(onScreen(PageRenderer.textFrameRect(t, page: pv.page))) }
+        taken = taken.filter { $0.intersects(region) }
+        var best = CGPoint(x: region.midX, y: region.midY)
+        var bestScore = CGFloat.greatestFiniteMagnitude
+        let steps = 6
+        for iy in 0 ... steps {
+            for ix in 0 ... steps {
+                let cx = region.minX + 20 + w / 2 + (region.width - 40 - w) * CGFloat(ix) / CGFloat(steps)
+                let cy = region.minY + 20 + h / 2 + (region.height - 40 - h) * CGFloat(iy) / CGFloat(steps)
+                let r = CGRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h)
+                var overlap: CGFloat = 0
+                for t in taken {
+                    let i = r.intersection(t)
+                    if !i.isNull { overlap += i.width * i.height }
+                }
+                let dx = (cx - region.midX) / max(region.width, 1)
+                let dy = (cy - region.midY) / max(region.height, 1)
+                let score = overlap + (dx * dx + dy * dy) * w * h * 0.6
+                if score < bestScore {
+                    bestScore = score
+                    best = CGPoint(x: cx, y: cy)
+                }
+            }
+        }
+        let c = pv.convert(best, from: self)
+        box.x = max(c.x / s - box.width / 2, 0)
+        box.y = max(c.y / s - box.height / 2, 0)
         box.sourceNotebook = notebook
         box.sourcePage = page
         box.sourceRect = rect
@@ -6232,6 +6332,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         cropMode = on
         model.cropActive = on
         cropPan.isEnabled = on
+        selectPress.isEnabled = !on                       // 剪刀開著：長按不跳一圈按鈕（v12.15.1）
         clearCropRect()
         if on {
             endTextSelection()
@@ -6405,7 +6506,19 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     private func cropToBoard() {
         guard let result = croppedImage(), let paste = model.pasteToBoard else { return }
         paste(result.image, model.meta.id, result.page.id, result.rect)
+        // 這一頁記下剪去的範圍（v12.15.1，照 GUGA）：頁面上一個灰色虛線框，書籤面板「剪去白板的」也列出來
+        let pageID = result.page.id
+        let clips = model.clips(of: pageID) + [PageClip(rect: result.rect)]
+        model.setClips(clips, pageID: pageID)
+        pageViews[pageID]?.syncClips(clips)
         clearCropRect()                                         // 留在截圖模式，可以接著剪下一塊
+    }
+
+    /// 拿掉頁面上剪去白板的虛線框（書籤面板長按）
+    func removeClipMark(_ id: UUID, pageID: UUID) {
+        let clips = model.clips(of: pageID).filter { $0.id != id }
+        model.setClips(clips, pageID: pageID)
+        pageViews[pageID]?.syncClips(clips)
     }
 
     /// 在截圖那一頁旁邊新建一頁，把截圖貼在左上角（大小跟原本一樣）

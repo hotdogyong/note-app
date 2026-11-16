@@ -349,6 +349,14 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             syncOverlay()
         }
         syncImages(page.images ?? [])
+        clipView.isUserInteractionEnabled = false
+        addSubview(clipView)                         // 剪去白板的範圍（v12.15.1）：灰色虛線框
+        clipShape.fillColor = UIColor.systemGray.withAlphaComponent(0.1).cgColor
+        clipShape.strokeColor = UIColor.systemGray.cgColor
+        clipShape.lineWidth = 1.5
+        clipShape.lineDashPattern = [6, 4]
+        clipView.layer.addSublayer(clipShape)
+        clips = page.clips ?? []
         linkView.isUserInteractionEnabled = false
         addSubview(linkView)                         // 文字方塊之間的連線（v12.13.0）：在筆跡上面、文字方塊下面
         links = page.links ?? []
@@ -535,6 +543,8 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             let view: UIImageView
             if let existing = imageViews[box.id] {
                 view = existing
+                // 換了圖檔（裁剪、復原裁剪；v12.15.1）：重新讀圖
+                if let old = imageBoxes[box.id], old.file != box.file { view.image = Store.loadImage(box.file, pageID: page.id) }
             } else {
                 view = UIImageView()
                 view.isUserInteractionEnabled = false        // 不攔觸控：Pencil 照常可以在圖片上寫
@@ -554,6 +564,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             }
             placeImage(view, box)
         }
+        layoutLinks()                                    // 接在圖片上的線（v12.15.1）
     }
 
     /// 只更新位置大小（拖曳中用，不寫檔）
@@ -561,6 +572,14 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         guard let view = imageViews[box.id] else { return }
         imageBoxes[box.id] = box
         placeImage(view, box)
+        if links.contains(where: { $0.from == box.id || $0.to == box.id }) { layoutLinks() }   // 接在圖片上的線跟著動
+    }
+
+    /// 線的兩頭：文字方塊或圖片（卡片）的外框（頁面座標）
+    private func linkEndRect(_ id: UUID) -> CGRect? {
+        if let tv = textViews[id] { return tv.linkRect }
+        if let b = imageBoxes[id] { return b.isMini ? b.miniRect : CGRect(x: b.x, y: b.y, width: b.width, height: b.height) }
+        return nil
     }
 
     private func placeImage(_ view: UIImageView, _ box: ImageBox) {
@@ -645,6 +664,32 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         layoutLinks()
     }
 
+    // MARK: 剪去白板的範圍（v12.15.1）
+
+    private let clipView = UIView()
+    private let clipShape = CAShapeLayer()
+    private var clips: [PageClip] = []
+
+    func syncClips(_ list: [PageClip]) {
+        clips = list
+        layoutClips()
+    }
+
+    private func layoutClips() {
+        let s = bounds.width / max(page.spec.width, 1)
+        guard s > 0 else { return }
+        clipView.frame = bounds
+        let path = UIBezierPath()
+        for clip in clips {
+            let r = clip.rect
+            path.append(UIBezierPath(rect: CGRect(x: r.minX * s, y: r.minY * s, width: r.width * s, height: r.height * s)))
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        clipShape.path = clips.isEmpty ? nil : path.cgPath
+        CATransaction.commit()
+    }
+
     // MARK: 文字方塊之間的連線（v12.13.0；TextLinks.swift）
 
     private let linkView = UIView()
@@ -702,9 +747,9 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for link in links {
-            guard let a = textViews[link.from], let b = textViews[link.to] else { continue }
-            let ra = a.linkRect.applying(CGAffineTransform(scaleX: s, y: s))
-            let rb = b.linkRect.applying(CGAffineTransform(scaleX: s, y: s))
+            guard let a0 = linkEndRect(link.from), let b0 = linkEndRect(link.to) else { continue }
+            let ra = a0.applying(CGAffineTransform(scaleX: s, y: s))
+            let rb = b0.applying(CGAffineTransform(scaleX: s, y: s))
             let path = BoxLinkPath.path(from: BoxLinkPath.anchor(ra, side: link.fromSide), fromSide: link.fromSide,
                                         to: BoxLinkPath.anchor(rb, side: link.toSide), toSide: link.toSide, scale: s,
                                         route: link.route ?? 0, arrow: link.arrow ?? 0)
@@ -781,6 +826,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         for view in textViews.values { view.apply(scale: s) }
         linkLayoutPaused = false
         layoutLinks()
+        if !clips.isEmpty { layoutClips() }
         for (id, view) in imageViews {
             if let box = imageBoxes[id] { placeImage(view, box) }
         }
@@ -1559,6 +1605,10 @@ enum PageRenderer {
         for t in texts where t.fill != nil || (page.links ?? []).contains(where: { $0.from == t.id || $0.to == t.id }) {
             let f = textFrameRect(t, page: page)
             frames[t.id] = CGRect(x: rect.minX + f.minX * k, y: rect.minY + f.minY * k, width: f.width * k, height: f.height * k)
+        }
+        for b in page.images ?? [] where (page.links ?? []).contains(where: { $0.from == b.id || $0.to == b.id }) {
+            let f = b.isMini ? b.miniRect : CGRect(x: b.x, y: b.y, width: b.width, height: b.height)
+            frames[b.id] = CGRect(x: rect.minX + f.minX * k, y: rect.minY + f.minY * k, width: f.width * k, height: f.height * k)
         }
         ctx.saveGState()
         ctx.setLineJoin(.round)

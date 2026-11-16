@@ -963,6 +963,18 @@ final class NotebookModel: ObservableObject {
         save()
     }
 
+    /// 剪去白板的範圍（v12.15.1）
+    func clips(of pageID: UUID) -> [PageClip] {
+        guard let loc = location(of: pageID) else { return [] }
+        return notebook.rows[loc.row].pages[loc.page].clips ?? []
+    }
+
+    func setClips(_ clips: [PageClip], pageID: UUID) {
+        guard let loc = location(of: pageID) else { return }
+        notebook.rows[loc.row].pages[loc.page].clips = clips.isEmpty ? nil : clips
+        save()
+    }
+
     /// 文字方塊之間的連線（v12.13.0；TextLinks.swift）
     func links(of pageID: UUID) -> [BoxLink] {
         guard let loc = location(of: pageID) else { return [] }
@@ -1099,6 +1111,11 @@ struct NotebookEditorView: View {
     @State private var showPins = false                     // 白板的圖釘清單（v12.7）
     @State private var showFrames = false                   // 白板的區塊清單
     @AppStorage("tabsCollapsed") private var tabsCollapsed = false      // 分頁那一排收起來（v12.8.4）
+    // 白板上面左右兩個膠囊可以收起來（v12.15.1，使用者要求）：都收起來時那一條不佔位置，浮動視窗可以往上放
+    @AppStorage("boardLeftToolsHidden") private var leftToolsHidden = false
+    @AppStorage("boardRightToolsHidden") private var rightToolsHidden = false
+    @State private var toolRowHeight: CGFloat = 58
+    @State private var barWidth: CGFloat = 0
     private let onClose: (() -> Void)?
     /// 內嵌模式（v12.12.0）：開在白板的浮動視窗裡。沒有分頁那一排、沒有自己的筆盒（用白板的），不鋪滿螢幕
     private let embedded: Bool
@@ -1136,6 +1153,11 @@ struct NotebookEditorView: View {
             toolRowContent(gap: embedded ? 11 : 20, titleMax: 10)
             toolRowContent(gap: embedded ? 8 : 13, titleMax: 6)
             toolRowContent(gap: embedded ? 6 : 9, titleMax: 0)
+            // 再窄都放不下（例如很窄的浮動視窗）：整排可以左右滑（v12.15.1，使用者：放不下就要可以滑）
+            ScrollView(.horizontal, showsIndicators: false) {
+                toolRowContent(gap: embedded ? 6 : 9, titleMax: 0)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
         }
         .tint(Color.primary)
         .padding(.horizontal, embedded ? 8 : 16)
@@ -1150,8 +1172,12 @@ struct NotebookEditorView: View {
     /// 這一排的內容。gap：膠囊裡按鈕的間隔；titleMax：左上角名稱最多幾個字（0：不顯示名稱）
     private func toolRowContent(gap: CGFloat, titleMax: Int) -> some View {
         HStack(spacing: embedded ? 8 : (gap < 15 ? 8 : 12)) {
-            if tabsCollapsed && !embedded {
-                closeAndTitle(titleMax)                            // 分頁收起來時：左上「× │ 名稱」（照 GUGA）
+            if showsCloseCapsule {
+                if boardCollapsible && leftToolsHidden {
+                    revealPill("chevron.right") { leftToolsHidden = false }
+                } else {
+                    closeAndTitle(titleMax)                        // 分頁收起來時：左上「× │ 名稱」（照 GUGA）
+                }
             }
             if embedded, let actions = windowActions {
                 toolCapsule(gap) {
@@ -1176,10 +1202,54 @@ struct NotebookEditorView: View {
                 toolCapsule(gap) { leadingTools }
             }
             Spacer(minLength: 0)
-            toolCapsule(gap) { trailingTools }
+            if boardCollapsible && rightToolsHidden {
+                revealPill("chevron.left") { rightToolsHidden = false }
+            } else {
+                toolCapsule(gap) {
+                    trailingTools
+                    if boardCollapsible {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) { rightToolsHidden = true }
+                        } label: {
+                            Image(systemName: "chevron.right")
+                        }
+                    }
+                }
+            }
         }
         .frame(maxWidth: .infinity)
     }
+
+    /// 左上「× │ 名稱」那一個膠囊有沒有出來：分頁收起來、或白板分屏（分頁那一排先藏起來）
+    private var showsCloseCapsule: Bool { !embedded && (tabsCollapsed || hasSplitWindow) }
+
+    /// 白板（不是浮動視窗裡的）上面的膠囊可以收起來
+    private var boardCollapsible: Bool { model.isBoard && !embedded }
+
+    /// 收起來的膠囊：一顆小圓鈕，點了放回來
+    private func revealPill(_ symbol: String, show: @escaping () -> Void) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { show() }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .bold))
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .modifier(GlassCapsule())
+    }
+
+    /// 白板上面兩個膠囊都收起來了：那一條不放在上面佔位置，兩顆小圓鈕浮在白板上
+    private var boardToolsFloating: Bool {
+        boardCollapsible && rightToolsHidden && (leftToolsHidden || !showsCloseCapsule)
+    }
+
+    /// 分屏時白板的東西讓到右半邊
+    private var splitPad: CGFloat { hasSplitWindow ? (barWidth / 2).rounded() : 0 }
+
+    /// 白板上有分屏的浮動視窗
+    private var hasSplitWindow: Bool { model.isBoard && !embedded && windows.contains(where: { $0.mode == .split }) }
 
     /// 一個膠囊（v12.8.7：符號粗一點；iOS 26 以上用系統的玻璃，跟以前系統工具列的樣子一樣）
     @ViewBuilder
@@ -1209,6 +1279,13 @@ struct NotebookEditorView: View {
                     .font(.system(size: 17, weight: .semibold))
                     .lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
+            }
+            if boardCollapsible {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { leftToolsHidden = true }
+                } label: {
+                    Image(systemName: "chevron.left")
+                }
             }
         }
         .font(.system(size: 19, weight: .semibold))
@@ -1308,6 +1385,7 @@ struct NotebookEditorView: View {
                 // 白板上的浮動視窗（v12.12.0）：在白板上面、筆盒下面
                 if model.isBoard && !embedded {
                     BoardWindowsLayer(windows: $windows, tucked: $windowsTucked,
+                                      topExtend: (hasFullWindow || boardToolsFloating) ? 0 : toolRowHeight,
                                       openCard: { id, target in openWindow(id, jump: target) },
                                       pasteToBoard: { image, notebook, page, rect, windowFrame in
                                           model.documentView?.placeClip(image, notebook: notebook, page: page, rect: rect,
@@ -1329,6 +1407,21 @@ struct NotebookEditorView: View {
                                           model.documentView?.showMessage("house", "「\(window.meta.title)」搬到首頁了，卡片還是連得到")
                                       },
                                       isInBoard: { library.notebook($0.meta.id)?.boardID != nil })
+                }
+            }
+            .overlay(alignment: .top) {
+                // 白板上面兩個膠囊都收起來（v12.15.1）：兩顆小圓鈕浮在白板上，點了放回來
+                if boardToolsFloating {
+                    HStack {
+                        if showsCloseCapsule {
+                            revealPill("chevron.right") { leftToolsHidden = false }
+                        }
+                        Spacer()
+                        revealPill("chevron.left") { rightToolsHidden = false }
+                    }
+                    .padding(.leading, 16 + splitPad)
+                    .padding(.trailing, 16)
+                    .padding(.top, 6)
                 }
             }
             .overlay {
@@ -1361,15 +1454,31 @@ struct NotebookEditorView: View {
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    if !tabsCollapsed && !embedded { NotebookTabBar() }      // 分頁那一排可以收起來（︿）；浮動視窗裡沒有
-                    if !hasFullWindow { toolRow }                    // 白板上有全屏的視窗：白板自己的工具列先收起來（v12.15.0）
+                    // 分頁那一排可以收起來（︿）；浮動視窗裡沒有；白板分屏時先藏起來（v12.15.1，左半邊整個給視窗）
+                    if !tabsCollapsed && !embedded && !hasSplitWindow { NotebookTabBar() }
+                    // 白板上有全屏的視窗：白板自己的工具列先收起來（v12.15.0）；兩個膠囊都收起來也不佔位置（v12.15.1）
+                    if !hasFullWindow && !boardToolsFloating {
+                        toolRow
+                            .padding(.leading, splitPad)
+                            .background(GeometryReader { g in
+                                Color.clear
+                                    .onAppear { toolRowHeight = g.size.height }
+                                    .onChange(of: g.size.height) { _, h in toolRowHeight = h }
+                            })
+                    }
                 }
                 .background(
                     // 量上面兩排的高度，告訴白板：那一塊的觸控交給按鈕（v12.8.8）
                     GeometryReader { g in
                         Color.clear
-                            .onAppear { model.documentView?.topBarHeight = g.size.height }
-                            .onChange(of: g.size.height) { _, h in model.documentView?.topBarHeight = h }
+                            .onAppear {
+                                model.documentView?.topBarHeight = g.size.height
+                                barWidth = g.size.width
+                            }
+                            .onChange(of: g.size) { _, size in
+                                model.documentView?.topBarHeight = size.height
+                                barWidth = size.width
+                            }
                     }
                 )
             }
@@ -1559,6 +1668,11 @@ struct NotebookEditorView: View {
         if windows.count >= 3 { closeWindow(windows[0]) }
         var window = BoardWindow(meta: meta, frame: nil)
         window.jump = target
+        // 預設的視窗照第一頁的比例（v12.15.1）；白板沒有比例
+        let data = Store.loadNotebook(meta.id)
+        if data.board != true, let first = data.rows.first?.pages.first, first.spec.width > 0 {
+            window.aspect = first.spec.height / first.spec.width
+        }
         if let forced = SelfTest.windowMode { window.mode = forced }   // 自動測試：一開就是分屏／全屏
         windows.append(window)
     }
@@ -2082,11 +2196,15 @@ struct NotePanel: View {
     private var bookmarksTab: some View {
         let marks = Set(model.notebook.bookmarks ?? [])
         var items: [(Int, Int, UUID)] = []
+        var clips: [ClipLine] = []
         for (r, row) in model.notebook.rows.enumerated() {
-            for (p, page) in row.pages.enumerated() where marks.contains(page.id) { items.append((r, p, page.id)) }
+            for (p, page) in row.pages.enumerated() {
+                if marks.contains(page.id) { items.append((r, p, page.id)) }
+                for clip in page.clips ?? [] { clips.append(ClipLine(row: r, page: p, pageID: page.id, clip: clip)) }
+            }
         }
         return Group {
-            if items.isEmpty {
+            if items.isEmpty && clips.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "bookmark")
                         .font(.largeTitle)
@@ -2111,9 +2229,50 @@ struct NotePanel: View {
                         }
                     }
                     .padding(12)
+                    if !clips.isEmpty {
+                        clipList(clips)
+                    }
                 }
             }
         }
+    }
+
+    /// 書籤面板下面：剪去白板的範圍（v12.15.1）。點一下跳過去；長按可以拿掉頁面上的虛線框
+    private func clipList(_ clips: [ClipLine]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("剪去白板的")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+            ForEach(clips) { line in
+                Button {
+                    model.documentView?.jumpTo(pageID: line.pageID, rect: line.clip.rect)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "scissors")
+                            .foregroundStyle(.secondary)
+                        Text(line.page == 0 ? "第 \(line.row + 1) 頁" : "第 \(line.row + 1) 頁的旁頁 \(line.page)")
+                        Spacer()
+                        Text(line.clip.date, format: Date.FormatStyle(date: .numeric, time: .shortened))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 12)
+                    .frame(height: 40)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.14)))
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button(role: .destructive) {
+                        model.documentView?.removeClipMark(line.clip.id, pageID: line.pageID)
+                    } label: {
+                        Label("拿掉頁面上的虛線框", systemImage: "rectangle.dashed")
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
     }
 
     // 大綱：自己加的 + PDF 自帶的；點一下跳過去

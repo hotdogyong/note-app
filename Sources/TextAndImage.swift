@@ -10,49 +10,97 @@ import WebKit
 // TextAndImage.swift：圖片選取框、文字方塊、數學式（KaTeX）、文字工具列
 // （筆記 App 的一部分；版本號與檔案清單在 ContentView.swift 開頭）
 
-/// 圖片的選取框：拖中間移動、拖四個角等比例縮放、拖右邊的圓鈕旋轉；下面有工具列
+/// 圖片的選取框（v12.15.1 照 GUGA 改樣子）：拖中間移動；四個角（黑色中空點）等比例縮放；右邊外面的 ⟳ 旋轉；
+/// 四邊中間的灰點往外拉＝拉出一條線和一個文字方塊（卡片也一樣）；右下角「裁剪」「放大看」；下面有工具列
 final class ImageEditorView: UIView {
     weak var host: NotebookView?
     weak var pageView: NotePageView?
     private(set) var box: ImageBox
     private let outline = CAShapeLayer()
-    private let handleLayer = CAShapeLayer()
+    private let handleLayer = CAShapeLayer()            // 四個角
+    private let dotLayer = CAShapeLayer()               // 四邊中間的灰點
+    private let cropShade = CAShapeLayer()              // 裁剪中：框外面變暗
+    private let cropBorder = CAShapeLayer()
     private let bar = UIView()
     private var barItems: [UIView] = []
+    private let cropBar = UIView()                      // 裁剪中：取消、完成
     private let press = UILongPressGestureRecognizer()
     private let yield = ScrollYield()
 
-    private enum Mode { case idle, move, scale, rotate, cardOpen, cardPreview, cardPrev, cardNext, sourceOpen }
-    // 從浮動視窗剪下來的圖（v12.15.0）：選取後左下角一顆 ‹，按了回到剪下來的地方
+    private enum Mode: Equatable {
+        case idle, move, scale, rotate, cardOpen, cardPreview, cardPrev, cardNext, sourceOpen, crop, expand
+        case link(Int)                                  // 從四邊中間的點拉線：0 上、1 右、2 下、3 左
+        case cropCorner(Int), cropMove
+    }
+
+    private static func icon(_ name: String, size: CGFloat, weight: UIImage.SymbolWeight = .semibold) -> UIImage? {
+        UIImage(systemName: name, withConfiguration: UIImage.SymbolConfiguration(pointSize: size, weight: weight))
+    }
+
+    // 右邊外面的旋轉鈕（灰色圓、⟳）
+    private let rotateIcon: UIImageView = {
+        let view = UIImageView(image: ImageEditorView.icon("arrow.clockwise", size: 15, weight: .bold))
+        view.contentMode = .center
+        view.tintColor = UIColor.white
+        view.backgroundColor = UIColor(white: 0.5, alpha: 0.9)
+        view.layer.cornerRadius = 15
+        view.clipsToBounds = true
+        view.isUserInteractionEnabled = false
+        return view
+    }()
+    // 右下角：裁剪、放大看
+    private let toolPill = UIView()
+    private let cropIcon = UIImageView(image: ImageEditorView.icon("crop", size: 17))
+    private let expandIcon = UIImageView(image: ImageEditorView.icon("arrow.up.left.and.arrow.down.right", size: 16))
+    private static let pillSize = CGSize(width: 84, height: 38)
+
+    // 從浮動視窗剪下來的圖（v12.15.0）：選取後左下角一顆 ‹，按了回到剪下來的地方。大小跟著圖在畫面上的大小（v12.15.1）
     private let sourceButton: UIImageView = {
-        let view = UIImageView(image: UIImage(systemName: "chevron.left",
-                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .bold)))
+        let view = UIImageView(image: ImageEditorView.icon("chevron.left", size: 13, weight: .bold))
         view.contentMode = .center
         view.tintColor = UIColor.white
         view.backgroundColor = UIColor(white: 0.35, alpha: 0.9)
-        view.layer.cornerRadius = 21
         view.clipsToBounds = true
         view.isUserInteractionEnabled = false
         view.isHidden = true
         return view
     }()
 
-    private var hasSourceButton: Bool { box.link == nil && box.sourceNotebook != nil && !box.isLocked }
+    private var hasSourceButton: Bool { box.link == nil && box.sourceNotebook != nil && !box.isLocked && !cropping }
+
+    /// 圖在畫面上比較短的那一邊有多長（點）
+    private var shownSide: CGFloat { min(box.width, box.height) * scale }
+
+    /// ‹ 的直徑（點）：圖小就跟著小，22～30
+    private var sourceSide: CGFloat { min(max(shownSide * 0.2, 22), 30) }
 
     /// ‹ 的中心（頁面座標）：圖片裡面的左下角
     private var sourceButtonCenter: CGPoint {
         let s = max(scale, 0.0001)
-        let side = 42 / s
-        let gap = 10 / s
+        let side = sourceSide / s
+        let gap = 8 / s
         return rotated(CGPoint(x: -box.width / 2 + gap + side / 2, y: box.height / 2 - gap - side / 2))
     }
+
+    /// 右下角的裁剪、放大看：一般圖片才有，而且圖在畫面上要夠大
+    private var hasToolPill: Bool {
+        box.link == nil && !box.isLocked && !cropping && box.width * scale > 150 && box.height * scale > 80
+    }
+
+    /// 右下角那一塊的中心（頁面座標）
+    private var toolPillCenter: CGPoint {
+        let s = max(scale, 0.0001)
+        let gap = 8 / s
+        return rotated(CGPoint(x: box.width / 2 - gap - Self.pillSize.width / 2 / s,
+                               y: box.height / 2 - gap - Self.pillSize.height / 2 / s))
+    }
+
     private static let cardModes: [Mode] = [.cardOpen, .cardPreview, .cardPrev, .cardNext]
     // 白板上的筆記本卡片（v12.12.3，照 GUGA）：選取之後左上角才出現兩顆按鈕——開浮動視窗、在卡片上預覽；
     // 預覽中，封面下緣左右各多一顆翻頁。按鈕只是圖，按到哪一顆由 modeAt 判斷（跟拖曳用同一個手勢）
     private static let cardButtonSide: CGFloat = 38
     private let cardButtons: [UIImageView] = ["macwindow.on.rectangle", "book", "chevron.left", "chevron.right"].map { name in
-        let view = UIImageView(image: UIImage(systemName: name,
-                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)))
+        let view = UIImageView(image: ImageEditorView.icon(name, size: 17))
         view.contentMode = .center
         view.tintColor = UIColor.white
         view.backgroundColor = UIColor(white: 0.08, alpha: 0.86)
@@ -70,6 +118,10 @@ final class ImageEditorView: UIView {
     private var fixedCorner = CGPoint.zero        // 拖角縮放：對角固定不動（頁面座標）
     private var startDiagonal = CGPoint.zero      // 從固定的角到被拖的角
     private let lockButton = UIButton(type: .system)
+    // 裁剪（v12.15.1）：範圍用圖片自己的比例座標（0～1，不管旋轉）
+    private var cropping = false
+    private var cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+    private var cropStart = CGRect(x: 0, y: 0, width: 1, height: 1)
 
     init(box: ImageBox, pageView: NotePageView, host: NotebookView) {
         self.box = box
@@ -82,8 +134,19 @@ final class ImageEditorView: UIView {
         outline.strokeColor = UIColor.systemBlue.cgColor
         outline.lineWidth = 1.5
         layer.addSublayer(outline)
-        handleLayer.fillColor = UIColor.white.cgColor
-        handleLayer.strokeColor = UIColor.systemBlue.cgColor
+        cropShade.fillColor = UIColor(white: 0, alpha: 0.5).cgColor
+        cropShade.fillRule = .evenOdd
+        layer.addSublayer(cropShade)
+        cropBorder.fillColor = nil
+        cropBorder.strokeColor = UIColor.white.cgColor
+        cropBorder.lineWidth = 2
+        layer.addSublayer(cropBorder)
+        dotLayer.fillColor = UIColor(white: 0.62, alpha: 1).cgColor
+        dotLayer.strokeColor = UIColor(white: 1, alpha: 0.85).cgColor
+        dotLayer.lineWidth = 1
+        layer.addSublayer(dotLayer)
+        handleLayer.fillColor = UIColor.white.cgColor          // 黑色中空點（照 GUGA）
+        handleLayer.strokeColor = UIColor.black.cgColor
         handleLayer.lineWidth = 2.5
         layer.addSublayer(handleLayer)
         press.minimumPressDuration = 0
@@ -92,7 +155,18 @@ final class ImageEditorView: UIView {
         addGestureRecognizer(press)
         for button in cardButtons { addSubview(button) }
         addSubview(sourceButton)
+        addSubview(rotateIcon)
+        toolPill.backgroundColor = UIColor(white: 0.12, alpha: 0.82)
+        toolPill.layer.cornerRadius = Self.pillSize.height / 2
+        toolPill.isUserInteractionEnabled = false
+        for v in [cropIcon, expandIcon] {
+            v.tintColor = UIColor.white
+            v.contentMode = .center
+            toolPill.addSubview(v)
+        }
+        addSubview(toolPill)
         setUpBar()
+        setUpCropBar()
     }
 
     /// 卡片按鈕的中心（頁面座標）。0、1：左上角由左到右；2、3：封面下緣的左、右
@@ -138,6 +212,20 @@ final class ImageEditorView: UIView {
         return CGPoint(x: imageCenter.x + p.x * c - p.y * s, y: imageCenter.y + p.x * s + p.y * c)
     }
 
+    /// 頁面座標 → 圖片自己的座標（以中心為原點、轉回沒旋轉的方向）
+    private func local(_ p: CGPoint) -> CGPoint {
+        let dx = p.x - imageCenter.x
+        let dy = p.y - imageCenter.y
+        let c = cos(-box.rotation)
+        let s = sin(-box.rotation)
+        return CGPoint(x: dx * c - dy * s, y: dx * s + dy * c)
+    }
+
+    /// 圖片的比例座標（0～1）→ 頁面座標
+    private func fromUnit(_ u: CGPoint) -> CGPoint {
+        rotated(CGPoint(x: (u.x - 0.5) * box.width, y: (u.y - 0.5) * box.height))
+    }
+
     /// 四個角（頁面座標）
     private var corners: [CGPoint] {
         let w = box.width / 2
@@ -146,10 +234,21 @@ final class ImageEditorView: UIView {
                 rotated(CGPoint(x: w, y: h)), rotated(CGPoint(x: -w, y: h))]
     }
 
-    /// 旋轉鈕（頁面座標）：圖片右邊外面一點
-    private var rotateHandle: CGPoint {
-        rotated(CGPoint(x: box.width / 2 + 34 / max(scale, 0.0001), y: 0))
+    /// 四邊中間的灰點（頁面座標）：在邊的外面一點
+    private var sideDots: [CGPoint] {
+        let d = 20 / max(scale, 0.0001)
+        let w = box.width / 2
+        let h = box.height / 2
+        return [rotated(CGPoint(x: 0, y: -h - d)), rotated(CGPoint(x: w + d, y: 0)),
+                rotated(CGPoint(x: 0, y: h + d)), rotated(CGPoint(x: -w - d, y: 0))]
     }
+
+    /// 旋轉鈕（頁面座標）：右邊那個灰點的再外面
+    private var rotateHandle: CGPoint {
+        rotated(CGPoint(x: box.width / 2 + 58 / max(scale, 0.0001), y: 0))
+    }
+
+    private var canEdit: Bool { !box.isLocked && !cropping }
 
     private func toView(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * scale, y: p.y * scale) }
 
@@ -193,6 +292,27 @@ final class ImageEditorView: UIView {
         refreshLock()
     }
 
+    private func setUpCropBar() {
+        cropBar.backgroundColor = UIColor(white: 0.16, alpha: 0.96)
+        cropBar.layer.cornerRadius = 22
+        let items: [(String, UIColor, () -> Void)] = [
+            ("取消", .white, { [weak self] in self?.endCrop(apply: false) }),
+            ("完成", .systemYellow, { [weak self] in self?.endCrop(apply: true) })
+        ]
+        for (i, item) in items.enumerated() {
+            let b = UIButton(type: .system)
+            b.setTitle(item.0, for: .normal)
+            b.titleLabel?.font = UIFont.systemFont(ofSize: 16, weight: .semibold)
+            b.tintColor = item.1
+            let action = item.2
+            b.addAction(UIAction { _ in action() }, for: .touchUpInside)
+            b.frame = CGRect(x: CGFloat(i) * 80, y: 0, width: 80, height: 44)
+            cropBar.addSubview(b)
+        }
+        cropBar.isHidden = true
+        addSubview(cropBar)
+    }
+
     /// 固定鈕的樣子；固定時框變橘色虛線、沒有控制點
     private func refreshLock() {
         let locked = box.isLocked
@@ -200,36 +320,110 @@ final class ImageEditorView: UIView {
         lockButton.tintColor = locked ? .systemOrange : .white
         outline.strokeColor = (locked ? UIColor.systemOrange : UIColor.systemBlue).cgColor
         outline.lineDashPattern = locked ? [6, 4] : nil
-        handleLayer.isHidden = locked
     }
+
+    // MARK: 裁剪
+
+    private func startCrop() {
+        cropping = true
+        cropRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+        setNeedsLayout()
+    }
+
+    /// 結束裁剪：apply = true 就把框外面切掉（存成一張新的圖，原本的檔案留著，復原回得去）
+    private func endCrop(apply: Bool) {
+        let r = cropRect
+        cropping = false
+        defer { setNeedsLayout() }
+        guard apply, r.width < 0.995 || r.height < 0.995, let pv = pageView,
+              let image = Store.loadImage(box.file, pageID: pv.page.id) else { return }
+        let size = CGSize(width: max(image.size.width * r.width, 1), height: max(image.size.height * r.height, 1))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = image.scale
+        format.opaque = false
+        let cropped = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(at: CGPoint(x: -image.size.width * r.minX, y: -image.size.height * r.minY))
+        }
+        guard let file = Store.saveImage(cropped, pageID: pv.page.id) else { return }
+        var changed = box
+        let center = fromUnit(CGPoint(x: r.midX, y: r.midY))
+        changed.width = box.width * r.width
+        changed.height = box.height * r.height
+        changed.x = center.x - changed.width / 2
+        changed.y = center.y - changed.height / 2
+        changed.file = file
+        if let source = box.sourceRect {                      // 剪下來的範圍也跟著縮
+            changed.sourceRect = CGRect(x: source.minX + source.width * r.minX, y: source.minY + source.height * r.minY,
+                                        width: source.width * r.width, height: source.height * r.height)
+        }
+        box = changed
+        host?.imageEdited(box, commit: true)
+    }
+
+    private func toUnit(_ p: CGPoint) -> CGPoint {
+        let l = local(p)
+        return CGPoint(x: min(max(l.x / max(box.width, 1) + 0.5, 0), 1), y: min(max(l.y / max(box.height, 1) + 0.5, 0), 1))
+    }
+
+    private var cropCorners: [CGPoint] {
+        let r = cropRect
+        return [fromUnit(CGPoint(x: r.minX, y: r.minY)), fromUnit(CGPoint(x: r.maxX, y: r.minY)),
+                fromUnit(CGPoint(x: r.maxX, y: r.maxY)), fromUnit(CGPoint(x: r.minX, y: r.maxY))]
+    }
+
+    // MARK: 版面
 
     override func layoutSubviews() {
         super.layoutSubviews()
         if let pv = pageView { frame = pv.bounds }
+        let s = max(scale, 0.0001)
         let pts = corners.map { toView($0) }
         let path = UIBezierPath()
         path.move(to: pts[0])
         for q in pts.dropFirst() { path.addLine(to: q) }
         path.close()
         let handles = UIBezierPath()
-        for q in pts { handles.append(UIBezierPath(ovalIn: CGRect(x: q.x - 9, y: q.y - 9, width: 18, height: 18))) }
-        let rh = toView(rotateHandle)
-        handles.append(UIBezierPath(ovalIn: CGRect(x: rh.x - 12, y: rh.y - 12, width: 24, height: 24)))
+        let dots = UIBezierPath()
+        if canEdit {
+            for q in pts { handles.append(UIBezierPath(ovalIn: CGRect(x: q.x - 8, y: q.y - 8, width: 16, height: 16))) }
+            for d in sideDots.map({ toView($0) }) { dots.append(UIBezierPath(ovalIn: CGRect(x: d.x - 6.5, y: d.y - 6.5, width: 13, height: 13))) }
+        }
+        let shade = UIBezierPath()
+        let border = UIBezierPath()
+        if cropping {
+            shade.append(path)
+            let c = cropCorners.map { toView($0) }
+            border.move(to: c[0])
+            for q in c.dropFirst() { border.addLine(to: q) }
+            border.close()
+            shade.append(border)
+            for q in c { handles.append(UIBezierPath(ovalIn: CGRect(x: q.x - 9, y: q.y - 9, width: 18, height: 18))) }
+        }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         outline.path = path.cgPath
         handleLayer.path = handles.cgPath
+        dotLayer.path = dots.cgPath
+        cropShade.path = cropping ? shade.cgPath : nil
+        cropBorder.path = cropping ? border.cgPath : nil
         CATransaction.commit()
-        // 工具列放在圖片下面
-        let maxY = pts.map { $0.y }.max() ?? 0
+        // 旋轉鈕
+        rotateIcon.isHidden = !canEdit
+        rotateIcon.bounds = CGRect(x: 0, y: 0, width: 30, height: 30)
+        rotateIcon.center = toView(rotateHandle)
+        // 工具列放在圖片下面（裁剪中換成「取消、完成」）
+        let maxY = max(pts.map { $0.y }.max() ?? 0, toView(sideDots[2]).y + 8)
         let midX = pts.map { $0.x }.reduce(0, +) / 4
         let w: CGFloat = CGFloat(barItems.count) * 50
-        bar.frame = CGRect(x: midX - w / 2, y: maxY + 16, width: w, height: 44)
+        bar.isHidden = cropping
+        bar.frame = CGRect(x: midX - w / 2, y: maxY + 14, width: w, height: 44)
         for (i, b) in barItems.enumerated() {
             b.frame = CGRect(x: CGFloat(i) * 50, y: 0, width: 50, height: 44)
         }
+        cropBar.isHidden = !cropping
+        cropBar.frame = CGRect(x: midX - 80, y: maxY + 14, width: 160, height: 44)
         // 卡片的按鈕
-        let visible = cardButtonCount
+        let visible = cropping ? 0 : cardButtonCount
         for (i, button) in cardButtons.enumerated() {
             button.isHidden = i >= visible
             guard i < visible else { continue }
@@ -237,45 +431,70 @@ final class ImageEditorView: UIView {
             button.center = toView(cardButtonCenter(i))
             bringSubviewToFront(button)
         }
+        // ‹（剪下來的圖）
         sourceButton.isHidden = !hasSourceButton
         if hasSourceButton {
-            sourceButton.bounds = CGRect(x: 0, y: 0, width: 42, height: 42)
+            let side = sourceSide
+            sourceButton.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+            sourceButton.layer.cornerRadius = side / 2
             sourceButton.center = toView(sourceButtonCenter)
             bringSubviewToFront(sourceButton)
         }
+        // 右下角的裁剪、放大看
+        toolPill.isHidden = !hasToolPill
+        if hasToolPill {
+            toolPill.bounds = CGRect(origin: CGPoint.zero, size: Self.pillSize)
+            toolPill.center = toView(toolPillCenter)
+            cropIcon.frame = CGRect(x: 4, y: 0, width: 38, height: Self.pillSize.height)
+            expandIcon.frame = CGRect(x: 42, y: 0, width: 38, height: Self.pillSize.height)
+            bringSubviewToFront(toolPill)
+        }
+        _ = s
+        bringSubviewToFront(bar)
+        bringSubviewToFront(cropBar)
     }
 
     /// 只有圖片、控制點、工具列的地方才攔觸控；其他地方照常（寫字、捲動）
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        if bar.frame.contains(point) { return true }
+        if !bar.isHidden && bar.frame.contains(point) { return true }
+        if !cropBar.isHidden && cropBar.frame.contains(point) { return true }
         return modeAt(point) != Mode.idle
     }
 
     private func modeAt(_ v: CGPoint) -> Mode {
-        if box.isLocked { return .idle }                 // 固定：圖片上照常寫字、捲動
         let s = max(scale, 0.0001)
         let p = CGPoint(x: v.x / s, y: v.y / s)
-        if hypot((p.x - rotateHandle.x) * s, (p.y - rotateHandle.y) * s) < 26 { return .rotate }
-        // 卡片的按鈕要比角先判斷（v12.13.0）：「開視窗」那一顆就在左上角旁邊，以前它靠角的那一小塊會被當成「拉角縮放」，
-        // 按了沒反應（使用者：有時候按書沒打開）
+        if cropping {
+            for (i, c) in cropCorners.enumerated() where hypot((p.x - c.x) * s, (p.y - c.y) * s) < 26 { return .cropCorner(i) }
+            let u = local(p)
+            let r = cropRect
+            let ux = u.x / max(box.width, 1) + 0.5
+            let uy = u.y / max(box.height, 1) + 0.5
+            if r.contains(CGPoint(x: ux, y: uy)) { return .cropMove }
+            return .idle
+        }
+        if box.isLocked { return .idle }                 // 固定：圖片上照常寫字、捲動
+        if hypot((p.x - rotateHandle.x) * s, (p.y - rotateHandle.y) * s) < 22 { return .rotate }
+        for (i, d) in sideDots.enumerated() where hypot((p.x - d.x) * s, (p.y - d.y) * s) < 17 { return .link(i) }
+        // 卡片的按鈕要比角先判斷（v12.13.0）：「開視窗」那一顆就在左上角旁邊
         for i in 0 ..< cardButtonCount {
             let c = cardButtonCenter(i)
             if abs((p.x - c.x) * s) <= 23 && abs((p.y - c.y) * s) <= 23 { return Self.cardModes[i] }
         }
         if hasSourceButton {
             let c = sourceButtonCenter
-            if hypot((p.x - c.x) * s, (p.y - c.y) * s) <= 26 { return .sourceOpen }
+            if hypot((p.x - c.x) * s, (p.y - c.y) * s) <= max(sourceSide / 2 + 6, 18) { return .sourceOpen }
+        }
+        if hasToolPill {
+            let c = toolPillCenter
+            let dx = (p.x - c.x) * s
+            let dy = (p.y - c.y) * s
+            if abs(dx) <= Self.pillSize.width / 2 && abs(dy) <= Self.pillSize.height / 2 { return dx < 0 ? .crop : .expand }
         }
         for c in corners where hypot((p.x - c.x) * s, (p.y - c.y) * s) < 24 { return .scale }
-        // 轉回圖片自己的方向，看是不是在圖片裡
-        let dx = p.x - imageCenter.x
-        let dy = p.y - imageCenter.y
-        let cr = cos(-box.rotation)
-        let sr = sin(-box.rotation)
-        let lx = dx * cr - dy * sr
-        let ly = dx * sr + dy * cr
+        let l = local(p)
         let pad = 8 / s
-        if abs(lx) <= box.width / 2 + pad && abs(ly) <= box.height / 2 + pad { return .move }
+        if abs(l.x) <= box.width / 2 + pad && abs(l.y) <= box.height / 2 + pad { return .move }
         return .idle
     }
 
@@ -288,8 +507,10 @@ final class ImageEditorView: UIView {
             mode = modeAt(v)
             startBox = box
             startPoint = p
+            cropStart = cropRect
             startAngle = atan2(p.y - imageCenter.y, p.x - imageCenter.x)
             startDistance = max(hypot(p.x - imageCenter.x, p.y - imageCenter.y), 1)
+            if case .link(let side) = mode { host?.imageLinkDrag(box, side: side, state: .began, at: v) }
             if mode == .scale {
                 // 按到哪個角：它的對角固定不動（拉右下角時左上角不動）
                 let cs = corners
@@ -327,40 +548,76 @@ final class ImageEditorView: UIView {
                 let nearest = (angle / quarter).rounded() * quarter
                 if abs(angle - nearest) < 0.06 { angle = nearest }
                 box.rotation = angle
-            case .idle, .cardOpen, .cardPreview, .cardPrev, .cardNext, .sourceOpen:
+            case .link(let side):
+                host?.imageLinkDrag(box, side: side, state: .changed, at: v)
+                return
+            case .cropCorner(let i):
+                let u = toUnit(p)
+                var r = cropRect
+                let minSide: CGFloat = 0.06
+                if i == 0 || i == 3 { let x = min(u.x, r.maxX - minSide); r.size.width = r.maxX - x; r.origin.x = x }
+                if i == 1 || i == 2 { r.size.width = max(u.x - r.minX, minSide) }
+                if i == 0 || i == 1 { let y = min(u.y, r.maxY - minSide); r.size.height = r.maxY - y; r.origin.y = y }
+                if i == 2 || i == 3 { r.size.height = max(u.y - r.minY, minSide) }
+                cropRect = r
+                setNeedsLayout()
+                return
+            case .cropMove:
+                let a = toUnit(startPoint)
+                let b = toUnit(p)
+                var r = cropStart
+                r.origin.x = min(max(r.minX + b.x - a.x, 0), 1 - r.width)
+                r.origin.y = min(max(r.minY + b.y - a.y, 0), 1 - r.height)
+                cropRect = r
+                setNeedsLayout()
+                return
+            case .idle, .cardOpen, .cardPreview, .cardPrev, .cardNext, .sourceOpen, .crop, .expand:
                 return
             }
             setNeedsLayout()
             host?.imageEdited(box, commit: false)
         case .ended, .cancelled, .failed:
-            if mode == .sourceOpen {
-                mode = .idle
+            let pressed = mode
+            mode = .idle
+            switch pressed {
+            case .link(let side):
+                host?.imageLinkDrag(box, side: side, state: g.state == .ended ? .ended : .cancelled, at: v)
+                return
+            case .cropCorner, .cropMove:
+                return
+            case .sourceOpen:
                 if g.state == .ended, modeAt(v) == .sourceOpen { host?.openImageSource(box) }
                 return
+            case .crop:
+                if g.state == .ended, modeAt(v) == .crop { startCrop() }
+                return
+            case .expand:
+                if g.state == .ended, modeAt(v) == .expand, let pv = pageView, let host = host {
+                    let shown = box
+                    host.endImageSelection()
+                    host.showImageViewer(shown, on: pv)
+                }
+                return
+            default:
+                break
             }
             // 選取中的卡片：點標題那一條（沒有拖動）＝改卡片名稱（v12.15.0，使用者要求）
-            if mode == .move, g.state == .ended, box.link != nil, !box.isLocked,
+            if pressed == .move, g.state == .ended, box.link != nil,
                hypot(p.x - startPoint.x, p.y - startPoint.y) * s < 8 {
-                let dx = p.x - imageCenter.x
-                let dy = p.y - imageCenter.y
-                let ly = dx * sin(-box.rotation) + dy * cos(-box.rotation)
+                let ly = local(p).y
                 let caption = CardCover.captionHeight * box.width / CardCover.width
                 if ly > box.height / 2 - caption {
-                    mode = .idle
                     if box != startBox { host?.imageEdited(box, commit: true) }
                     host?.editCardCaption()
                     return
                 }
             }
-            if let index = Self.cardModes.firstIndex(of: mode) {
+            if let index = Self.cardModes.firstIndex(of: pressed) {
                 // 卡片的按鈕：手指放開時還在同一顆上才算按到
-                let pressed = mode
-                mode = .idle
                 if g.state == .ended, modeAt(v) == pressed { host?.cardButton(index, box: box) }
                 return
             }
-            if mode != .idle, box != startBox { host?.imageEdited(box, commit: true) }
-            mode = .idle
+            if pressed != .idle, box != startBox { host?.imageEdited(box, commit: true) }
         default:
             break
         }

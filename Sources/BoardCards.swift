@@ -39,6 +39,15 @@ struct WindowJump: Equatable {
     let stamp: Int
 }
 
+/// 書籤面板裡一個「剪去白板的」範圍（v12.15.1）
+struct ClipLine: Identifiable {
+    let row: Int
+    let page: Int
+    let pageID: UUID
+    let clip: PageClip
+    var id: UUID { clip.id }
+}
+
 /// 浮動視窗的樣子（v12.15.0）：浮著、整個白板（全屏）、左半邊（分屏）
 enum BoardWindowMode: Equatable {
     case float, full, split
@@ -51,6 +60,7 @@ struct BoardWindow: Identifiable, Equatable {
     var frame: CGRect?          // 在白板畫面上的位置、大小；nil：還沒擺過，用預設的
     var mode = BoardWindowMode.float
     var jump: WindowJump? = nil
+    var aspect: CGFloat? = nil  // 第一頁的高÷寬（v12.15.1：預設的視窗照這個比例，之後直接放大縮小就好）；白板：nil
 
     static func == (a: BoardWindow, b: BoardWindow) -> Bool {
         a.id == b.id && a.frame == b.frame && a.meta == b.meta && a.mode == b.mode && a.jump == b.jump
@@ -181,6 +191,7 @@ enum BoardWindowSnap {
 struct BoardWindowsLayer: View {
     @Binding var windows: [BoardWindow]
     @Binding var tucked: Bool                      // 全部先收到旁邊（還開著，只是看不到）
+    let topExtend: CGFloat                         // 分屏時往上多蓋多少（白板工具列那一條的高度）
     let openCard: (UUID, WindowJump?) -> Void
     let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> Void   // 最後一個：那個視窗在畫面上的位置（貼的時候讓開）
     let close: (BoardWindow) -> Void
@@ -196,6 +207,7 @@ struct BoardWindowsLayer: View {
                     BoardWindowView(window: $window, container: geo.size,
                                     index: windows.firstIndex(where: { $0.id == window.id }) ?? 0,
                                     inBoard: isInBoard(window),
+                                    topExtend: topExtend,
                                     openCard: openCard,
                                     pasteToBoard: pasteToBoard,
                                     close: { close(window) },
@@ -228,6 +240,7 @@ struct BoardWindowView: View {
     let container: CGSize
     let index: Int
     let inBoard: Bool
+    let topExtend: CGFloat
     let openCard: (UUID, WindowJump?) -> Void
     let pasteToBoard: (UIImage, UUID, UUID, CGRect, CGRect) -> Void
     let close: () -> Void
@@ -246,9 +259,20 @@ struct BoardWindowView: View {
     static let spring = Animation.spring(response: 0.32, dampingFraction: 0.86)
 
     /// 還沒擺過的視窗：靠右、一個比一個往左下錯開
-    static func defaultFrame(_ container: CGSize, _ index: Int) -> CGRect {
-        let w = min(max(container.width * 0.6, minSize.width), 620, container.width - 24)
-        let h = min(max(container.height * 0.62, minSize.height), container.height - 150)
+    static func defaultFrame(_ container: CGSize, _ index: Int, aspect: CGFloat? = nil) -> CGRect {
+        var w = min(max(container.width * 0.6, minSize.width), 620, container.width - 24)
+        var h = min(max(container.height * 0.62, minSize.height), container.height - 150)
+        if let a = aspect, a > 0 {
+            // 照頁面的比例（v12.15.1）：頁面寬約是視窗寬的 94%，上面加三個點那一條和工具列
+            let chrome = gripHeight + 54
+            let maxH = max(container.height - 140, minSize.height)
+            w = min(max(container.width * 0.5, minSize.width), 600, container.width - 24)
+            h = w * 0.94 * a + chrome + 20
+            if h > maxH {
+                h = maxH
+                w = max((h - chrome - 20) / (0.94 * a), minSize.width)
+            }
+        }
         let shift = CGFloat(index) * 44
         let x = max(container.width - w - 84 - shift, 12)
         let y = min(110 + shift, max(container.height - h - 20, 60))
@@ -288,14 +312,16 @@ struct BoardWindowView: View {
     }
 
     /// 浮著的時候的位置、大小
-    private var floatFrame: CGRect { clamped(window.frame ?? Self.defaultFrame(container, index)) }
+    private var floatFrame: CGRect { clamped(window.frame ?? Self.defaultFrame(container, index, aspect: window.aspect)) }
 
     /// 現在畫面上的位置、大小：全屏＝整個白板（白板的工具列下面）；分屏＝左半邊
     private var shownFrame: CGRect {
         switch window.mode {
         case .float: return floatFrame
         case .full: return CGRect(origin: CGPoint.zero, size: container)
-        case .split: return CGRect(x: 0, y: 0, width: (container.width / 2).rounded(), height: container.height)
+        case .split:
+            // 左半邊吃滿（v12.15.1，照 GUGA）：分頁那一排先收起來，往上蓋過白板工具列那一條（白板的工具列移到右半邊）
+            return CGRect(x: 0, y: -topExtend, width: (container.width / 2).rounded(), height: container.height + topExtend)
         }
     }
 

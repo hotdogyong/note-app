@@ -703,7 +703,17 @@ struct PenBoxView: View {
     @State private var movingFrom = 0              // 開始拖的時候它排第幾個
     @State private var askResetPens = false        // 「回到預設」先問一次（v12.4）
     @State private var askDefaultPens = false      // 「設成預設」先問一次
-    @State private var openLength: CGFloat = 0     // 展開時筆盒的長度（v12.15.3：收進三條線時把手留在原位，不要跑到中間）
+    // 展開時筆盒的長度（v12.15.3：收進三條線時把手留在原位，不要跑到中間）。
+    // v12.15.5：記在 UserDefaults（直的、橫的各一個），重新打開白板時收著的筆盒也在原位
+    @AppStorage("penBoxOpenLengthV") private var openLengthV: Double = 0
+    @AppStorage("penBoxOpenLengthH") private var openLengthH: Double = 0
+
+    private var openLength: CGFloat {
+        get { CGFloat(box.dock.isVertical ? openLengthV : openLengthH) }
+        nonmutating set {
+            if box.dock.isVertical { openLengthV = Double(newValue) } else { openLengthH = Double(newValue) }
+        }
+    }
 
     var body: some View {
         Group {
@@ -788,16 +798,16 @@ struct PenBoxView: View {
         .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
         .background(GeometryReader { g in
             Color.clear
-                .onAppear { if !box.collapsed { openLength = box.dock.isVertical ? g.size.height : g.size.width } }
+                .onAppear { if !box.collapsed { openLength = (box.dock.isVertical ? g.size.height : g.size.width).rounded() } }
                 .onChange(of: g.size) { _, size in
-                    if !box.collapsed { openLength = box.dock.isVertical ? size.height : size.width }
+                    let length = (box.dock.isVertical ? size.height : size.width).rounded()
+                    if !box.collapsed && length != openLength { openLength = length }
                 }
         })
         // 收起來的時候佔住展開時的長度，把手留在原本的位置（上面／左邊那一端）
         .frame(width: !box.dock.isVertical && box.collapsed && openLength > 0 ? openLength : nil,
                height: box.dock.isVertical && box.collapsed && openLength > 0 ? openLength : nil,
                alignment: .topLeading)
-        .onChange(of: box.dock) { _, _ in openLength = 0 }
         .offset(dragOffset)
         .padding(edgePadding)
     }

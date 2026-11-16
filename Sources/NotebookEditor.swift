@@ -1954,8 +1954,6 @@ enum PDFOutlineReader {
     }
 }
 
-/// 輸入一段文字的小視窗（可以用鍵盤，也可以用 Apple Pencil 直接在框裡手寫）
-@MainActor
 /// 白板把狀態列藏起來；其他時候（包括白板上的浮動視窗）完全不碰，免得蓋掉白板的設定
 struct BoardStatusBar: ViewModifier {
     let hidden: Bool
@@ -1969,6 +1967,8 @@ struct BoardStatusBar: ViewModifier {
     }
 }
 
+/// 輸入一段文字的小視窗（可以用鍵盤，也可以用 Apple Pencil 直接在框裡手寫）
+@MainActor
 enum TextPrompt {
     static func show(title: String, initial: String, done: @escaping (String) -> Void) {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,

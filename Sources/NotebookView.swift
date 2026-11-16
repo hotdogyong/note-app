@@ -1458,6 +1458,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             base = min(base, t.fontSize / factor(before))
         }
         if base == CGFloat.greatestFiniteMagnitude { base = 16 }
+        base = (base * 100).rounded() / 100                    // 去掉除法的小誤差，再整理一次才會一模一樣
         let plain: [Double] = page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
         for i in texts.indices where chosen.contains(texts[i].id) {
             let level = depth[texts[i].id]
@@ -1567,8 +1568,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         for (id, rect) in target {
             guard let i = index[id] else { continue }
             let now = PageRenderer.textFrameRect(texts[i], page: page)
-            texts[i].x = max(texts[i].x + rect.minX - now.minX, 0)
-            texts[i].y = max(texts[i].y + rect.minY - now.minY, 0)
+            texts[i].x = (max(texts[i].x + rect.minX - now.minX, 0) * 2).rounded() / 2   // 對齊半點：再整理一次位置一模一樣
+            texts[i].y = (max(texts[i].y + rect.minY - now.minY, 0) * 2).rounded() / 2
         }
         // 沒接線的：中心不動
         for i in texts.indices where chosen.contains(texts[i].id) && target[texts[i].id] == nil {

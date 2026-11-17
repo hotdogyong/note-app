@@ -816,21 +816,24 @@ struct MovePagesSheet: View {
             NavigationStack {
                 // v12.6：像選檔案一樣一層一層進資料夾；每一層可以點某一本移過去，或在這一層新建一本
                 MoveFolderLevel(library: library, folderID: nil, sourceID: sourceID, header: AnyView(headerSections),
-                                pick: { meta in
-                                    let rows = Store.loadNotebook(meta.id).rows
-                                    if rows.isEmpty || meta.isBoard == true {
-                                        onPick(meta, withSides, nil)            // 空的（剛新建的）：不用選位置
-                                        dismiss()
-                                    } else {
-                                        target = (meta, rows)
-                                    }
-                                })
+                                pick: { meta in choose(meta) })
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("取消") { dismiss() }
                     }
                 }
             }
+        }
+    }
+
+    /// 選好哪一本：空的（剛新建的）直接放；有頁面的接著選放在哪裡
+    private func choose(_ meta: NotebookMeta) {
+        let rows = Store.loadNotebook(meta.id).rows
+        if rows.isEmpty || meta.isBoard == true {
+            onPick(meta, withSides, nil)
+            dismiss()
+        } else {
+            target = (meta, rows)
         }
     }
 
@@ -860,10 +863,7 @@ struct MovePagesSheet: View {
         }
         if let quick = library.quickNotebook, quick.id != sourceID {
             Section("隨手記") {
-                MoveNotebookRow(library: library, meta: quick, pick: { meta in
-                    onPick(meta, withSides)
-                    dismiss()
-                })
+                MoveNotebookRow(library: library, meta: quick, pick: { meta in choose(meta) })
             }
         }
     }

@@ -93,7 +93,28 @@ enum Store {
     static func encode<T: Encodable>(_ value: T, to url: URL) {
         guard let data = try? JSONEncoder().encode(value) else { return }
         ensureDir(url.deletingLastPathComponent())
-        try? data.write(to: url, options: .atomic)
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            reportWriteFailure(error)                          // v12.15.8：以前存不進去也不吭聲
+        }
+    }
+
+    /// 存檔失敗（v12.15.8，使用者的 iPad 空間滿了，筆跡一直存不進去、重新載入就不見）：
+    /// 通知畫面跳警告。同一段時間只通知一次
+    static let writeFailed = Notification.Name("StoreWriteFailed")
+    nonisolated(unsafe) private static var lastFailureNotice = Date.distantPast
+
+    static func reportWriteFailure(_ error: Error) {
+        let ns = error as NSError
+        let full = ns.code == NSFileWriteOutOfSpaceError
+            || (ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOSPC))
+            || ((ns.userInfo[NSUnderlyingErrorKey] as? NSError)?.code == Int(ENOSPC))
+        DispatchQueue.main.async {
+            guard Date().timeIntervalSince(lastFailureNotice) > 20 else { return }
+            lastFailureNotice = Date()
+            NotificationCenter.default.post(name: writeFailed, object: nil, userInfo: ["full": full])
+        }
     }
 
     static func exists(_ url: URL) -> Bool { FileManager.default.fileExists(atPath: url.path) }
@@ -240,11 +261,22 @@ enum Store {
         saveLock.unlock()
         guard let job = job else { return }
         let tiles = BoardTiles.dir(forDrawing: url)
+        var ok = true
         if BoardTiles.isFolder(tiles) {
-            BoardTiles.writeChanged(job.drawing, folder: tiles)   // 分區儲存的頁（v12.11.0）：只寫有變的格子
+            ok = BoardTiles.writeChanged(job.drawing, folder: tiles) != nil   // 分區儲存的頁（v12.11.0）：只寫有變的格子
         } else {
             ensureDir(url.deletingLastPathComponent())
-            try? job.drawing.dataRepresentation().write(to: url, options: .atomic)
+            do {
+                try job.drawing.dataRepresentation().write(to: url, options: .atomic)
+            } catch {
+                ok = false
+                reportWriteFailure(error)
+            }
+        }
+        guard ok else {
+            // v12.15.8：沒存進去就留著記憶體裡這一份（loadDrawing 先拿它，重新載入頁面不會變回舊的），過一下再試
+            saveQueue.asyncAfter(deadline: .now() + 15) { writePending(pageID, to: url) }
+            return
         }
         saveLock.lock()
         if pendingSaves[pageID]?.generation == job.generation { pendingSaves[pageID] = nil }   // 寫的這段時間沒有更新的才拿掉

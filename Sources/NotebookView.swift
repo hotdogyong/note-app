@@ -196,6 +196,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         NotificationCenter.default.addObserver(self, selector: #selector(otherSurfaceTapped(_:)), name: Self.surfaceTapped, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(clipSyncChanged), name: ClipSync.changed, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(storeWriteFailed(_:)), name: Store.writeFailed, object: nil)
 
         selectPress.addTarget(self, action: #selector(handleSelectPress(_:)))
         selectPress.minimumPressDuration = 0.25          // v12.9.8：0.4 → 0.25（使用者：按下去到跳出來要短一點）
@@ -363,6 +364,15 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if activeText != nil { endTextSelection() }
         if imageEditor != nil { endImageSelection() }
         dismissShapeEditor()
+    }
+
+    /// 存檔失敗（v12.15.8）：iPad 空間滿了的時候筆跡、筆記本都存不進去，一定要讓使用者知道
+    @objc private func storeWriteFailed(_ note: Notification) {
+        guard window != nil else { return }
+        let full = (note.userInfo?["full"] as? Bool) ?? false
+        showMessage("exclamationmark.triangle.fill",
+                    full ? "iPad 空間不夠，剛剛寫的沒辦法存檔！先不要關 App，到「設定 → 一般 → iPad 儲存空間」清出空間，會自動再存"
+                         : "存檔失敗，剛剛寫的可能沒存進去（先不要關 App）")
     }
 
     /// 白板上從筆記本剪過來的圖刪掉／拿回來了：這一本的框重新整理（v12.15.3）

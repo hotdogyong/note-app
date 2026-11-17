@@ -120,6 +120,9 @@ enum SelfTest {
                 library.openNotebook = library.addBoard(in: nil, title: "視窗測試 " + scene, width: 100 * 842, height: 100 * 595)
             case "textzone":
                 library.openNotebook = library.addNotebook(in: nil, title: "文字方塊測試")
+            case "undoink":
+                // v12.15.7：照 PencilKit 的順序假裝寫幾筆、按上一步／重做，看筆跡有沒有不見
+                library.openNotebook = library.addNotebook(in: nil, title: "復原測試")
             case "textlinks":
                 // 文字方塊的外框樣式、連線（v12.13.0）：白板上放幾個方塊和線，選取其中一個（看四邊的點）
                 library.openNotebook = library.addBoard(in: nil, title: "連線測試白板", width: 100 * 842, height: 100 * 595)
@@ -205,6 +208,13 @@ enum SelfTest {
         if scene == "clip", view.model.embedded {
             // 視窗裡那一本打開了：剪一塊貼到白板（貼上的圖會是選取的，左下角應該有 ‹）
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak view] in view?.selfTestClip() }
+            return
+        }
+        if scene == "undoink", !view.model.isBoard, !sceneDone {
+            sceneDone = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                view?.selfTestUndoInk { show($0) }
+            }
             return
         }
         if scene == "textzone", !view.model.isBoard {

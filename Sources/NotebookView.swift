@@ -2490,6 +2490,64 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
     }
 
+    /// 自動測試（undoink，v12.15.7）：照 PencilKit 叫代理的順序假裝寫字（開始 → 筆跡改變 → 放開；
+    /// 也試「開始 → 放開 → 筆跡改變」），中間按上一步、重做、再寫，每一步記下畫布和檔案裡各有幾筆
+    func selfTestUndoInk(_ done: @escaping (String) -> Void) {
+        guard let first = model.notebook.rows.first?.pages.first else { return done("沒有頁面") }
+        let pageID = first.id
+        let strokes = BoardTileCheck.makeStrokes(count: 12, markers: 0, origin: CGPoint(x: 80, y: 120),
+                                                 spread: CGSize(width: 400, height: 500))
+        var lines: [String] = []
+        var next = 0
+        func pv() -> NotePageView? { pageViews[pageID] }
+        func count() -> String {
+            Store.finishPendingSaves()
+            let canvas = pv()?.canvas.drawing.strokes.count ?? -1
+            let file = Store.loadDrawing(pageID).strokes.count
+            return "畫布 \(canvas)／檔案 \(file)"
+        }
+        func write(endFirst: Bool) {
+            guard let pv = pv(), next < strokes.count else { return }
+            pv.canvasViewDidBeginUsingTool(pv.canvas)
+            var d = pv.canvas.drawing
+            d.strokes.append(strokes[next])
+            next += 1
+            if endFirst {
+                pv.canvasViewDidEndUsingTool(pv.canvas)
+                pv.canvas.drawing = d
+            } else {
+                pv.canvas.drawing = d
+                pv.canvasViewDidEndUsingTool(pv.canvas)
+            }
+        }
+        let steps: [(String, () -> Void)] = [
+            ("寫第 1 筆", { write(endFirst: false) }),
+            ("寫第 2 筆", { write(endFirst: false) }),
+            ("寫第 3 筆（先放開）", { write(endFirst: true) }),
+            ("上一步", { self.history.undo() }),
+            ("寫第 4 筆", { write(endFirst: false) }),
+            ("上一步", { self.history.undo() }),
+            ("上一步", { self.history.undo() }),
+            ("重做", { self.history.redo() }),
+            ("寫第 5 筆", { write(endFirst: false) }),
+            ("寫第 6 筆", { write(endFirst: true) }),
+            ("上一步", { self.history.undo() }),
+        ]
+        func run(_ i: Int) {
+            guard i < steps.count else {
+                lines.append("預期最後：畫布 3／檔案 3（第 1、2、5 筆）")
+                return done(lines.joined(separator: "\n"))
+            }
+            steps[i].1()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                self.flushAll()
+                lines.append("\(steps[i].0)：\(count())")
+                run(i + 1)
+            }
+        }
+        run(0)
+    }
+
     /// 自動測試（textzone）：新增一個文字方塊、打字中（看手寫區有沒有關掉）
     func selfTestTextZone() {
         guard let pv = pageViews.values.first else { return }

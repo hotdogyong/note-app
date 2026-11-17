@@ -1122,7 +1122,16 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         syncOverlay()
         scheduleSave()
         guard !silent else { return }
-        if toolActive {                                // 筆還在紙上：等放開再一起登記
+        if toolActive {
+            // 橡皮擦擦的過程會一直改筆跡：等放開再合成一步。
+            // v12.15.6（使用者：按上一步會連其他筆跡一起消失）：寫字很快時，上一筆要等一下才真的放進畫布，
+            // 那時下一筆已經開始了，以前就跟下一筆合成同一步（上一步一次退掉兩筆以上）。
+            // 筆、螢光筆這類寫字的工具，下筆中途進來的變化就是上一筆：馬上自己登記一步
+            if canvasView.tool is PKInkingTool {
+                host?.recordUndo(pageID: page.id, old: committedDrawing)
+                committedDrawing = canvasView.drawing
+                return
+            }
             changedDuringTool = true
             return
         }

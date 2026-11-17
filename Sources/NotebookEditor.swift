@@ -710,6 +710,16 @@ struct NotebookMoreMenu: View {
             Button {
                 if let id = model.currentPageID {
                     model.documentView?.flushAll()
+                    moveRequest = MoveRequest(pageIDs: [id], copy: true)
+                }
+            } label: {
+                Label(model.isOnSidePage ? "把這張旁頁複製到其他筆記本…" : "把這頁複製到其他筆記本…",
+                      systemImage: "doc.on.doc")
+            }
+            .disabled(model.isBoard)
+            Button {
+                if let id = model.currentPageID {
+                    model.documentView?.flushAll()
                     moveRequest = MoveRequest(pageIDs: [id])
                 }
             } label: {
@@ -1561,12 +1571,15 @@ struct NotebookEditorView: View {
             .sheet(item: $moveRequest) { request in
                 MovePagesSheet(library: library, sourceID: model.meta.id,
                                summary: { sides in model.moveSummary(sides ? model.withSidePages(request.pageIDs) : request.pageIDs) },
-                               sideCount: request.askSides ? model.unselectedSideCount(request.pageIDs) : 0) { target, sides in
+                               sideCount: request.askSides ? model.unselectedSideCount(request.pageIDs) : 0,
+                               copy: request.copy) { target, sides in
                     let ids = request.askSides && sides ? model.withSidePages(request.pageIDs) : request.pageIDs
-                    let count = model.documentView?.movePages(ids, to: target.id) ?? 0
+                    let count = request.copy ? (model.documentView?.copyPages(ids, to: target.id) ?? 0)
+                                             : (model.documentView?.movePages(ids, to: target.id) ?? 0)
                     if count > 0 {
                         library.touchNotebook(target.id)
-                        model.documentView?.showMessage("tray.and.arrow.up", "已移到「\(target.title)」\(count) 頁")
+                        model.documentView?.showMessage(request.copy ? "doc.on.doc" : "tray.and.arrow.up",
+                                                        (request.copy ? "已複製到「" : "已移到「") + "\(target.title)」\(count) 頁")
                     }
                 }
             }

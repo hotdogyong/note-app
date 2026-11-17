@@ -602,6 +602,7 @@ struct MoveRequest: Identifiable {
     let id = UUID()
     let pageIDs: [UUID]
     var askSides = true             // 選到的主頁還有旁頁時，問要不要一起搬（概覽的選取模式自己選，不問）
+    var copy = false                // 複製一份過去（v12.15.6）：原本這本不動
 }
 
 /// 移出頁面：選要搬到哪一本筆記本，或新建一本
@@ -610,6 +611,7 @@ struct MovePagesSheet: View {
     let sourceID: UUID
     let summary: (Bool) -> String              // 一起搬旁頁 / 不搬時的說明，例如「第 3 頁（含 2 張旁頁）」
     var sideCount = 0                          // 選到的主頁還有幾張旁頁沒選（0：不問）
+    var copy = false                           // 複製（不是搬）
     let onPick: (NotebookMeta, Bool) -> Void   // 目的地、旁頁要不要一起搬
     @Environment(\.dismiss) private var dismiss
     @State private var withSides = true
@@ -635,20 +637,22 @@ struct MovePagesSheet: View {
         if sideCount > 0 {
             Section("這一頁還有 \(sideCount) 張旁頁") {
                 Picker("旁頁", selection: $withSides) {
-                    Text("一起搬").tag(true)
-                    Text("只搬主頁").tag(false)
+                    Text(copy ? "一起複製" : "一起搬").tag(true)
+                    Text(copy ? "只複製主頁" : "只搬主頁").tag(false)
                 }
                 .pickerStyle(.segmented)
-                Text(withSides ? "旁頁跟著主頁搬過去，維持原本的左右順序。"
-                               : "旁頁留在原處，最靠近的旁頁（右邊優先）會變成新的主頁。")
+                Text(copy ? (withSides ? "旁頁跟著主頁一起複製過去，維持原本的左右順序。" : "只複製主頁，旁頁不帶過去。")
+                          : (withSides ? "旁頁跟著主頁搬過去，維持原本的左右順序。"
+                                       : "旁頁留在原處，最靠近的旁頁（右邊優先）會變成新的主頁。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         Section {
-            Text("要移出：\(summary(withSides))")
+            Text((copy ? "要複製：" : "要移出：") + summary(withSides))
                 .font(.callout)
-            Text("會搬到那本筆記本的最後面。搬之前會自動保存一份歷史版本，搬錯可以從「⋯ → 恢復歷史版本」找回來。")
+            Text(copy ? "複製一份放到那本筆記本的最後面（筆跡、文字、圖片、PDF 頁都會帶過去），這一本不動。"
+                      : "會搬到那本筆記本的最後面。搬之前會自動保存一份歷史版本，搬錯可以從「⋯ → 恢復歷史版本」找回來。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -901,12 +905,14 @@ struct OverviewSheet: View {
             .sheet(item: $moveRequest) { request in
                 MovePagesSheet(library: library, sourceID: model.meta.id,
                                summary: { sides in model.moveSummary(sides ? model.withSidePages(request.pageIDs) : request.pageIDs) },
-                               sideCount: request.askSides ? model.unselectedSideCount(request.pageIDs) : 0) { target, sides in
+                               sideCount: request.askSides ? model.unselectedSideCount(request.pageIDs) : 0,
+                               copy: request.copy) { target, sides in
                     let ids = request.askSides && sides ? model.withSidePages(request.pageIDs) : request.pageIDs
-                    let count = model.documentView?.movePages(ids, to: target.id) ?? 0
+                    let count = request.copy ? (model.documentView?.copyPages(ids, to: target.id) ?? 0)
+                                             : (model.documentView?.movePages(ids, to: target.id) ?? 0)
                     if count > 0 {
                         library.touchNotebook(target.id)
-                        movedMessage = "已移到「\(target.title)」\(count) 頁"
+                        movedMessage = (request.copy ? "已複製到「" : "已移到「") + "\(target.title)」\(count) 頁"
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { movedMessage = nil }
                     }
                     selected = []
@@ -933,6 +939,14 @@ struct OverviewSheet: View {
                 Text(selected.isEmpty ? "還沒選" : "已選：\(model.moveSummary(Array(selected)))")
                     .font(.callout)
                 Spacer()
+                Button {
+                    model.documentView?.flushAll()
+                    moveRequest = MoveRequest(pageIDs: Array(selected), askSides: false, copy: true)
+                } label: {
+                    Label("複製到其他筆記本…", systemImage: "doc.on.doc")
+                }
+                .buttonStyle(.bordered)
+                .disabled(selected.isEmpty)
                 Button {
                     model.documentView?.flushAll()
                     moveRequest = MoveRequest(pageIDs: Array(selected), askSides: false)
@@ -1130,6 +1144,12 @@ struct OverviewSheet: View {
                         }
                         Button {
                             model.documentView?.flushAll()
+                            moveRequest = MoveRequest(pageIDs: [page.id], copy: true)
+                        } label: {
+                            Label("複製到其他筆記本…", systemImage: "doc.on.doc")
+                        }
+                        Button {
+                            model.documentView?.flushAll()
                             moveRequest = MoveRequest(pageIDs: [page.id])
                         } label: {
                             Label("移到其他筆記本…", systemImage: "tray.and.arrow.up")
@@ -1160,6 +1180,12 @@ struct OverviewSheet: View {
                             } label: {
                                 Label("往右移", systemImage: "arrow.right")
                             }
+                        }
+                        Button {
+                            model.documentView?.flushAll()
+                            moveRequest = MoveRequest(pageIDs: [page.id], copy: true)
+                        } label: {
+                            Label("複製到其他筆記本…", systemImage: "doc.on.doc")
                         }
                         Button {
                             model.documentView?.flushAll()

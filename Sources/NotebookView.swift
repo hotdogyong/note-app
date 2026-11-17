@@ -6276,6 +6276,34 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 原本那列：主頁被搬走、還剩旁頁時，最靠近的旁頁變成新的主頁（右邊優先）。
     /// 搬之前自動存一份歷史版本（「移出頁面前」）。回傳搬了幾頁
     @discardableResult
+    /// 複製頁面到另一本（v12.15.6，使用者要求）：跟「移出」一樣的分法（整列、主頁＋旁頁一列、單張旁頁各自一列），
+    /// 放到那本的最後面；這一本不動。Store.transferRows 會給新的 ID、複製筆跡、圖片和用到的 PDF 頁
+    func copyPages(_ pageIDs: [UUID], to targetID: UUID) -> Int {
+        guard targetID != model.meta.id else { return 0 }
+        let selected = Set(pageIDs)
+        flushAll()
+        var outRows: [PageRow] = []
+        var count = 0
+        for original in model.notebook.rows {
+            let picked = original.pages.filter { selected.contains($0.id) }
+            if picked.isEmpty { continue }
+            count += picked.count
+            guard original.pages.indices.contains(original.mainIndex) else { continue }
+            let mainID = original.pages[original.mainIndex].id
+            if picked.count == original.pages.count {
+                outRows.append(original)
+            } else if selected.contains(mainID) {
+                var out = PageRow(pages: picked, mainIndex: 0)
+                out.mainIndex = picked.firstIndex(where: { $0.id == mainID }) ?? 0
+                outRows.append(out)
+            } else {
+                for page in picked { outRows.append(PageRow(pages: [page], mainIndex: 0)) }
+            }
+        }
+        guard !outRows.isEmpty, Store.transferRows(outRows, to: targetID) else { return 0 }
+        return count
+    }
+
     func movePages(_ pageIDs: [UUID], to targetID: UUID) -> Int {
         guard targetID != model.meta.id else { return 0 }
         let selected = Set(pageIDs)

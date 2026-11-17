@@ -710,6 +710,16 @@ struct NotebookMoreMenu: View {
             Button {
                 if let id = model.currentPageID {
                     model.documentView?.flushAll()
+                    moveRequest = MoveRequest(pageIDs: [id], within: true)
+                }
+            } label: {
+                Label(model.isOnSidePage ? "把這張旁頁移到這本的其他位置…" : "把這頁移到這本的其他位置…",
+                      systemImage: "arrow.up.arrow.down")
+            }
+            .disabled(model.isBoard)
+            Button {
+                if let id = model.currentPageID {
+                    model.documentView?.flushAll()
                     moveRequest = MoveRequest(pageIDs: [id], copy: true)
                 }
             } label: {
@@ -1569,18 +1579,24 @@ struct NotebookEditorView: View {
                 OverviewSheet(model: model, library: library)
             }
             .sheet(item: $moveRequest) { request in
+                if request.within {
+                    WithinMoveSheet(model: model, request: request) { count in
+                        model.documentView?.showMessage("arrow.up.arrow.down", "已移動 \(count) 頁")
+                    }
+                } else {
                 MovePagesSheet(library: library, sourceID: model.meta.id,
                                summary: { sides in model.moveSummary(sides ? model.withSidePages(request.pageIDs) : request.pageIDs) },
                                sideCount: request.askSides ? model.unselectedSideCount(request.pageIDs) : 0,
-                               copy: request.copy) { target, sides in
+                               copy: request.copy) { target, sides, at in
                     let ids = request.askSides && sides ? model.withSidePages(request.pageIDs) : request.pageIDs
-                    let count = request.copy ? (model.documentView?.copyPages(ids, to: target.id) ?? 0)
-                                             : (model.documentView?.movePages(ids, to: target.id) ?? 0)
+                    let count = request.copy ? (model.documentView?.copyPages(ids, to: target.id, at: at) ?? 0)
+                                             : (model.documentView?.movePages(ids, to: target.id, at: at) ?? 0)
                     if count > 0 {
                         library.touchNotebook(target.id)
                         model.documentView?.showMessage(request.copy ? "doc.on.doc" : "tray.and.arrow.up",
                                                         (request.copy ? "已複製到「" : "已移到「") + "\(target.title)」\(count) 頁")
                     }
+                }
                 }
             }
             .sheet(item: $exportFile, onDismiss: { model.documentView?.refocus() }) { file in

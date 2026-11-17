@@ -603,6 +603,184 @@ struct MoveRequest: Identifiable {
     let pageIDs: [UUID]
     var askSides = true             // 選到的主頁還有旁頁時，問要不要一起搬（概覽的選取模式自己選，不問）
     var copy = false                // 複製一份過去（v12.15.6）：原本這本不動
+    var within = false              // 同一本裡換位置（v12.15.10）
+}
+
+/// 選頁面要放在哪裡（v12.15.10，使用者：400 多頁的筆記本，搬回去十幾頁不要都塞最後面；本子裡移動也要有拖以外的方法）。
+/// 一格一頁（主頁的縮圖），點哪一頁就放在那頁後面；上面有「最前面」「最後面」和跳到第幾頁
+struct PagePositionPicker: View {
+    let title: String
+    let rows: [PageRow]
+    var moving: Set<UUID> = []                 // 同一本裡移動：被移的那幾列（變淡）
+    let confirm: (Int) -> Void                 // 插在第幾列前面：0＝最前面，rows.count＝最後面
+    @State private var position: Int
+    @State private var jump = ""
+
+    init(title: String, rows: [PageRow], moving: Set<UUID> = [], start: Int? = nil, confirm: @escaping (Int) -> Void) {
+        self.title = title
+        self.rows = rows
+        self.moving = moving
+        self.confirm = confirm
+        _position = State(initialValue: min(max(start ?? rows.count, 0), rows.count))
+    }
+
+    private var summary: String {
+        if position == 0 { return "放在最前面（第 1 頁前面）" }
+        if position >= rows.count { return "放在最後面（第 \(rows.count) 頁後面）" }
+        return "放在第 \(position) 頁後面"
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Button("最前面") {
+                        position = 0
+                        withAnimation { proxy.scrollTo(0, anchor: .top) }
+                    }
+                    Button("最後面") {
+                        position = rows.count
+                        withAnimation { proxy.scrollTo(max(rows.count - 1, 0), anchor: .bottom) }
+                    }
+                    Spacer()
+                    TextField("第幾頁", text: $jump)
+                        .keyboardType(.numberPad)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 90)
+                        .onSubmit { go(proxy) }
+                    Button("跳過去") { go(proxy) }
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                Text(summary)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.vertical, 8)
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 14)], spacing: 16) {
+                        ForEach(rows.indices, id: \.self) { i in
+                            PagePositionCell(page: rows[i].pages.indices.contains(rows[i].mainIndex)
+                                                ? rows[i].pages[rows[i].mainIndex] : (rows[i].pages.first ?? NotePage()),
+                                             number: i + 1,
+                                             sides: rows[i].pages.count - 1,
+                                             mark: position == i + 1 ? .after : (position == 0 && i == 0 ? .before : .none),
+                                             dimmed: moving.contains(rows[i].id))
+                                .id(i)
+                                .contentShape(Rectangle())
+                                .onTapGesture { position = (position == i + 1 && i == 0) ? 0 : i + 1 }
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+            .onAppear {
+                let target = min(max(position - 1, 0), max(rows.count - 1, 0))
+                DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
+            }
+        }
+        .navigationTitle("放在「\(title)」的哪裡？")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("放在這裡") { confirm(position) }
+                    .bold()
+            }
+        }
+    }
+
+    private func go(_ proxy: ScrollViewProxy) {
+        guard let n = Int(jump.trimmingCharacters(in: .whitespaces)), n >= 1, !rows.isEmpty else { return }
+        let page = min(n, rows.count)
+        position = page
+        withAnimation { proxy.scrollTo(page - 1, anchor: .center) }
+    }
+}
+
+/// 位置選單的一格：縮圖、頁碼；選到的那一格旁邊一條藍線（放在這頁後面／前面）
+struct PagePositionCell: View {
+    enum Mark { case none, before, after }
+    let page: NotePage
+    let number: Int
+    let sides: Int
+    let mark: Mark
+    let dimmed: Bool
+    @State private var image: UIImage?
+
+    var body: some View {
+        VStack(spacing: 4) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 6).fill(Color(white: 0.9))
+                if let image = image {
+                    Image(uiImage: image).resizable().scaledToFit()
+                }
+            }
+            .aspectRatio(page.spec.width / max(page.spec.height, 1), contentMode: .fit)
+            .frame(height: 150)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6)
+                .stroke(mark == .none ? Color.secondary.opacity(0.3) : Color.accentColor, lineWidth: mark == .none ? 1 : 2.5))
+            .overlay(alignment: mark == .before ? .leading : .trailing) {
+                if mark != .none {
+                    Capsule().fill(Color.accentColor).frame(width: 5).padding(.vertical, -4)
+                        .offset(x: mark == .before ? -9 : 9)
+                }
+            }
+            .opacity(dimmed ? 0.35 : 1)
+            Text(sides > 0 ? "\(number)（＋\(sides)）" : "\(number)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(mark == .none ? Color.secondary : Color.accentColor)
+            if mark != .none {
+                Text(mark == .before ? "放在這頁前面" : "放在這頁後面")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+        }
+        .task(id: page.id) {
+            if let cached = PagePositionCell.cache.object(forKey: page.id.uuidString as NSString) {
+                image = cached
+                return
+            }
+            await Task.yield()
+            let made = Thumbnail.image(for: page, width: 120)
+            PagePositionCell.cache.setObject(made, forKey: page.id.uuidString as NSString)
+            image = made
+        }
+    }
+
+    static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.countLimit = 600
+        return cache
+    }()
+}
+
+/// 同一本裡換位置（v12.15.10）：直接選放在第幾頁後面
+struct WithinMoveSheet: View {
+    @ObservedObject var model: NotebookModel
+    let request: MoveRequest
+    let done: (Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let ids = request.askSides ? model.withSidePages(request.pageIDs) : request.pageIDs
+        let set = Set(ids)
+        let movingRows = Set(model.notebook.rows.filter { row in row.pages.contains { set.contains($0.id) } }.map(\.id))
+        let first = model.notebook.rows.firstIndex { movingRows.contains($0.id) }
+        NavigationStack {
+            PagePositionPicker(title: model.meta.title, rows: model.notebook.rows, moving: movingRows,
+                               start: first.map { $0 + 1 }) { at in
+                let count = model.documentView?.movePagesWithin(ids, insertAt: at) ?? 0
+                dismiss()
+                if count > 0 { done(count) }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+    }
 }
 
 /// 移出頁面：選要搬到哪一本筆記本，或新建一本
@@ -612,21 +790,45 @@ struct MovePagesSheet: View {
     let summary: (Bool) -> String              // 一起搬旁頁 / 不搬時的說明，例如「第 3 頁（含 2 張旁頁）」
     var sideCount = 0                          // 選到的主頁還有幾張旁頁沒選（0：不問）
     var copy = false                           // 複製（不是搬）
-    let onPick: (NotebookMeta, Bool) -> Void   // 目的地、旁頁要不要一起搬
+    let onPick: (NotebookMeta, Bool, Int?) -> Void   // 目的地、旁頁要不要一起搬、插在目的地第幾列前面（nil＝最後面）
     @Environment(\.dismiss) private var dismiss
     @State private var withSides = true
+    @State private var target: (meta: NotebookMeta, rows: [PageRow])?   // 選好哪一本：接著選放在哪裡（v12.15.10）
 
     var body: some View {
-        NavigationStack {
-            // v12.6：像選檔案一樣一層一層進資料夾；每一層可以點某一本移過去，或在這一層新建一本
-            MoveFolderLevel(library: library, folderID: nil, sourceID: sourceID, header: AnyView(headerSections),
-                            pick: { meta in
-                                onPick(meta, withSides)
-                                dismiss()
-                            })
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("取消") { dismiss() }
+        if let target = target {
+            NavigationStack {
+                PagePositionPicker(title: target.meta.title, rows: target.rows) { at in
+                    onPick(target.meta, withSides, at)
+                    dismiss()
+                }
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            self.target = nil
+                        } label: {
+                            Label("換一本", systemImage: "chevron.left")
+                        }
+                    }
+                }
+            }
+        } else {
+            NavigationStack {
+                // v12.6：像選檔案一樣一層一層進資料夾；每一層可以點某一本移過去，或在這一層新建一本
+                MoveFolderLevel(library: library, folderID: nil, sourceID: sourceID, header: AnyView(headerSections),
+                                pick: { meta in
+                                    let rows = Store.loadNotebook(meta.id).rows
+                                    if rows.isEmpty || meta.isBoard == true {
+                                        onPick(meta, withSides, nil)            // 空的（剛新建的）：不用選位置
+                                        dismiss()
+                                    } else {
+                                        target = (meta, rows)
+                                    }
+                                })
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("取消") { dismiss() }
+                    }
                 }
             }
         }
@@ -651,8 +853,8 @@ struct MovePagesSheet: View {
         Section {
             Text((copy ? "要複製：" : "要移出：") + summary(withSides))
                 .font(.callout)
-            Text(copy ? "複製一份放到那本筆記本的最後面（筆跡、文字、圖片、PDF 頁都會帶過去），這一本不動。"
-                      : "會搬到那本筆記本的最後面。搬之前會自動保存一份歷史版本，搬錯可以從「⋯ → 恢復歷史版本」找回來。")
+            Text(copy ? "選好哪一本之後，再選要放在第幾頁後面。筆跡、文字、圖片、PDF 頁都會帶過去，這一本不動。"
+                      : "選好哪一本之後，再選要放在第幾頁後面。搬之前會自動保存一份歷史版本，搬錯可以從「⋯ → 恢復歷史版本」找回來。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -903,13 +1105,21 @@ struct OverviewSheet: View {
             }
             .safeAreaInset(edge: .bottom) { selectionBar }
             .sheet(item: $moveRequest) { request in
+                if request.within {
+                    WithinMoveSheet(model: model, request: request) { count in
+                        movedMessage = "已移動 \(count) 頁"
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { movedMessage = nil }
+                        selected = []
+                        selecting = false
+                    }
+                } else {
                 MovePagesSheet(library: library, sourceID: model.meta.id,
                                summary: { sides in model.moveSummary(sides ? model.withSidePages(request.pageIDs) : request.pageIDs) },
                                sideCount: request.askSides ? model.unselectedSideCount(request.pageIDs) : 0,
-                               copy: request.copy) { target, sides in
+                               copy: request.copy) { target, sides, at in
                     let ids = request.askSides && sides ? model.withSidePages(request.pageIDs) : request.pageIDs
-                    let count = request.copy ? (model.documentView?.copyPages(ids, to: target.id) ?? 0)
-                                             : (model.documentView?.movePages(ids, to: target.id) ?? 0)
+                    let count = request.copy ? (model.documentView?.copyPages(ids, to: target.id, at: at) ?? 0)
+                                             : (model.documentView?.movePages(ids, to: target.id, at: at) ?? 0)
                     if count > 0 {
                         library.touchNotebook(target.id)
                         movedMessage = (request.copy ? "已複製到「" : "已移到「") + "\(target.title)」\(count) 頁"
@@ -917,6 +1127,7 @@ struct OverviewSheet: View {
                     }
                     selected = []
                     selecting = false
+                }
                 }
             }
             .confirmationDialog(deleteTitle, isPresented: $showDelete, titleVisibility: .visible) {
@@ -939,6 +1150,14 @@ struct OverviewSheet: View {
                 Text(selected.isEmpty ? "還沒選" : "已選：\(model.moveSummary(Array(selected)))")
                     .font(.callout)
                 Spacer()
+                Button {
+                    model.documentView?.flushAll()
+                    moveRequest = MoveRequest(pageIDs: Array(selected), askSides: false, within: true)
+                } label: {
+                    Label("移到這本的…", systemImage: "arrow.up.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .disabled(selected.isEmpty)
                 Button {
                     model.documentView?.flushAll()
                     moveRequest = MoveRequest(pageIDs: Array(selected), askSides: false, copy: true)
@@ -1144,6 +1363,12 @@ struct OverviewSheet: View {
                         }
                         Button {
                             model.documentView?.flushAll()
+                            moveRequest = MoveRequest(pageIDs: [page.id], within: true)
+                        } label: {
+                            Label("移到這本的其他位置…", systemImage: "arrow.up.arrow.down")
+                        }
+                        Button {
+                            model.documentView?.flushAll()
                             moveRequest = MoveRequest(pageIDs: [page.id], copy: true)
                         } label: {
                             Label("複製到其他筆記本…", systemImage: "doc.on.doc")
@@ -1180,6 +1405,12 @@ struct OverviewSheet: View {
                             } label: {
                                 Label("往右移", systemImage: "arrow.right")
                             }
+                        }
+                        Button {
+                            model.documentView?.flushAll()
+                            moveRequest = MoveRequest(pageIDs: [page.id], within: true)
+                        } label: {
+                            Label("移到這本的其他位置…", systemImage: "arrow.up.arrow.down")
                         }
                         Button {
                             model.documentView?.flushAll()

@@ -562,8 +562,10 @@ enum Store {
     /// 把幾列頁面複製到另一本筆記本的最後面（移出頁面用；原本那本自己再刪掉）。
     /// 每一頁換新的編號；筆跡、圖片跟著複製；PDF 只取用到的那幾頁另存成一個小 PDF（不會把整本課本複製過去）
     @discardableResult
-    static func transferRows(_ rows: [PageRow], to target: UUID) -> Bool {
+    /// at：插在目的地第幾列前面（v12.15.10，使用者：400 多頁不要都放最後面）；nil＝最後面
+    static func transferRows(_ rows: [PageRow], to target: UUID, at: Int? = nil) -> Bool {
         let fm = FileManager.default
+        var added: [PageRow] = []
         var dest = loadNotebook(target)
         let targetDir = notebookDir(target)
         ensureDir(targetDir)
@@ -628,7 +630,12 @@ enum Store {
                     if exists(src) && !exists(dst) { try? fm.copyItem(at: src, to: dst) }
                 }
             }
-            dest.rows.append(row)
+            added.append(row)
+        }
+        if let at = at {
+            dest.rows.insert(contentsOf: added, at: min(max(at, 0), dest.rows.count))
+        } else {
+            dest.rows.append(contentsOf: added)
         }
         saveNotebook(dest, id: target)
         return true

@@ -6357,7 +6357,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     @discardableResult
     /// 複製頁面到另一本（v12.15.6，使用者要求）：跟「移出」一樣的分法（整列、主頁＋旁頁一列、單張旁頁各自一列），
     /// 放到那本的最後面；這一本不動。Store.transferRows 會給新的 ID、複製筆跡、圖片和用到的 PDF 頁
-    func copyPages(_ pageIDs: [UUID], to targetID: UUID) -> Int {
+    func copyPages(_ pageIDs: [UUID], to targetID: UUID, at: Int? = nil) -> Int {
         guard targetID != model.meta.id else { return 0 }
         let selected = Set(pageIDs)
         flushAll()
@@ -6379,11 +6379,68 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 for page in picked { outRows.append(PageRow(pages: [page], mainIndex: 0)) }
             }
         }
-        guard !outRows.isEmpty, Store.transferRows(outRows, to: targetID) else { return 0 }
+        guard !outRows.isEmpty, Store.transferRows(outRows, to: targetID, at: at) else { return 0 }
         return count
     }
 
-    func movePages(_ pageIDs: [UUID], to targetID: UUID) -> Int {
+    /// 同一本裡移動頁面（v12.15.10，使用者：400 多頁拖不動）：選好的頁照「移出」的分法拿出來，
+    /// 插在原本第 insertAt 列前面（0＝最前面，列數＝最後面）。可以復原
+    func movePagesWithin(_ pageIDs: [UUID], insertAt k: Int) -> Int {
+        let selected = Set(pageIDs)
+        flushAll()
+        var out: [PageRow] = []
+        var remaining: [(row: PageRow, origin: Int)] = []
+        var count = 0
+        for (i, original) in model.notebook.rows.enumerated() {
+            let moving = original.pages.filter { selected.contains($0.id) }
+            guard !moving.isEmpty, original.pages.indices.contains(original.mainIndex) else {
+                remaining.append((original, i))
+                continue
+            }
+            count += moving.count
+            let mainID = original.pages[original.mainIndex].id
+            if moving.count == original.pages.count {
+                out.append(original)
+                continue
+            }
+            if selected.contains(mainID) {
+                var row = PageRow(pages: moving, mainIndex: 0)
+                row.mainIndex = moving.firstIndex(where: { $0.id == mainID }) ?? 0
+                out.append(row)
+            } else {
+                for page in moving { out.append(PageRow(pages: [page], mainIndex: 0)) }
+            }
+            var row = original
+            row.pages = original.pages.filter { !selected.contains($0.id) }
+            if let m = row.pages.firstIndex(where: { $0.id == mainID }) {
+                row.mainIndex = m
+            } else {
+                let m = original.mainIndex
+                let right = original.pages.indices.first { $0 > m && !selected.contains(original.pages[$0].id) }
+                let left = original.pages.indices.last { $0 < m && !selected.contains(original.pages[$0].id) }
+                let newMainID = (right ?? left).map { original.pages[$0].id }
+                row.mainIndex = newMainID.flatMap { id in row.pages.firstIndex(where: { $0.id == id }) } ?? 0
+            }
+            remaining.append((row, i))
+        }
+        guard !out.isEmpty else { return 0 }
+        registerStructureUndo(model.notebook, drawings: [:], name: "移動頁面")
+        let at = remaining.filter { $0.origin < k }.count
+        var rows = remaining.map { $0.row }
+        rows.insert(contentsOf: out, at: min(at, rows.count))
+        model.notebook.rows = rows
+        model.save()
+        rebuild()
+        updateFocus(force: true)
+        publishFocus()
+        if let first = out.first, first.pages.indices.contains(first.mainIndex) {
+            let id = first.pages[first.mainIndex].id
+            DispatchQueue.main.async { [weak self] in self?.reveal(pageID: id, pageRect: CGRect.null) }
+        }
+        return count
+    }
+
+    func movePages(_ pageIDs: [UUID], to targetID: UUID, at: Int? = nil) -> Int {
         guard targetID != model.meta.id else { return 0 }
         let selected = Set(pageIDs)
         flushAll()
@@ -6433,7 +6490,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             changedRows.append(row.id)
             remaining.append(row)
         }
-        guard Store.transferRows(outRows, to: targetID) else { return 0 }
+        guard Store.transferRows(outRows, to: targetID, at: at) else { return 0 }
 
         if remaining.isEmpty { remaining.append(PageRow()) }
         let movedSet = Set(movedIDs)

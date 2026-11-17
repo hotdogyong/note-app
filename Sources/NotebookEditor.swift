@@ -1633,6 +1633,10 @@ struct NotebookEditorView: View {
                         model.documentView?.jumpTo(pageID: target.page, rect: target.rect)
                     }
                 }
+                if SelfTest.scene == "pagepos", !embedded, model.notebook.rows.count > 3 {   // 自動測試：位置選單
+                    let id = model.notebook.rows[3].pages[0].id
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { moveRequest = MoveRequest(pageIDs: [id], within: true) }
+                }
                 if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
                 }

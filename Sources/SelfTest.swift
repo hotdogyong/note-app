@@ -92,6 +92,12 @@ enum SelfTest {
                     Store.saveNotebook(data, id: meta.id)
                 }
                 library.openNotebook = meta
+            case "pagepos":
+                // v12.15.10：同一本裡移動頁面的位置選單（六頁的 PDF，選第 4 頁「移到這本的其他位置」）
+                if let url = makeOutlinePDF(), library.importPDF(from: url, into: nil),
+                   let meta = library.library.notebooks.first(where: { $0.title.hasPrefix("目錄測試") }) {
+                    library.openNotebook = meta
+                }
             case "pdfoutline":
                 // PDF 自帶的目錄（v12.11.1）：做一份有三層目錄的 PDF 匯入；面板打開後自動「在 1.2 那一列按改名」，
                 // 應該整份搬進我的大綱、層級照舊、那一項改了名、下面不再列 PDF 的目錄

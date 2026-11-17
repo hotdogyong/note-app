@@ -282,6 +282,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     private var silent = false
     private var toolActive = false                     // 筆正在紙上（一次擦好幾筆也只算一步）
     private var changedDuringTool = false
+    private var inkBase: PKDrawing?                   // 這一筆開始寫的時候畫布上的筆跡（v12.15.7：檢查舊的筆跡有沒有被吃掉）
     private(set) var toolUses = 0                      // 下筆的次數（判斷變形後有沒有又寫了新的一筆）
     private(set) var loadMillis = 0                    // 打開這一頁時讀筆跡花了多久（v12.11.0：白板齒輪面板顯示，比較分區前後）
 
@@ -1095,6 +1096,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             committedDrawing = canvasView.drawing
         }
         changedDuringTool = false
+        inkBase = canvasView.tool is PKInkingTool ? canvasView.drawing : nil
         strokeCountAtBegin = canvasView.drawing.strokes.count
         toolUses += 1
         toolActive = true
@@ -1128,7 +1130,33 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         overlay.drawing = PKDrawing(strokes: canvas.drawing.strokes.filter { !isHighlighter($0) })
     }
 
+    /// 一筆的身分：位置、點數、下筆時間（PKStroke 不能直接比）
+    private static func strokeKey(_ stroke: PKStroke) -> String {
+        let b = stroke.renderBounds
+        return "\(b.minX),\(b.minY),\(b.width),\(b.height),\(stroke.path.count),\(stroke.path.creationDate.timeIntervalSince1970)"
+    }
+
+    /// v12.15.7（使用者：寫下一筆，之前寫好的筆跡會不見，按上一步也救不回來）：
+    /// 用筆寫字只會「多」筆跡，不會少。寫完這一筆如果畫布上比開始寫時少了舊的筆跡，就把少掉的放回去
+    private func restoreDroppedStrokes(_ canvasView: PKCanvasView) {
+        guard let base = inkBase, canvasView.tool is PKInkingTool else { return }
+        let now = canvasView.drawing
+        guard now.strokes.count < base.strokes.count + 1 else { return }
+        let nowKeys = Set(now.strokes.map(Self.strokeKey))
+        let missing = base.strokes.filter { !nowKeys.contains(Self.strokeKey($0)) }
+        guard !missing.isEmpty else { return }
+        let baseKeys = Set(base.strokes.map(Self.strokeKey))
+        var fixed = base
+        fixed.strokes.append(contentsOf: now.strokes.filter { !baseKeys.contains(Self.strokeKey($0)) })
+        silent = true
+        canvasView.drawing = fixed
+        silent = false
+        syncOverlay()
+        host?.showMessage("bandage", "剛剛有 \(missing.count) 筆舊的筆跡被吃掉，已經補回來了")
+    }
+
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+        if !silent { restoreDroppedStrokes(canvasView) }
         syncOverlay()
         scheduleSave()
         guard !silent else { return }

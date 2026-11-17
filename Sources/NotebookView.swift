@@ -2532,10 +2532,21 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             ("寫第 5 筆", { write(endFirst: false) }),
             ("寫第 6 筆", { write(endFirst: true) }),
             ("上一步", { self.history.undo() }),
+            ("寫第 7 筆，假裝第 1 筆被吃掉", {
+                guard let pv = pv(), next < strokes.count else { return }
+                pv.canvasViewDidBeginUsingTool(pv.canvas)
+                var d = pv.canvas.drawing
+                if !d.strokes.isEmpty { d.strokes.removeFirst() }
+                d.strokes.append(strokes[next])
+                next += 1
+                pv.canvas.drawing = d
+                pv.canvasViewDidEndUsingTool(pv.canvas)
+            }),
+            ("上一步", { self.history.undo() }),
         ]
         func run(_ i: Int) {
             guard i < steps.count else {
-                lines.append("預期最後：畫布 3／檔案 3（第 1、2、5 筆）")
+                lines.append("預期：吃掉後補回＝4；最後上一步＝3（第 1、2、5 筆）")
                 return done(lines.joined(separator: "\n"))
             }
             steps[i].1()

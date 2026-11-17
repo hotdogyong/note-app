@@ -681,6 +681,7 @@ struct PagePositionPicker: View {
         }
         .navigationTitle("放在「\(title)」的哪裡？")
         .navigationBarTitleDisplayMode(.inline)
+        .presentationSizing(.page)                     // 400 多頁：視窗大一點，一次看得到比較多頁
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("放在這裡") { confirm(position) }

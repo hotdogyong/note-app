@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.15.8"
+let appVersion = "v12.15.9"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序
@@ -72,6 +72,7 @@ struct ContentView: View {
     @State private var editingSidebar = false        // 側邊欄「編輯資料夾順序」
     @State private var path: [LibraryRoute] = []
     @State private var columns: NavigationSplitViewVisibility = .automatic
+    @State private var lowSpace: String?             // iPad 快沒空間了（v12.15.9）：打開 App、回到 App 時檢查
 
     var body: some View {
         ZStack {
@@ -86,7 +87,28 @@ struct ContentView: View {
             }
         }
         .environmentObject(library)
-        .onAppear { SelfTest.run(library) }            // 自動測試的場景（v12.9.9）；平常不會做任何事
+        .onAppear {
+            SelfTest.run(library)                      // 自動測試的場景（v12.9.9）；平常不會做任何事
+            checkSpace()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            checkSpace()
+        }
+        .alert("iPad 的空間快滿了", isPresented: Binding(get: { lowSpace != nil }, set: { if !$0 { lowSpace = nil } })) {
+            Button("知道了", role: .cancel) { }
+        } message: {
+            Text(lowSpace ?? "")
+        }
+    }
+
+    /// 真的能寫的空間太少就提醒（v12.15.9）。使用者的 iPad 設定裡寫還有 16 GB，其實已經寫不進去：
+    /// 筆跡存不了、截圖也存不了。用系統說「重要資料還能用多少」來判斷，比設定裡的數字準
+    private func checkSpace() {
+        guard let free = Store.freeSpace() else { return }
+        let gb = Double(free) / 1_000_000_000
+        guard gb < 3 else { return }
+        lowSpace = String(format: "現在大約只剩 %.1f GB 能用。", gb)
+            + "空間用完時筆跡會存不進去（重新打開就不見）。請到「設定 → 一般 → iPad 儲存空間」清一些照片、影片或用不到的 App，清完重新開機一次。"
     }
 
     private func notebookCover(_ meta: NotebookMeta) -> some View {

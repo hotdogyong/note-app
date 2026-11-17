@@ -100,6 +100,12 @@ enum Store {
         }
     }
 
+    /// 資料放的那個磁碟，系統說「重要資料」還能寫多少（v12.15.9）
+    static func freeSpace() -> Int64? {
+        let values = try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
+    }
+
     /// 存檔失敗（v12.15.8，使用者的 iPad 空間滿了，筆跡一直存不進去、重新載入就不見）：
     /// 通知畫面跳警告。同一段時間只通知一次
     static let writeFailed = Notification.Name("StoreWriteFailed")

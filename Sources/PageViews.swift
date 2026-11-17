@@ -1085,6 +1085,16 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         host?.dismissShapeEditor()                     // 開始寫下一筆：結束調整
         host?.endTextSelection()
+        // v12.15.6（使用者：寫完很久的一筆，寫下一筆後按上一步，那一筆跟著不見）：
+        // 上一次下筆如果沒收到「放開」（手勢被中斷：長按螢光筆選取、換畫布、畫到一半被其他手勢搶走…），
+        // toolActive 會一直是 true，那時寫的筆跡只記成「下筆中的變化」、沒有登記復原，
+        // 結果跟下一筆合成同一步，上一步就連它一起退掉。開始下一筆之前，沒登記到的變化先自己登記一步
+        let unrecorded = changedDuringTool || canvasView.drawing.strokes.count != committedDrawing.strokes.count
+        if unrecorded && !silent {
+            host?.recordUndo(pageID: page.id, old: committedDrawing)
+            committedDrawing = canvasView.drawing
+        }
+        changedDuringTool = false
         strokeCountAtBegin = canvasView.drawing.strokes.count
         toolUses += 1
         toolActive = true

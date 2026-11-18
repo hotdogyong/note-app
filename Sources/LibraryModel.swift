@@ -21,6 +21,8 @@ final class LibraryModel: ObservableObject {
             if let meta = openNotebook { addTab(meta.id) }     // 打開的筆記本都放進上面的分頁（v12.8.2）
         }
     }
+    /// 跳轉捷徑指到別本：打開那一本之後要跳到哪一頁（v12.15.11）
+    var pendingJump: PageJump?
     /// 這一次換筆記本用「從中間放大」的動畫（白板上的浮動視窗放大成整個畫面；v12.12.3）
     @Published var zoomTransition = false
 
@@ -210,10 +212,9 @@ final class LibraryModel: ObservableObject {
                 library.folders[i].parentID = nil
             }
             library.folders[i].deletedAt = nil
-            let name = Store.uniqueDirName(library.folders[i].name, parent: library.folders[i].parentID,
-                                           excluding: id, in: library)
-            library.folders[i].name = name
-            library.folders[i].dirName = name
+            let names = uniqueNames(library.folders[i].name, parent: library.folders[i].parentID, excluding: id, folder: true)
+            library.folders[i].name = names.title
+            library.folders[i].dirName = names.dir
             save()
             Store.moveDirectory(from: old, to: Store.folderPath(id))
         case .notebook(let id):
@@ -223,10 +224,9 @@ final class LibraryModel: ObservableObject {
                 library.notebooks[i].folderID = nil
             }
             library.notebooks[i].deletedAt = nil
-            let name = Store.uniqueDirName(library.notebooks[i].title, parent: library.notebooks[i].folderID,
-                                           excluding: id, in: library)
-            library.notebooks[i].title = name
-            library.notebooks[i].dirName = name
+            let names = uniqueNames(library.notebooks[i].title, parent: library.notebooks[i].folderID, excluding: id, folder: false)
+            library.notebooks[i].title = names.title
+            library.notebooks[i].dirName = names.dir
             save()
             Store.moveDirectory(from: old, to: Store.notebookDir(id))
         }
@@ -282,18 +282,18 @@ final class LibraryModel: ObservableObject {
                 if let t = target, isInside(t, ancestor: id) { continue }
                 let old = Store.folderPath(id)
                 library.folders[i].parentID = target
-                let name = Store.uniqueDirName(library.folders[i].name, parent: target, excluding: id, in: library)
-                library.folders[i].name = name
-                library.folders[i].dirName = name
+                let names = uniqueNames(library.folders[i].name, parent: target, excluding: id, folder: true)
+                library.folders[i].name = names.title
+                library.folders[i].dirName = names.dir
                 save()
                 Store.moveDirectory(from: old, to: Store.folderPath(id))
             case .notebook(let id):
                 guard let i = library.notebooks.firstIndex(where: { $0.id == id }) else { continue }
                 let old = Store.notebookDir(id)
                 library.notebooks[i].folderID = target
-                let name = Store.uniqueDirName(library.notebooks[i].title, parent: target, excluding: id, in: library)
-                library.notebooks[i].title = name
-                library.notebooks[i].dirName = name
+                let names = uniqueNames(library.notebooks[i].title, parent: target, excluding: id, folder: false)
+                library.notebooks[i].title = names.title
+                library.notebooks[i].dirName = names.dir
                 save()
                 Store.moveDirectory(from: old, to: Store.notebookDir(id))
             }
@@ -349,11 +349,31 @@ final class LibraryModel: ObservableObject {
         library.notebooks.filter { $0.folderID == folder && $0.boardID == nil }.sorted { $0.modified > $1.modified }
     }
 
+    /// 名字（v12.15.11，使用者：資料夾和筆記本可以同名）：只跟同一層、同一種的比，重複才加「 2」「 3」；
+    /// 磁碟上的資料夾名稱另外取，跟所有東西都不重複（資料夾「測試」旁邊的筆記本「測試」放在「測試 2」這個資料夾裡，畫面上還是叫「測試」）
+    func uniqueNames(_ wanted: String, parent: UUID?, excluding id: UUID?, folder isFolder: Bool) -> (title: String, dir: String) {
+        var used = Set<String>()
+        if isFolder {
+            for f in library.folders where f.parentID == parent && f.id != id && f.deletedAt == nil { used.insert(f.name) }
+        } else {
+            for m in library.notebooks where m.folderID == parent && m.id != id && m.deletedAt == nil { used.insert(m.title) }
+        }
+        var base = wanted.trimmingCharacters(in: .whitespacesAndNewlines)
+        if base.isEmpty { base = isFolder ? "未命名資料夾" : "未命名筆記本" }
+        var title = base
+        var k = 2
+        while used.contains(title) {
+            title = "\(base) \(k)"
+            k += 1
+        }
+        return (title, Store.uniqueDirName(title, parent: parent, excluding: id, in: library))
+    }
+
     func addFolder(in parent: UUID?, name: String = "未命名資料夾", colorIndex: Int? = nil) -> NoteFolder {
         // 名字跟「檔案」App 的資料夾一樣：同一層不重名、不能用「/」
-        let unique = Store.uniqueDirName(name, parent: parent, excluding: nil, in: library)
-        var folder = NoteFolder(name: unique, parentID: parent, colorIndex: colorIndex)
-        folder.dirName = unique
+        let names = uniqueNames(name, parent: parent, excluding: nil, folder: true)
+        var folder = NoteFolder(name: names.title, parentID: parent, colorIndex: colorIndex)
+        folder.dirName = names.dir
         library.folders.append(folder)
         library.order = [folder.id] + (library.order ?? [])      // 新的放最前面
         save()
@@ -366,8 +386,9 @@ final class LibraryModel: ObservableObject {
         let oldPath = Store.folderPath(id)
         var finalName = library.folders[i].name
         if library.folders[i].name != name || library.folders[i].dirName == nil {
-            finalName = Store.uniqueDirName(name, parent: library.folders[i].parentID, excluding: id, in: library)
-            library.folders[i].dirName = finalName
+            let names = uniqueNames(name, parent: library.folders[i].parentID, excluding: id, folder: true)
+            finalName = names.title
+            library.folders[i].dirName = names.dir
         }
         library.folders[i].name = finalName
         library.folders[i].colorIndex = colorIndex
@@ -412,7 +433,47 @@ final class LibraryModel: ObservableObject {
         for f in newFolders { result.append(ItemRef.folder(f.id)) }
         for n in newNotebooks { result.append(ItemRef.notebook(n.id)) }
         for item in placed { result.append(item.ref) }
+        // 釘選的（v12.15.11）排在最前面，照釘選的先後
+        let pinnedHere = result.filter { pinDate($0) != nil }
+            .sorted { (pinDate($0) ?? Date.distantPast) < (pinDate($1) ?? Date.distantPast) }
+        if !pinnedHere.isEmpty {
+            result = pinnedHere + result.filter { pinDate($0) == nil }
+        }
         return result
+    }
+
+    // MARK: 釘選（v12.15.11，使用者要求）
+
+    func pinDate(_ ref: ItemRef) -> Date? {
+        switch ref {
+        case .folder(let id): return folder(id)?.pinned
+        case .notebook(let id): return notebook(id)?.pinned
+        }
+    }
+
+    func togglePin(_ ref: ItemRef) {
+        let now: Date? = pinDate(ref) == nil ? Date() : nil
+        switch ref {
+        case .folder(let id):
+            guard let i = library.folders.firstIndex(where: { $0.id == id }) else { return }
+            library.folders[i].pinned = now
+        case .notebook(let id):
+            guard let i = library.notebooks.firstIndex(where: { $0.id == id }) else { return }
+            library.notebooks[i].pinned = now
+        }
+        save()
+    }
+
+    /// 所有釘選的（側邊欄）：照釘選的先後
+    var pinnedItems: [ItemRef] {
+        var list: [(Date, ItemRef)] = []
+        for f in library.folders where f.deletedAt == nil {
+            if let d = f.pinned { list.append((d, ItemRef.folder(f.id))) }
+        }
+        for n in library.notebooks where n.deletedAt == nil {
+            if let d = n.pinned { list.append((d, ItemRef.notebook(n.id))) }
+        }
+        return list.sorted { $0.0 < $1.0 }.map { $0.1 }
     }
 
     /// 側邊欄用的資料夾樹（照首頁排的順序）
@@ -742,9 +803,9 @@ final class LibraryModel: ObservableObject {
 
     func addNotebook(in folder: UUID?, title: String = "未命名筆記本",
                      data: NotebookData = NotebookData()) -> NotebookMeta {
-        let unique = Store.uniqueDirName(title, parent: folder, excluding: nil, in: library)
-        var meta = NotebookMeta(title: unique, folderID: folder, colorIndex: Int.random(in: 0..<8))
-        meta.dirName = unique
+        let names = uniqueNames(title, parent: folder, excluding: nil, folder: false)
+        var meta = NotebookMeta(title: names.title, folderID: folder, colorIndex: Int.random(in: 0..<8))
+        meta.dirName = names.dir
         library.notebooks.append(meta)
         library.order = [meta.id] + (library.order ?? [])        // 新的放最前面
         save()                                                   // 先登記，筆記本才知道要存在哪個資料夾
@@ -865,9 +926,9 @@ final class LibraryModel: ObservableObject {
     func renameNotebook(_ id: UUID, to name: String) {
         guard let i = library.notebooks.firstIndex(where: { $0.id == id }) else { return }
         let oldPath = Store.notebookDir(id)
-        let unique = Store.uniqueDirName(name, parent: library.notebooks[i].folderID, excluding: id, in: library)
-        library.notebooks[i].title = unique
-        library.notebooks[i].dirName = unique
+        let names = uniqueNames(name, parent: library.notebooks[i].folderID, excluding: id, folder: false)
+        library.notebooks[i].title = names.title
+        library.notebooks[i].dirName = names.dir
         save()
         Store.moveDirectory(from: oldPath, to: Store.notebookDir(id))    // 資料夾跟著改名
     }

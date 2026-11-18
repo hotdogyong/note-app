@@ -79,6 +79,199 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 在最近刪除裡打開的筆記本（v12.6）：只能看，不能寫、不能改
     var readOnly: Bool { model.meta.deletedAt != nil }
 
+    // MARK: 便利貼（v12.15.11，使用者：課本頁面空間不夠）
+
+    static let stickyFill: [Double] = [1.0, 0.9, 0.45]
+
+    /// 長按空白處的「便利貼」：黃底的方塊，直接開始打字
+    func createSticky(at p: CGPoint) {
+        createText(at: p)
+        guard let tv = activeText, tv.box.text.isEmpty else { return }
+        let k = pageScaleFactor(model.page(tv.pageID)?.spec ?? PageSpec())
+        updateActive { box in
+            box.sticky = true
+            box.fill = Self.stickyFill
+            box.fillMode = 0
+            box.shape = 1
+            box.rgba = [0.12, 0.12, 0.12, 1]
+            box.fixedWidth = 200 * k
+        }
+        if let tv = activeText {
+            tv.placeCursor(at: tv.convert(CGPoint(x: tv.bounds.midX, y: tv.bounds.midY), to: self), from: self)
+            textEditingChanged(tv)
+        }
+    }
+
+    /// 文字工具列的便利貼鈕：便利貼 → 收起來；一般的方塊 → 變成便利貼
+    func toggleStickyFold() {
+        guard let tv = activeText else { return }
+        if tv.box.sticky == true {
+            if tv.box.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                showMessage("note.text", "便利貼還沒寫東西，先打字再收起來")
+                return
+            }
+            updateActive { $0.folded = true }
+            endTextSelection()
+            showMessage("note.text", "便利貼收起來了，點一下小圖示打開")
+        } else {
+            updateActive { box in
+                box.sticky = true
+                box.fill = Self.stickyFill
+                box.fillMode = 0
+                box.shape = 1
+                box.rgba = TextBoxStyle.readable(text: box.rgba, fill: box.fill, mode: 0)
+            }
+        }
+    }
+
+    private func unfoldSticky(_ tv: TextBoxView) {
+        var texts = model.texts(of: tv.pageID)
+        guard let i = texts.firstIndex(where: { $0.id == tv.box.id }) else { return }
+        texts[i].folded = false
+        endTextSelection()
+        dismissShapeEditor()
+        setTextsRecorded(texts, pageID: tv.pageID)
+        if let again = pageViews[tv.pageID]?.textViews[tv.box.id] { activate(again, edit: false) }
+    }
+
+    // MARK: 跳轉捷徑（v12.15.11，使用者：頁面上放跳到其他頁、其他本的捷徑）
+
+    /// 放一個捷徑：藍色圓頭的方塊，字是「→ 第 12 頁」
+    func placeJump(_ jump: PageJump, label: String, at p: CGPoint?) {
+        let point = p ?? CGPoint(x: bounds.midX, y: bounds.midY)
+        createText(at: point)
+        guard activeText != nil else { return }
+        updateActive { box in
+            box.text = label
+            box.jump = jump
+            box.fill = [0.26, 0.5, 0.92]
+            box.fillMode = 0
+            box.shape = 2
+            box.rgba = [1, 1, 1, 1]
+            box.bold = true
+        }
+        endTextSelection()
+        showMessage("arrow.turn.down.right", "放好了：點一下就會跳過去（要移動或刪掉用套索圈它）")
+    }
+
+    /// 某一頁是第幾頁（主頁）；旁頁寫「第 N 頁的旁頁」
+    static func pageLabel(_ pageID: UUID, in rows: [PageRow]) -> String {
+        for (i, row) in rows.enumerated() {
+            guard let k = row.pages.firstIndex(where: { $0.id == pageID }) else { continue }
+            return k == row.mainIndex ? "第 \(i + 1) 頁" : "第 \(i + 1) 頁的旁頁"
+        }
+        return "那一頁"
+    }
+
+    private weak var jumpBackButton: UIButton?
+
+    func followJump(_ jump: PageJump) {
+        if let other = jump.notebook, other != model.meta.id {
+            flushAll()
+            model.openJump = jump                              // 別本：開成分頁再跳（NotebookEditorView 接手）
+            return
+        }
+        guard model.page(jump.page) != nil else {
+            showMessage("questionmark.square.dashed", "找不到那一頁（可能被刪掉了）")
+            return
+        }
+        let back = model.currentPageID
+        reveal(pageID: jump.page, pageRect: CGRect.null)
+        // 跳過去之後，下面出現「‹ 回到原本那頁」幾秒
+        jumpBackButton?.removeFromSuperview()
+        guard let from = back, from != jump.page else { return }
+        let button = UIButton(type: .system)
+        var config = UIButton.Configuration.filled()
+        config.title = "回到" + Self.pageLabel(from, in: model.notebook.rows)
+        config.image = UIImage(systemName: "chevron.left")
+        config.imagePadding = 6
+        config.cornerStyle = .capsule
+        config.baseBackgroundColor = UIColor(white: 0.18, alpha: 0.95)
+        config.baseForegroundColor = .white
+        button.configuration = config
+        button.addAction(UIAction { [weak self, weak button] _ in
+            button?.removeFromSuperview()
+            self?.reveal(pageID: from, pageRect: CGRect.null)
+        }, for: .touchUpInside)
+        button.sizeToFit()
+        button.center = CGPoint(x: bounds.midX, y: bounds.height - 70)
+        addSubview(button)
+        jumpBackButton = button
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak button] in
+            UIView.animate(withDuration: 0.3, animations: { button?.alpha = 0 }, completion: { _ in button?.removeFromSuperview() })
+        }
+    }
+
+    // MARK: 選取 PDF 的文字（v12.15.11，使用者：左上一個編輯符號，選文字拷貝；不要跟長按衝突）
+
+    private(set) var textSelectMode = false
+
+    func setTextSelectMode(_ on: Bool) {
+        guard on != textSelectMode else { return }
+        if on {
+            if cropMode { setCropMode(false) }
+            endTextSelection()
+            dismissShapeEditor()
+            hidePasteButton()
+        }
+        textSelectMode = on
+        model.textSelectActive = on
+        selectPress.isEnabled = !on && !cropMode           // 長按不跳一圈按鈕
+        for pv in pageViews.values {
+            if on { attachTextLayer(pv) } else { pv.setTextLayer(nil) }
+        }
+        applyCanvasDrawingAllowed()
+        if on {
+            let hasPDF = model.notebook.rows.contains { $0.pages.contains { $0.pdf != nil } }
+            showMessage("character.cursor.ibeam", hasPDF ? "長按課本上的字開始選，拖藍點調整範圍，選好按「拷貝」"
+                                                         : "這本沒有 PDF 的頁：可以用下面的「辨識這頁的文字」")
+        }
+    }
+
+    private func attachTextLayer(_ pv: NotePageView) {
+        guard let ref = pv.page.pdf, let page = PDFStore.page(ref), let copy = page.copy() as? PDFPage else {
+            pv.setTextLayer(nil)
+            return
+        }
+        let single = PDFDocument()
+        single.insert(copy, at: 0)
+        pv.setTextLayer(single)
+    }
+
+    /// 辨識這一頁的文字（掃描的 PDF、手寫、照片都可以；用 iPad 內建的辨識，不用網路）
+    func recognizeCurrentPage() {
+        guard let id = model.currentPageID, let page = model.page(id) else { return }
+        showMessage("text.viewfinder", "辨識中…")
+        var image: UIImage?
+        if let ref = page.pdf {
+            image = PDFStore.image(ref, aspect: page.spec.height / max(page.spec.width, 1), pixelWidth: 2200)
+        }
+        if image == nil || pageViews[id]?.canvas.drawing.strokes.isEmpty == false {
+            image = Thumbnail.image(for: page, width: 1100)          // 有筆跡：連手寫一起辨識（縮圖是 2 倍，約 2200 px）
+        }
+        guard let cg = image?.cgImage else { return }
+        let label = Self.pageLabel(id, in: model.notebook.rows)
+        Task { [weak self] in
+            let text = await TextRecognizer.recognize(cg)
+            await MainActor.run {
+                guard let self = self else { return }
+                if text.isEmpty {
+                    self.showMessage("text.viewfinder", "這頁辨識不到文字")
+                } else {
+                    self.model.ocrResult = OCRResult(title: label, text: text)
+                }
+            }
+        }
+    }
+
+    /// 頁面反相（v12.15.11）：所有載入的頁一起換；之後載入的頁在 makePageView 裡套上
+    private(set) var pagesInverted = false
+
+    func setPagesInverted(_ on: Bool) {
+        pagesInverted = on && !isBoard
+        for pv in pageViews.values { pv.setInverted(pagesInverted) }
+    }
+
     /// 白板（v12.3）：一本只有一張大頁面的筆記本。不能加頁；左右、上下可以同時捲；縮放範圍照白板的大小算
     var isBoard: Bool { model.notebook.board ?? false }
     /// 往旁邊、往上下拉可以新增頁面（白板不行）
@@ -875,6 +1068,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         NotificationCenter.default.post(name: NotebookView.surfaceTapped, object: self)
         hidePasteButton()
         let p = g.location(in: self)
+        if textSelectMode { return }                           // 選取文字中（v12.15.11）：點擊交給 PDF 的文字
         if cropMode {
             if let r = cropRectView, r.insetBy(dx: -12, dy: -12).contains(p) { return }
             clearCropRect()                                    // 點框外面：拿掉框，繼續截下一張（再按剪刀才離開）
@@ -909,6 +1103,16 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         if readOnly { return }                                 // 最近刪除裡打開的：文字、圖片都不能選
         if let tv = textBox(at: p) {
+            // 收起來的便利貼：點一下展開；跳轉捷徑：點一下跳過去（v12.15.11）
+            if tv !== activeText, tv.box.isFolded {
+                unfoldSticky(tv)
+                return
+            }
+            if tv !== activeText, let jump = tv.box.jump {
+                endTextSelection()
+                followJump(jump)
+                return
+            }
             if tv !== activeText {
                 dismissShapeEditor()
                 activate(tv, edit: false)
@@ -1044,6 +1248,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     @objc private func handleDoubleTap(_ g: UITapGestureRecognizer) {
         if readOnly { return }                                 // 最近刪除裡打開的：只能看
         if cropMode { return }                                 // 剪刀開著（v12.15.2）：點兩下不新增文字方塊
+        if textSelectMode { return }                           // 選取文字中（v12.15.11）
         NotificationCenter.default.post(name: NotebookView.surfaceTapped, object: self)
         let p = g.location(in: self)
         if let tv = textBox(at: p) {
@@ -2273,7 +2478,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                                              outerTint: UIColor.brown,
                                              outerAction: { [weak self] in self?.model.cardRequest = CardRequest.importExisting }))
         } else {
-            items.append(nil)                                       // 筆記本裡：新筆記本那一格空著
+            // 筆記本裡（v12.15.11）：便利貼
+            items.append(RadialMenuView.Item(symbol: "note.text", title: "便利貼", tint: UIColor.systemYellow,
+                                             action: { [weak self] in self?.createSticky(at: p) }))
         }
         if isBoard {
             // 子白板（v12.14.0）：新的白板／外圈「匯入現有的」白板，都變成這張白板上的一張卡片
@@ -2283,7 +2490,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                                              outerTint: UIColor.systemTeal,
                                              outerAction: { [weak self] in self?.model.cardRequest = CardRequest.importBoard }))
         } else {
-            items.append(nil)                                       // 筆記本裡：子白板那一格空著
+            // 筆記本裡（v12.15.11）：跳轉捷徑（這一本的別頁，或別本）
+            items.append(RadialMenuView.Item(symbol: "arrow.turn.down.right", title: "跳轉", tint: UIColor.systemBlue,
+                                             action: { [weak self] in self?.model.jumpRequest = JumpPick(point: p) }))
         }
         items.append(RadialMenuView.Item(symbol: "character.textbox", title: "新卡片", tint: UIColor.systemOrange,
                                          action: { [weak self] in self?.createText(at: p) }))
@@ -5411,6 +5620,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         rv.addSubview(pv)
         pv.canvas.tool = scaledTool(lastTool, for: page)
         pv.canvas.drawingGestureRecognizer.isEnabled = canvasDrawingAllowed && !readOnly
+        if pagesInverted { pv.setInverted(true) }
+        if textSelectMode { attachTextLayer(pv) }
         if isBoard {                                           // 白板：區塊、圖釘（v12.7）
             pv.syncBoardMarks(frames: model.notebook.frames ?? [], pins: model.notebook.pins ?? [])
         } else if boardPins.contains(where: { $0.pageID == page.id }) {   // 筆記本的圖釘（v12.9）
@@ -7379,7 +7590,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     /// 現在畫布能不能用筆寫（套索模式不行；文字方塊選取中，框外照樣可以畫）
-    private var canvasDrawingAllowed: Bool { !lassoMode && !cropMode && !tapeMode && !frameMode }
+    private var canvasDrawingAllowed: Bool { !lassoMode && !cropMode && !tapeMode && !frameMode && !textSelectMode }
 
     private func applyCanvasDrawingAllowed() {
         let allowed = canvasDrawingAllowed && !readOnly

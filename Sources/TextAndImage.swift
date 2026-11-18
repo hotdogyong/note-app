@@ -1104,6 +1104,9 @@ final class TextBoxView: UIView, UITextViewDelegate {
     }
 
     private let zoneLayer = CAShapeLayer()       // 輸入中：整頁淡淡上色
+    private let foldIcon = UIImageView()         // 收起來的便利貼（v12.15.11）：只剩一個小圖示
+    /// 收起來的便利貼在頁面上多大（頁面座標）
+    static let foldedSide: CGFloat = 30
     static let handleTag = 777
     private var handles: [UIView] = []           // 四個角：0 左上、1 右上、2 右下、3 左下
     private var resizeStart: TextBox?
@@ -1223,6 +1226,14 @@ final class TextBoxView: UIView, UITextViewDelegate {
 
     private func relayout() {
         let s = max(scale, 0.0001)
+        // 便利貼收起來（v12.15.11）：只畫一個小小的便利貼圖示，點一下展開
+        let foldedNow = box.isFolded && !textView.isFirstResponder
+        textView.isHidden = foldedNow
+        foldIcon.isHidden = !foldedNow
+        if foldedNow {
+            layoutFolded(s)
+            return
+        }
         let font = Self.font(for: box, scale: s)
         textView.font = font
         textView.textColor = box.color
@@ -1371,6 +1382,39 @@ final class TextBoxView: UIView, UITextViewDelegate {
             d.center = middles[i]
             bringSubviewToFront(d)
         }
+        onRelayout?()
+    }
+
+    private func layoutFolded(_ s: CGFloat) {
+        let side = Self.foldedSide * s
+        frame = CGRect(x: box.x * s, y: box.y * s, width: side, height: side)
+        contentRect = CGRect(x: 0, y: 0, width: side, height: side)
+        frameRect = contentRect
+        placeholder.isHidden = true
+        mathView.isHidden = true
+        if foldIcon.superview == nil {
+            foldIcon.contentMode = .scaleAspectFit
+            foldIcon.image = UIImage(systemName: "note.text")
+            foldIcon.isUserInteractionEnabled = false
+            addSubview(foldIcon)
+        }
+        foldIcon.tintColor = UIColor(white: 0.25, alpha: 1)
+        foldIcon.frame = contentRect.insetBy(dx: side * 0.18, dy: side * 0.18)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let tint = box.fill.map { TextBoxStyle.color($0) } ?? UIColor(red: 1, green: 0.9, blue: 0.45, alpha: 1)
+        styleLayer.path = UIBezierPath(roundedRect: contentRect, cornerRadius: 5 * s).cgPath
+        styleLayer.fillColor = tint.cgColor
+        styleLayer.strokeColor = UIColor(white: 0, alpha: 0.18).cgColor
+        styleLayer.lineWidth = max(1 * s, 0.5)
+        bandLayer.path = nil
+        zoneLayer.path = nil
+        borderLayer.path = isUserInteractionEnabled
+            ? UIBezierPath(roundedRect: contentRect.insetBy(dx: -3, dy: -3), cornerRadius: 7 * s).cgPath : nil
+        borderLayer.lineDashPattern = nil
+        CATransaction.commit()
+        for h in handles { h.isHidden = true }
+        for d in dots { d.isHidden = true }
         onRelayout?()
     }
 
@@ -1860,6 +1904,7 @@ final class TextBar: UIView {
     private let lockButton = UIButton(type: .system)
     private let markdownButton = UIButton(type: .system)     // Markdown 排版（v12.9）
     let styleButton = UIButton(type: .system)                // 卡片樣式（v12.13.0）
+    private let stickyButton = UIButton(type: .system)       // 便利貼：收起來／變成便利貼（v12.15.11）
 
     init(host: NotebookView) {
         self.host = host
@@ -1906,6 +1951,9 @@ final class TextBar: UIView {
         styleButton.addAction(UIAction { [weak host] _ in host?.showTextStyle() }, for: .touchUpInside)
         styleButton.setImage(UIImage(systemName: "paintpalette"), for: .normal)
         items.append(styleButton)                                  // 卡片樣式：外框的顏色、形狀（v12.13.0）
+        stickyButton.addAction(UIAction { [weak host] _ in host?.toggleStickyFold() }, for: .touchUpInside)
+        stickyButton.setImage(UIImage(systemName: "note.text"), for: .normal)
+        items.append(stickyButton)                                 // 便利貼：收起來（v12.15.11）
 
         // 分隔線：前面是文字樣式，後面是剪下、拷貝、複製、刪除
         let divider = UIView()
@@ -1946,6 +1994,9 @@ final class TextBar: UIView {
         boldButton.tintColor = box.bold ? .systemYellow : .white
         markdownButton.tintColor = box.isMarkdown ? .systemYellow : .white
         styleButton.tintColor = box.fill != nil ? .systemYellow : .white
+        stickyButton.setImage(UIImage(systemName: box.sticky == true ? "arrow.down.right.and.arrow.up.left" : "note.text"),
+                              for: .normal)
+        stickyButton.tintColor = box.sticky == true ? .systemYellow : .white
         let alignSymbol = ["text.alignleft", "text.aligncenter", "text.alignright"][min(max(box.align, 0), 2)]
         alignButton.setImage(UIImage(systemName: alignSymbol), for: .normal)
         alignButton.tintColor = .white

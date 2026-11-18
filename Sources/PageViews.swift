@@ -926,8 +926,81 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// 依縮放倍率排版；筆跡維持頁面座標，所以縮放後依然清晰
+    // MARK: 選取 PDF 的文字（v12.15.11）
+    // 選取文字的時候，課本那一層換成系統的 PDF 視圖（只有這一頁），長按文字就能選、拷貝；筆跡還是畫在它上面，
+    // 畫布暫時不收觸控，手指、Pencil 都交給底下的 PDF
+    private var textLayer: PDFView?
+
+    func setTextLayer(_ document: PDFDocument?) {
+        textLayer?.removeFromSuperview()
+        textLayer = nil
+        canvas.isUserInteractionEnabled = document == nil
+        guard let document = document else { return }
+        let v = PDFView(frame: bounds)
+        v.displayMode = .singlePage
+        v.displaysPageBreaks = false
+        v.pageShadowsEnabled = false
+        v.backgroundColor = .white
+        v.autoScales = true
+        v.document = document
+        v.minScaleFactor = v.scaleFactorForSizeToFit
+        v.maxScaleFactor = v.scaleFactorForSizeToFit
+        for case let scroll as UIScrollView in v.subviews {
+            scroll.isScrollEnabled = false                   // 捲動、縮放還是交給筆記本自己
+            scroll.pinchGestureRecognizer?.isEnabled = false
+            scroll.bouncesZoom = false
+        }
+        insertSubview(v, aboveSubview: pdfView)
+        textLayer = v
+    }
+
+    // MARK: 頁面反相（v12.15.11，使用者：黑轉白，有一個按鈕隨時切換）
+    // 頁面最上面蓋一層白色、用「差值」混合：底下的課本、筆跡、文字、圖片全部反相（白底黑字 → 黑底白字）。
+    // 只是顯示，存檔、匯出、縮圖都不變。選取框、按鈕放在這一層上面，不跟著反相
+    private var invertView: UIView?
+
+    func setInverted(_ on: Bool) {
+        if on, invertView == nil {
+            let v = UIView(frame: bounds)
+            v.backgroundColor = .white
+            v.isUserInteractionEnabled = false
+            v.layer.compositingFilter = "differenceBlendMode"
+            addSubview(v)
+            invertView = v
+            keepInvertOnTop()
+        } else if !on, let v = invertView {
+            v.removeFromSuperview()
+            invertView = nil
+        }
+    }
+
+    /// 反相那一層放在內容上面、選取框和按鈕下面
+    func keepInvertOnTop() {
+        guard let v = invertView else { return }
+        v.frame = bounds
+        bringSubviewToFront(v)
+        for sub in subviews where sub is SelectionEditorView || sub is ImageEditorView || sub.tag == Self.clipButtonTag {
+            bringSubviewToFront(sub)
+        }
+    }
+
+    override func didAddSubview(_ subview: UIView) {
+        super.didAddSubview(subview)
+        if invertView != nil, subview !== invertView, !(subview is SelectionEditorView), !(subview is ImageEditorView),
+           subview.tag != Self.clipButtonTag {
+            keepInvertOnTop()
+        }
+    }
+
     func apply(scale s: CGFloat) {
         if page.pdf != nil { pdfView.frame = bounds }
+        invertView?.frame = bounds
+        if let t = textLayer, t.frame != bounds {
+            t.frame = bounds
+            t.autoScales = true
+            t.minScaleFactor = t.scaleFactorForSizeToFit
+            t.maxScaleFactor = t.scaleFactorForSizeToFit
+        }
         layoutCanvasWindow(scale: s)
         if !isFlat { layer.shadowPath = UIBezierPath(rect: bounds).cgPath }
         linkLayoutPaused = true

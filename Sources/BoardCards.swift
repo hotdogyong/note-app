@@ -150,17 +150,24 @@ enum CardCover {
                 UIBezierPath(roundedRect: pill, cornerRadius: 12).fill()
                 text.draw(at: CGPoint(x: pill.minX + 10, y: pill.midY - textSize.height / 2), withAttributes: attrs)
             }
-            // 標題：靠左，最多兩行
+            // 標題：靠左，最多兩行。v12.15.11（使用者：PDF 卡片名第二行不要變「…」）：
+            // 以前段落設成 byTruncatingTail，整段只畫一行就「…」。改成換行；兩行放不下就把字縮小一點再試
             let style = NSMutableParagraphStyle()
             style.alignment = .left
-            style.lineBreakMode = .byTruncatingTail
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 14, weight: .medium),
-                .foregroundColor: UIColor(white: 0.92, alpha: 1),
-                .paragraphStyle: style
-            ]
-            (caption as NSString).draw(with: CGRect(x: 14, y: coverHeight + 8, width: width - 28, height: captionHeight - 14),
-                                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+            style.lineBreakMode = .byCharWrapping
+            let box = CGRect(x: 12, y: coverHeight + 6, width: width - 24, height: captionHeight - 10)
+            var attrs: [NSAttributedString.Key: Any] = [:]
+            for size in [CGFloat(14), 12.5, 11] {
+                attrs = [
+                    .font: UIFont.systemFont(ofSize: size, weight: .medium),
+                    .foregroundColor: UIColor(white: 0.92, alpha: 1),
+                    .paragraphStyle: style
+                ]
+                let needed = (caption as NSString).boundingRect(with: CGSize(width: box.width, height: .greatestFiniteMagnitude),
+                                                                options: [.usesLineFragmentOrigin], attributes: attrs, context: nil)
+                if needed.height <= box.height { break }
+            }
+            (caption as NSString).draw(with: box, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
                                        attributes: attrs, context: nil)
             // 一圈亮一點的邊（v12.13.0）：空白的深色筆記本放在深色白板上，以前跟背景幾乎一樣，看起來像卡片不見了
             ctx.cgContext.resetClip()

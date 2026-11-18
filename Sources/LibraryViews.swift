@@ -451,6 +451,7 @@ struct LibraryView: View {
             if let folder = library.folder(id) {
                 NavigationLink(value: LibraryRoute.folder(folder)) {
                     FolderItemView(name: folder.name, color: folderColor(folder.colorIndex))
+                        .overlay(alignment: .topTrailing) { if folder.pinned != nil { PinBadge() } }
                 }
                 .buttonStyle(.plain)
                 .contextMenu { itemMenu(ref, name: folder.name) }
@@ -461,6 +462,7 @@ struct LibraryView: View {
                     withAnimation(.easeInOut(duration: 0.25)) { library.openNotebook = meta }
                 } label: {
                     NotebookItemView(meta: meta)
+                        .overlay(alignment: .topTrailing) { if meta.pinned != nil { PinBadge() } }
                 }
                 .buttonStyle(.plain)
                 .contextMenu { itemMenu(ref, name: meta.title) }
@@ -489,6 +491,15 @@ struct LibraryView: View {
                 }
             } label: {
                 Label("白板裡的檔案（\(library.boardFiles(id).count)）", systemImage: "books.vertical")
+            }
+        }
+        Button {
+            withAnimation(.easeInOut(duration: 0.25)) { library.togglePin(ref) }
+        } label: {
+            if library.pinDate(ref) == nil {
+                Label("釘選", systemImage: "pin")
+            } else {
+                Label("取消釘選", systemImage: "pin.slash")
             }
         }
         Button {
@@ -1402,6 +1413,21 @@ struct TrashView: View {
                 Label("永久刪除", systemImage: "trash")
             }
         }
+    }
+}
+
+/// 釘選的資料夾、筆記本右上角的小圖釘（v12.15.11）
+struct PinBadge: View {
+    var body: some View {
+        Image(systemName: "pin.fill")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(Color.white)
+            .frame(width: 26, height: 26)
+            .background(Circle().fill(Color.orange))
+            .shadow(color: Color.black.opacity(0.25), radius: 2, y: 1)
+            .rotationEffect(.degrees(30))
+            .offset(x: 4, y: -6)
+            .allowsHitTesting(false)
     }
 }
 

@@ -375,14 +375,24 @@ struct TextBox: Codable, Hashable, Identifiable {
     var fillMode: Int? = nil         // 0 整個填滿、1 外框＋上面一條、2 只有外框
     var shape: Int? = nil            // 0 方、1 圓角、2 圓頭
     var tidyLevel: Int? = nil        // 一鍵整理排在第幾層（v12.15.0；-1＝沒接線）。再整理時用來算回原本的字級
+    var jump: PageJump? = nil        // 跳轉捷徑（v12.15.11）：點一下跳到那一頁（別本的話開成分頁）
+    var sticky: Bool? = nil          // 便利貼（v12.15.11）：黃底的方塊，可以收成一個小圖示
+    var folded: Bool? = nil          // 便利貼收起來了
 
     var isLocked: Bool { locked ?? false }
+    var isFolded: Bool { (sticky ?? false) && (folded ?? false) }
     var isMarkdown: Bool { markdown ?? false }
 
     var color: UIColor {
         UIColor(red: rgba.count > 0 ? rgba[0] : 1, green: rgba.count > 1 ? rgba[1] : 1,
                 blue: rgba.count > 2 ? rgba[2] : 1, alpha: 1)
     }
+}
+
+/// 跳轉捷徑的目的地（v12.15.11）：notebook 是 nil 或等於這一本＝同一本
+struct PageJump: Codable, Hashable {
+    var notebook: UUID?
+    var page: UUID
 }
 
 /// 一列 = 一張主頁 + 它的旁頁。pages 由左到右排列，mainIndex 指出哪一張是主頁。
@@ -460,6 +470,7 @@ struct NoteFolder: Codable, Hashable, Identifiable {
     var colorIndex: Int? = nil        // 資料夾顏色（舊的資料夾沒有：用預設的藍色）
     var dirName: String? = nil        // 在資料位置裡的資料夾名稱
     var deletedAt: Date? = nil        // 有值：在「最近刪除」裡
+    var pinned: Date? = nil           // 釘選的時間（v12.15.11）：排在最前面，側邊欄「釘選」也列出來
 }
 
 /// 資料夾可以選的顏色：深、中、淺三排
@@ -489,6 +500,7 @@ struct NotebookMeta: Codable, Hashable, Identifiable {
     var deletedAt: Date? = nil        // 有值：在「最近刪除」裡
     var isBoard: Bool? = nil          // true：白板（首頁顯示用；真正的依據是 NotebookData.board）
     var boardID: UUID? = nil          // 有值：這本的「家」在那張白板裡（v12.12.0），首頁不列出來；檔案還是放在 folderID 那個資料夾
+    var pinned: Date? = nil           // 釘選的時間（v12.15.11）
 }
 
 /// 匯出旁頁的順序

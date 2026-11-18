@@ -706,6 +706,7 @@ struct PagePositionCell: View {
     let sides: Int
     let mark: Mark
     let dimmed: Bool
+    var label: String? = nil                   // 選到時下面寫的字（沒給就寫「放在這頁後面／前面」）
     @State private var image: UIImage?
 
     var body: some View {
@@ -732,7 +733,7 @@ struct PagePositionCell: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(mark == .none ? Color.secondary : Color.accentColor)
             if mark != .none {
-                Text(mark == .before ? "放在這頁前面" : "放在這頁後面")
+                Text(label ?? (mark == .before ? "放在這頁前面" : "放在這頁後面"))
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Color.accentColor)
             }
@@ -878,6 +879,9 @@ struct MoveFolderLevel: View {
     let sourceID: UUID
     var header: AnyView? = nil
     let pick: (NotebookMeta) -> Void
+    var pickSection = "移到這一本"               // 跳轉捷徑也用這個畫面（v12.15.11）：字換掉
+    var rootTitle = "移到哪一本？"
+    var allowCreate = true
 
     private var title: String {
         folderID.flatMap { library.folder($0)?.name } ?? "所有文件"
@@ -907,7 +911,8 @@ struct MoveFolderLevel: View {
                 Section("資料夾") {
                     ForEach(subfolders) { (folder: NoteFolder) in
                         NavigationLink {
-                            MoveFolderLevel(library: library, folderID: folder.id, sourceID: sourceID, pick: pick)
+                            MoveFolderLevel(library: library, folderID: folder.id, sourceID: sourceID, pick: pick,
+                                            pickSection: pickSection, rootTitle: rootTitle, allowCreate: allowCreate)
                         } label: {
                             Label {
                                 Text(folder.name)
@@ -919,11 +924,12 @@ struct MoveFolderLevel: View {
                     }
                 }
             }
-            Section(notebooks.isEmpty ? "這裡沒有筆記本" : "移到這一本") {
+            Section(notebooks.isEmpty ? "這裡沒有筆記本" : pickSection) {
                 ForEach(notebooks) { (meta: NotebookMeta) in
                     MoveNotebookRow(library: library, meta: meta, pick: pick)
                 }
             }
+            if allowCreate {
             Section {
                 Button {
                     let suggested = (library.notebook(sourceID)?.title ?? "筆記") + " 移出"
@@ -937,8 +943,9 @@ struct MoveFolderLevel: View {
                     Label("在「\(title)」新建筆記本並移過去…", systemImage: "plus.rectangle.on.rectangle")
                 }
             }
+            }
         }
-        .navigationTitle(folderID == nil ? "移到哪一本？" : title)
+        .navigationTitle(folderID == nil ? rootTitle : title)
         .navigationBarTitleDisplayMode(.inline)
     }
 }

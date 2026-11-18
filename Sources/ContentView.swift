@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.15.10"
+let appVersion = "v12.15.11"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序
@@ -199,6 +199,15 @@ struct ContentView: View {
                 .onDrop(of: [UTType.text], isTargeted: hoverBinding(allDocumentsID)) { _ in
                     sidebarDrop(to: nil, trash: false)
                 }
+            let pins = library.pinnedItems
+            if !pins.isEmpty {
+                // 釘選的資料夾、筆記本（v12.15.11）：從哪裡都一點就到
+                Section("釘選") {
+                    ForEach(pins, id: \.self) { (ref: ItemRef) in
+                        pinnedRow(ref)
+                    }
+                }
+            }
             if !tree.isEmpty {
                 Section("資料夾") {
                     OutlineGroup(tree, children: \.children) { (node: FolderNode) in
@@ -221,6 +230,42 @@ struct ContentView: View {
             }
         }
         .navigationTitle("筆記")
+    }
+
+    @ViewBuilder
+    private func pinnedRow(_ ref: ItemRef) -> some View {
+        switch ref {
+        case .folder(let id):
+            if let folder = library.folder(id) {
+                Button {
+                    selection = id
+                } label: {
+                    Label {
+                        Text(folder.name).foregroundStyle(Color.primary)
+                    } icon: {
+                        Image(systemName: "folder.fill").foregroundStyle(folderColor(folder.colorIndex))
+                    }
+                }
+                .contextMenu {
+                    Button { library.togglePin(ref) } label: { Label("取消釘選", systemImage: "pin.slash") }
+                }
+            }
+        case .notebook(let id):
+            if let meta = library.notebook(id) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) { library.openNotebook = meta }
+                } label: {
+                    Label {
+                        Text(meta.title).foregroundStyle(Color.primary)
+                    } icon: {
+                        Image(systemName: meta.isBoard == true ? "rectangle.dashed" : "book.closed")
+                    }
+                }
+                .contextMenu {
+                    Button { library.togglePin(ref) } label: { Label("取消釘選", systemImage: "pin.slash") }
+                }
+            }
+        }
     }
 
     // MARK: 側邊欄：把首頁的項目拖進來

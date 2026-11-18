@@ -62,6 +62,21 @@ struct CropButton: View {
     }
 }
 
+/// 左上的「選取文字」（v12.15.11）：課本上的字可以選、拷貝；開著時寫字、長按都暫停
+struct TextSelectButton: View {
+    @ObservedObject var model: NotebookModel
+
+    var body: some View {
+        let active: Bool = model.textSelectActive
+        return Button {
+            model.documentView?.setTextSelectMode(!active)
+        } label: {
+            Image(systemName: active ? "character.cursor.ibeam" : "character.cursor.ibeam")
+                .foregroundStyle(active ? Color.accentColor : Color.primary)
+        }
+    }
+}
+
 /// 膠囊的底：iOS 26 以上用系統的玻璃（跟以前系統工具列一樣），以前的系統用毛玻璃
 struct GlassCapsule: ViewModifier {
     func body(content: Content) -> some View {
@@ -830,7 +845,18 @@ final class NotebookModel: ObservableObject {
     /// 這是白板（只有一張大頁面）
     var isBoard: Bool { notebook.board ?? false }
     @Published var canUndo = false
+    /// 頁面反相（v12.15.11）：每一本自己記
+    @Published var inverted = false {
+        didSet {
+            UserDefaults.standard.set(inverted, forKey: "pageInverted." + meta.id.uuidString)
+            documentView?.setPagesInverted(inverted)
+        }
+    }
     @Published var cropActive = false                  // 截圖工具開著
+    @Published var textSelectActive = false            // 選取 PDF 文字中（v12.15.11）
+    @Published var ocrResult: OCRResult?               // 辨識出來的文字（v12.15.11）
+    @Published var openJump: PageJump?                 // 跳轉捷徑指到別本：開成分頁再跳（v12.15.11）
+    @Published var jumpRequest: JumpPick?              // 長按空白處「跳轉」：選要跳到哪裡
     @Published var canRedo = false
     weak var documentView: NotebookView?
     /// 刪掉的頁放進最近刪除（v12.9.2）：由編輯畫面接到首頁的資料（NotebookView 拿不到首頁）
@@ -839,6 +865,7 @@ final class NotebookModel: ObservableObject {
     init(meta: NotebookMeta) {
         self.meta = meta
         self.notebook = Store.loadNotebook(meta.id)
+        self.inverted = UserDefaults.standard.bool(forKey: "pageInverted." + meta.id.uuidString)
     }
 
     func save() { Store.saveNotebook(notebook, id: meta.id) }
@@ -1407,6 +1434,7 @@ struct NotebookEditorView: View {
             Image(systemName: "rectangle.split.3x3")
         }
         CropButton(model: model)
+        if !model.isBoard { TextSelectButton(model: model) }
     }
 
     /// 右邊：復原、重做；白板：圖釘、區塊、＋；筆記本：書籤、新增頁面；最後是 ⋯
@@ -1428,6 +1456,13 @@ struct NotebookEditorView: View {
             BoardToolbarButtons(model: model, showPins: $showPins, showFrames: $showFrames)
             expandTabsButton
         } else {
+            // 頁面反相（v12.15.11，使用者：黑轉白，隨時可以切換）
+            Button {
+                model.inverted.toggle()
+                model.documentView?.showMessage("circle.lefthalf.filled", model.inverted ? "頁面反相：黑底白字" : "頁面回到原本的顏色")
+            } label: {
+                Image(systemName: model.inverted ? "circle.lefthalf.filled.inverse" : "circle.lefthalf.filled")
+            }
             Button {
                 model.toggleBookmark()
             } label: {
@@ -1633,6 +1668,13 @@ struct NotebookEditorView: View {
                         model.documentView?.jumpTo(pageID: target.page, rect: target.rect)
                     }
                 }
+                if !embedded, let pending = library.pendingJump, pending.notebook == model.meta.id {
+                    // 從別本的跳轉捷徑打開的（v12.15.11）：等回到上次的位置之後跳到那一頁
+                    library.pendingJump = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        model.documentView?.followJump(PageJump(notebook: nil, page: pending.page))
+                    }
+                }
                 if SelfTest.scene == "pagepos", !embedded, model.notebook.rows.count > 3 {   // 自動測試：位置選單
                     let id = model.notebook.rows[3].pages[0].id
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { moveRequest = MoveRequest(pageIDs: [id], within: true) }
@@ -1699,6 +1741,51 @@ struct NotebookEditorView: View {
             }
             .onChange(of: jump) { _, target in
                 if let target = target { model.documentView?.jumpTo(pageID: target.page, rect: target.rect) }
+            }
+            .onChange(of: model.openJump) { _, target in
+                // 跳轉捷徑指到別本（v12.15.11）：開成分頁，打開後跳到那一頁
+                guard let target = target, let id = target.notebook else { return }
+                model.openJump = nil
+                guard let meta = library.notebook(id), meta.deletedAt == nil else {
+                    model.documentView?.showMessage("questionmark.folder", "找不到那本筆記本（可能被刪掉了）")
+                    return
+                }
+                library.pendingJump = target
+                model.documentView?.flushAll()
+                library.openNotebook = meta
+            }
+            .sheet(item: $model.ocrResult) { result in
+                OCRSheet(result: result)
+            }
+            .sheet(item: $model.jumpRequest) { request in
+                JumpPickerSheet(library: library, currentID: model.meta.id, currentTitle: model.meta.title,
+                                currentRows: model.notebook.rows) { jump, label in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        model.documentView?.placeJump(jump, label: label, at: request.point)
+                    }
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if model.textSelectActive && !embedded {
+                    // 選取文字中：下面一條說明、辨識文字、完成
+                    HStack(spacing: 14) {
+                        Image(systemName: "character.cursor.ibeam")
+                        Text("長按字開始選，選好按「拷貝」")
+                            .font(.callout)
+                        Button {
+                            model.documentView?.recognizeCurrentPage()
+                        } label: {
+                            Label("辨識這頁的文字", systemImage: "text.viewfinder")
+                        }
+                        .buttonStyle(.bordered)
+                        Button("完成") { model.documentView?.setTextSelectMode(false) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .modifier(GlassCapsule())
+                    .padding(.bottom, 24)
+                }
             }
             .onChange(of: model.cardTab) { _, open in
                 guard let open = open else { return }
@@ -2649,6 +2736,7 @@ struct DocumentRepresentable: UIViewRepresentable {
     func makeUIView(context: Context) -> NotebookView {
         let view = NotebookView(model: model)
         model.documentView = view
+        if model.inverted { view.setPagesInverted(true) }
         model.canPaste = NotebookView.hasClipboard
         return view
     }

@@ -378,6 +378,7 @@ struct TextBox: Codable, Hashable, Identifiable {
     var jump: PageJump? = nil        // 跳轉捷徑（v12.15.11）：點一下跳到那一頁（別本的話開成分頁）
     var sticky: Bool? = nil          // 便利貼（v12.15.11）：黃底的方塊，可以收成一個小圖示
     var folded: Bool? = nil          // 便利貼收起來了
+    var ink: Data? = nil             // 便利貼上手寫的字（v12.15.12）：PKDrawing，座標從便利貼左上角算起
 
     var isLocked: Bool { locked ?? false }
     var isFolded: Bool { (sticky ?? false) && (folded ?? false) }
@@ -393,6 +394,8 @@ struct TextBox: Codable, Hashable, Identifiable {
 struct PageJump: Codable, Hashable {
     var notebook: UUID?
     var page: UUID
+    var pin: UUID? = nil             // 白板（v12.15.12）：跳到這張白板上的圖釘
+    var frame: UUID? = nil           // 或區塊
 }
 
 /// 一列 = 一張主頁 + 它的旁頁。pages 由左到右排列，mainIndex 指出哪一張是主頁。

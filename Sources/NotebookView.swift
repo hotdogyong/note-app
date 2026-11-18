@@ -106,8 +106,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     func toggleStickyFold() {
         guard let tv = activeText else { return }
         if tv.box.sticky == true {
-            if tv.box.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                showMessage("note.text", "便利貼還沒寫東西，先打字再收起來")
+            if tv.box.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && tv.box.ink == nil {
+                showMessage("note.text", "便利貼還沒寫東西，先寫字或打字再收起來")
                 return
             }
             updateActive { $0.folded = true }
@@ -122,6 +122,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 box.rgba = TextBoxStyle.readable(text: box.rgba, fill: box.fill, mode: 0)
             }
         }
+    }
+
+    /// 便利貼上寫了一筆（v12.15.12）：選取中的照一般輸入記（結束時合成一步復原），沒選取的直接登記一步
+    func stickyInkChanged(_ tv: TextBoxView) {
+        if tv === activeText {
+            commit(tv)
+            return
+        }
+        var texts = model.texts(of: tv.pageID)
+        guard let i = texts.firstIndex(where: { $0.id == tv.box.id }) else { return }
+        texts[i].ink = tv.box.ink
+        setTextsRecorded(texts, pageID: tv.pageID)
     }
 
     private func unfoldSticky(_ tv: TextBoxView) {
@@ -168,7 +180,19 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     func followJump(_ jump: PageJump) {
         if let other = jump.notebook, other != model.meta.id {
             flushAll()
-            model.openJump = jump                              // 別本：開成分頁再跳（NotebookEditorView 接手）
+            if isBoard {
+                model.openCard(other, jumpTo: (jump.page, CGRect.null))   // 白板：開成浮動視窗，跳到那一頁（v12.15.12）
+            } else {
+                model.openJump = jump                          // 別本：開成分頁再跳（NotebookEditorView 接手）
+            }
+            return
+        }
+        if let pin = jump.pin {                                // 白板上的圖釘、區塊（v12.15.12）
+            if boardPins.contains(where: { $0.id == pin }) { jumpToPin(pin) } else { showMessage("questionmark.circle", "找不到那個圖釘（可能被刪掉了）") }
+            return
+        }
+        if let frame = jump.frame {
+            if boardFrames.contains(where: { $0.id == frame }) { jumpToFrame(frame) } else { showMessage("questionmark.circle", "找不到那個區塊（可能被刪掉了）") }
             return
         }
         guard model.page(jump.page) != nil else {
@@ -633,6 +657,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         endTextSelection()
         dismissShapeEditor()
         reveal(pageID: pageID, pageRect: rect)
+        guard !rect.isNull, rect.width > 0 else { return }     // 跳到整頁（捷徑）：不用閃框
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
             guard let self = self, let pv = self.pageViews[pageID] else { return }
             let s = pv.bounds.width / max(pv.page.spec.width, 1)
@@ -1104,7 +1129,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if readOnly { return }                                 // 最近刪除裡打開的：文字、圖片都不能選
         if let tv = textBox(at: p) {
             // 收起來的便利貼：點一下展開；跳轉捷徑：點一下跳過去（v12.15.11）
-            if tv !== activeText, tv.box.isFolded {
+            if tv.box.isFolded {
                 unfoldSticky(tv)
                 return
             }
@@ -1412,7 +1437,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         growMarkdownPageIfNeeded(tv)
         // 空的方塊拿掉；有線接著的留著（v12.13.0：從點拉出來的新方塊還沒打字，也要看得到）
         if let i = texts.firstIndex(where: { $0.id == tv.box.id }), !texts[i].isMarkdownPage,   // Markdown 頁的方塊空了也留著
-           !tv.linked,
+           !tv.linked, texts[i].sticky != true,                                           // 便利貼空的也留著（可能只有手寫）
            texts[i].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             texts.remove(at: i)
             model.setTexts(texts, pageID: tv.pageID)
@@ -2418,6 +2443,15 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         if activeText?.textView.isFirstResponder == true { return }         // 輸入文字中：長按是移動游標
         let p = g.location(in: self)
+        // 跳轉捷徑、收起來的便利貼（v12.15.12，使用者：捷徑要可以移動）：點一下是跳過去／打開，長按才是選取（選取後可以拖）
+        if let tv = textBox(at: p), tv !== activeText, tv.box.jump != nil || tv.box.isFolded {
+            hidePasteButton()
+            dismissShapeEditor()
+            activate(tv, edit: false)
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showMessage("hand.draw", "選取了：拖它就能移動，點旁邊結束")
+            return
+        }
         // 長按紙膠帶：跳出「刪除紙膠帶」
         if let hit = tapeHit(at: p) {
             hidePasteButton()
@@ -2494,8 +2528,14 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             items.append(RadialMenuView.Item(symbol: "arrow.turn.down.right", title: "跳轉", tint: UIColor.systemBlue,
                                              action: { [weak self] in self?.model.jumpRequest = JumpPick(point: p) }))
         }
-        items.append(RadialMenuView.Item(symbol: "character.textbox", title: "新卡片", tint: UIColor.systemOrange,
-                                         action: { [weak self] in self?.createText(at: p) }))
+        if isBoard {
+            // 白板（v12.15.12，使用者：新卡片那一格拿掉，換成跳轉）：跳到這張白板的圖釘、區塊，或別本的某一頁（開成浮動視窗）
+            items.append(RadialMenuView.Item(symbol: "arrow.turn.down.right", title: "跳轉", tint: UIColor.systemBlue,
+                                             action: { [weak self] in self?.model.jumpRequest = JumpPick(point: p) }))
+        } else {
+            items.append(RadialMenuView.Item(symbol: "character.textbox", title: "新卡片", tint: UIColor.systemOrange,
+                                             action: { [weak self] in self?.createText(at: p) }))
+        }
         let menu = RadialMenuView(frame: bounds, at: p, items: items)
         addSubview(menu)
         radialMenu = menu
@@ -2792,6 +2832,25 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         toggleStickyFold()
         if model.notebook.rows.count > 2, let page = model.notebook.rows[2].pages.first {
             placeJump(PageJump(notebook: nil, page: page.id), label: "→ 第 3 頁", at: at(0.15, 0.55))
+        }
+        // v12.15.12：便利貼上的手寫；一張蓋在課本的字上（匯出時應該收成小圖示）
+        createSticky(at: at(0.55, 0.62))
+        updateActive { box in
+            let strokes = BoardTileCheck.makeStrokes(count: 6, markers: 0, origin: CGPoint(x: 20, y: 20),
+                                                     spread: CGSize(width: 150, height: 50))
+            box.ink = PKDrawing(strokes: strokes).dataRepresentation()
+        }
+        endTextSelection()
+        createSticky(at: at(0.3, 0.12))
+        updateActive { $0.text = "蓋住課本的字" }
+        endTextSelection()
+        // 右下角放一張這一頁的縮圖（跟匯出一樣的畫法）
+        if let page = model.page(pv.page.id) {
+            let thumb = UIImageView(image: Thumbnail.image(for: page, width: 260))
+            thumb.layer.borderColor = UIColor.systemRed.cgColor
+            thumb.layer.borderWidth = 2
+            thumb.frame = CGRect(x: bounds.width - 300, y: bounds.height - 420, width: 260, height: 260 * page.spec.height / page.spec.width)
+            addSubview(thumb)
         }
     }
 
@@ -5639,6 +5698,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         pv.canvas.drawingGestureRecognizer.isEnabled = canvasDrawingAllowed && !readOnly
         if pagesInverted { pv.setInverted(true) }
         if textSelectMode { attachTextLayer(pv) }
+        pv.syncStickyInk()
         if isBoard {                                           // 白板：區塊、圖釘（v12.7）
             pv.syncBoardMarks(frames: model.notebook.frames ?? [], pins: model.notebook.pins ?? [])
         } else if boardPins.contains(where: { $0.pageID == page.id }) {   // 筆記本的圖釘（v12.9）
@@ -5660,6 +5720,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         pv.apply(scale: scale)
         pv.refreshBackground()
         pv.canvas.tool = tool
+        pv.syncStickyInk()
         rv.bringSubviewToFront(old)                            // 舊的先蓋著，避免閃一下
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             old.removeFromSuperview()
@@ -7583,7 +7644,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             adaptiveLight = pair.light
             adaptiveDark = pair.dark
         }
-        for pv in pageViews.values { pv.canvas.tool = scaledTool(tool, for: pv.page) }
+        for pv in pageViews.values {
+            pv.canvas.tool = scaledTool(tool, for: pv.page)
+            pv.syncStickyInk()
+        }
     }
 
     /// 筆盒的粗細以 A4 為準，換算成這一頁實際的粗細；萬用筆依這一頁的背景換成黑或白
@@ -7613,6 +7677,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let allowed = canvasDrawingAllowed && !readOnly
         for pv in pageViews.values where pv.canvas.drawingGestureRecognizer.isEnabled != allowed {
             pv.canvas.drawingGestureRecognizer.isEnabled = allowed
+            pv.syncStickyInk()
         }
     }
 

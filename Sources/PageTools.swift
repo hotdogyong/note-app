@@ -74,6 +74,9 @@ struct JumpPickerSheet: View {
     let currentID: UUID
     let currentTitle: String
     let currentRows: [PageRow]
+    var isBoard = false                        // 白板（v12.15.12）：「這一本」換成這張白板的區塊、圖釘
+    var frames: [BoardFrame] = []
+    var pins: [BoardPin] = []
     let done: (PageJump, String) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var target: (meta: NotebookMeta?, title: String, rows: [PageRow])?
@@ -101,13 +104,7 @@ struct JumpPickerSheet: View {
         } else {
             NavigationStack {
                 MoveFolderLevel(library: library, folderID: nil, sourceID: currentID,
-                                header: AnyView(Section("這一本") {
-                                    Button {
-                                        target = (nil, currentTitle, currentRows)
-                                    } label: {
-                                        Label(currentTitle, systemImage: "book.closed.fill")
-                                    }
-                                }),
+                                header: AnyView(currentSection),
                                 pick: { meta in
                                     let rows = Store.loadNotebook(meta.id).rows
                                     if rows.isEmpty { return }
@@ -120,6 +117,41 @@ struct JumpPickerSheet: View {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("取消") { dismiss() }
                     }
+                }
+            }
+        }
+    }
+}
+
+extension JumpPickerSheet {
+    @ViewBuilder
+    var currentSection: some View {
+        if isBoard {
+            let boardPage = currentRows.first?.pages.first?.id ?? UUID()
+            Section(frames.isEmpty && pins.isEmpty ? "這張白板還沒有區塊、圖釘" : "這張白板的區塊、圖釘") {
+                ForEach(frames) { frame in
+                    Button {
+                        done(PageJump(notebook: nil, page: boardPage, frame: frame.id), "→ " + frame.name)
+                        dismiss()
+                    } label: {
+                        Label(frame.name, systemImage: "rectangle.dashed")
+                    }
+                }
+                ForEach(pins.filter { $0.pageID == nil }) { pin in
+                    Button {
+                        done(PageJump(notebook: nil, page: boardPage, pin: pin.id), "→ " + pin.name)
+                        dismiss()
+                    } label: {
+                        Label(pin.name, systemImage: "mappin.circle")
+                    }
+                }
+            }
+        } else {
+            Section("這一本") {
+                Button {
+                    target = (nil, currentTitle, currentRows)
+                } label: {
+                    Label(currentTitle, systemImage: "book.closed.fill")
                 }
             }
         }
@@ -185,4 +217,3 @@ struct PageChoicePicker: View {
         }
     }
 }
-// rebuild

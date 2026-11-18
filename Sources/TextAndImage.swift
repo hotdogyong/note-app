@@ -1043,7 +1043,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
     }
 
     private func refreshPlaceholder() {
-        let wanted = isUserInteractionEnabled || box.fill != nil || linked
+        let wanted = isActive || box.fill != nil || linked
         placeholder.isHidden = !wanted || !textView.text.isEmpty
     }
 
@@ -1105,6 +1105,20 @@ final class TextBoxView: UIView, UITextViewDelegate {
 
     private let zoneLayer = CAShapeLayer()       // 輸入中：整頁淡淡上色
     private let foldIcon = UIImageView()         // 收起來的便利貼（v12.15.11）：只剩一個小圖示
+    private(set) var isActive = false            // 選取中（以前用 isUserInteractionEnabled 判斷；便利貼沒選取也要收 Pencil）
+    // 便利貼的手寫（v12.15.12，使用者：便利貼要能手寫也能打字）：便利貼自己一張小畫布，座標是便利貼左上角起算的頁面座標
+    private var inkCanvas: PKCanvasView?
+    private var inkSilent = false
+    private var inkBottom: CGFloat = 0           // 手寫最下面到哪（頁面座標）：便利貼至少這麼高
+    var onInk: ((Data) -> Void)?
+    var inkTool: PKTool = PKInkingTool(.pen, color: .black, width: 2) {
+        didSet { inkCanvas?.tool = inkTool }
+    }
+    var inkEnabled = true {
+        didSet { inkCanvas?.drawingGestureRecognizer.isEnabled = inkEnabled }
+    }
+    /// 新的便利貼至少多高（頁面座標）：留地方手寫
+    static let stickyMinHeight: CGFloat = 90
     /// 收起來的便利貼在頁面上多大（頁面座標）
     static let foldedSide: CGFloat = 30
     static let handleTag = 777
@@ -1188,7 +1202,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
     // 角在框外面一點點，也要點得到
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         if super.point(inside: point, with: event) { return true }
-        if isUserInteractionEnabled, frameRect.contains(point) { return true }      // 有外框的：框比視圖大一圈
+        if isActive, frameRect.contains(point) { return true }      // 有外框的：框比視圖大一圈
         if dots.contains(where: { !$0.isHidden && $0.frame.contains(point) }) { return true }
         return handles.contains { !$0.isHidden && $0.frame.insetBy(dx: -8, dy: -8).contains(point) }
     }
@@ -1218,7 +1232,9 @@ final class TextBoxView: UIView, UITextViewDelegate {
 
     /// 選取中：藍框、可以點進去編輯或用 Pencil 寫；沒選取：不攔觸控（Pencil 照常在上面畫）
     func setActive(_ on: Bool) {
-        isUserInteractionEnabled = on
+        isActive = on
+        // 便利貼（v12.15.12）：沒選取也要收 Pencil（寫在便利貼上的字跟著便利貼走）；手指的點擊照常往上交給筆記本
+        isUserInteractionEnabled = on || (box.sticky == true && !box.isFolded)
         refreshPlaceholder()
         pencilOnlyTextGestures()
         relayout()
@@ -1230,6 +1246,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
         let foldedNow = box.isFolded && !textView.isFirstResponder
         textView.isHidden = foldedNow
         foldIcon.isHidden = !foldedNow
+        inkCanvas?.isHidden = foldedNow
         if foldedNow {
             layoutFolded(s)
             return
@@ -1277,6 +1294,10 @@ final class TextBoxView: UIView, UITextViewDelegate {
         let contentW = box.width * s + ix * 2
         let fit = textView.sizeThatFits(CGSize(width: contentW, height: .greatestFiniteMagnitude)).height
         var contentH = max(fit, font.lineHeight + iy * 2)
+        if box.sticky == true {
+            loadInkIfNeeded()
+            contentH = max(contentH, (inkBottom + 10) * s, Self.stickyMinHeight * s)   // 手寫的地方
+        }
         if let image = mathImage {
             contentH = image.size.height / MathRenderer.scaleFactor * s + iy * 2
         }
@@ -1324,6 +1345,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
             mathView.frame = CGRect(x: contentRect.minX + ix, y: contentRect.minY + iy, width: w, height: h)
         }
         refreshPlaceholder()
+        layoutInk(s)
         // 外框樣式（v12.13.0）
         let styleShape = box.shape ?? 1
         frameRect = box.fill == nil ? contentRect : TextBoxStyle.frame(content: contentRect, shape: styleShape, scale: s)
@@ -1348,7 +1370,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
             styleLayer.path = nil
             bandLayer.path = nil
         }
-        if isUserInteractionEnabled {
+        if isActive {
             // 選取的藍框：有外框樣式的，框在外框的外面一點
             borderLayer.path = box.fill == nil
                 ? UIBezierPath(roundedRect: contentRect, cornerRadius: 4).cgPath
@@ -1363,7 +1385,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
         CATransaction.commit()
         // 選取（沒在輸入）時才顯示四個角
         makeHandles()
-        let showHandles = isUserInteractionEnabled && !editing && !box.isLocked
+        let showHandles = isActive && !editing && !box.isLocked
         let corners = [CGPoint(x: frameRect.minX, y: frameRect.minY), CGPoint(x: frameRect.maxX, y: frameRect.minY),
                        CGPoint(x: frameRect.maxX, y: frameRect.maxY), CGPoint(x: frameRect.minX, y: frameRect.maxY)]
         for (i, h) in handles.enumerated() {
@@ -1383,6 +1405,60 @@ final class TextBoxView: UIView, UITextViewDelegate {
             bringSubviewToFront(d)
         }
         onRelayout?()
+    }
+
+    // MARK: 便利貼的手寫
+
+    private var loadedInk: Data?
+
+    private func loadInkIfNeeded() {
+        guard box.sticky == true else { return }
+        if inkCanvas == nil {
+            let c = PKCanvasView()
+            c.backgroundColor = .clear
+            c.isOpaque = false
+            c.drawingPolicy = .pencilOnly
+            c.overrideUserInterfaceStyle = .light
+            c.isScrollEnabled = false
+            c.showsVerticalScrollIndicator = false
+            c.showsHorizontalScrollIndicator = false
+            c.contentInsetAdjustmentBehavior = .never
+            c.tool = inkTool
+            c.drawingGestureRecognizer.isEnabled = inkEnabled
+            c.delegate = self
+            addSubview(c)
+            inkCanvas = c
+        }
+        guard let c = inkCanvas, loadedInk != box.ink else { return }
+        loadedInk = box.ink
+        let drawing = box.ink.flatMap { try? PKDrawing(data: $0) } ?? PKDrawing()
+        if c.drawing.dataRepresentation() != box.ink ?? Data() {
+            inkSilent = true
+            c.drawing = drawing
+            inkSilent = false
+        }
+        inkBottom = drawing.strokes.isEmpty ? 0 : drawing.bounds.maxY
+    }
+
+    private func layoutInk(_ s: CGFloat) {
+        guard let c = inkCanvas else { return }
+        guard box.sticky == true else {
+            c.removeFromSuperview()
+            inkCanvas = nil
+            return
+        }
+        // 畫布跟頁面的畫布一樣用縮放：裡面的座標是頁面座標（從便利貼左上角算起）
+        if abs(c.zoomScale - s) > 0.0001 || c.minimumZoomScale != s || c.maximumZoomScale != s {
+            c.minimumZoomScale = s
+            c.maximumZoomScale = s
+            c.zoomScale = s
+        }
+        c.pinchGestureRecognizer?.isEnabled = false
+        c.frame = contentRect
+        c.contentSize = contentRect.size
+        c.contentOffset = .zero
+        bringSubviewToFront(c)
+        for h in handles { bringSubviewToFront(h) }
     }
 
     private func layoutFolded(_ s: CGFloat) {
@@ -1409,7 +1485,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
         styleLayer.lineWidth = max(1 * s, 0.5)
         bandLayer.path = nil
         zoneLayer.path = nil
-        borderLayer.path = isUserInteractionEnabled
+        borderLayer.path = isActive
             ? UIBezierPath(roundedRect: contentRect.insetBy(dx: -3, dy: -3), cornerRadius: 7 * s).cgPath : nil
         borderLayer.lineDashPattern = nil
         CATransaction.commit()
@@ -1443,6 +1519,23 @@ final class TextBoxView: UIView, UITextViewDelegate {
         box.text = tv.text
         relayout()
         onChange?()
+    }
+}
+
+extension TextBoxView: PKCanvasViewDelegate {
+    func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+        guard !inkSilent, canvasView === inkCanvas else { return }
+        let data = canvasView.drawing.strokes.isEmpty ? nil : canvasView.drawing.dataRepresentation()
+        box.ink = data
+        loadedInk = data
+        let bottom = canvasView.drawing.strokes.isEmpty ? 0 : canvasView.drawing.bounds.maxY
+        if bottom > inkBottom - 1 || bottom < inkBottom - 20 {
+            inkBottom = bottom
+            relayout()                              // 寫到下面：便利貼跟著變高
+        } else {
+            inkBottom = bottom
+        }
+        onInk?(data ?? Data())
     }
 }
 

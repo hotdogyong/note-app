@@ -637,6 +637,14 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     private(set) var textViews: [UUID: TextBoxView] = [:]
 
     /// 依資料更新這一頁的文字方塊（新增、更新、移除）
+    /// 便利貼的小畫布跟著頁面換筆、停用（v12.15.12）
+    func syncStickyInk() {
+        for view in textViews.values where view.box.sticky == true {
+            view.inkTool = canvas.tool
+            view.inkEnabled = canvas.drawingGestureRecognizer.isEnabled
+        }
+    }
+
     func syncTexts(_ texts: [TextBox]) {
         let ids = Set(texts.map { $0.id })
         for (id, view) in textViews where !ids.contains(id) {
@@ -653,6 +661,12 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
                                        pageHeight: page.spec.height)
                 view.wrapWidth = textWrapWidth(page.spec)            // 白板：換行的寬度不照整張白板算
                 view.onRelayout = { [weak self] in self?.layoutLinks() }
+                view.inkTool = canvas.tool                            // 便利貼的手寫跟頁面用同一支筆（v12.15.12）
+                view.inkEnabled = canvas.drawingGestureRecognizer.isEnabled
+                view.onInk = { [weak self, weak view] _ in
+                    guard let self = self, let view = view else { return }
+                    self.host?.stickyInkChanged(view)
+                }
                 if let editor = subviews.first(where: { $0 is SelectionEditorView }) {
                     insertSubview(view, belowSubview: editor)
                 } else {
@@ -1799,6 +1813,49 @@ enum PageRenderer {
     /// 文字方塊（匯出、縮圖用）
     /// 一個文字方塊的範圍（頁面座標，含留白）：資料裡只存寬度，高度要用字算出來
     static func textContentRect(_ t: TextBox, page: NotePage) -> CGRect {
+        if t.sticky == true {
+            // 便利貼（v12.15.12）：展開會擋到別的東西就畫成小圖示
+            return stickyExpanded(t, page: page) ? stickyFullRect(t, page: page)
+                : CGRect(x: t.x, y: t.y, width: TextBoxView.foldedSide, height: TextBoxView.foldedSide)
+        }
+        return plainContentRect(t, page: page)
+    }
+
+    /// 便利貼展開的範圍（含手寫要的高度）
+    static func stickyFullRect(_ t: TextBox, page: NotePage) -> CGRect {
+        var r = plainContentRect(t, page: page)
+        var bottom = TextBoxView.stickyMinHeight
+        if let data = t.ink, let ink = try? PKDrawing(data: data), !ink.strokes.isEmpty { bottom = max(bottom, ink.bounds.maxY + 10) }
+        r.size.height = max(r.height, bottom)
+        return r
+    }
+
+    /// 匯出、縮圖時便利貼要不要展開（v12.15.12，使用者：看會不會擋到其他字，不會擋到就展開）：
+    /// 展開的範圍碰到課本上的字、筆跡、其他文字方塊或圖片，就畫成小圖示
+    static func stickyExpanded(_ t: TextBox, page: NotePage) -> Bool {
+        let f = stickyFullRect(t, page: page)
+        for o in page.texts ?? [] where o.id != t.id && o.sticky != true {
+            if textFrameRect(o, page: page).intersects(f) { return false }
+        }
+        for b in page.images ?? [] {
+            let r = b.isMini ? b.miniRect : CGRect(x: b.x, y: b.y, width: b.width, height: b.height)
+            if r.intersects(f) { return false }
+        }
+        if Store.loadDrawing(page.id).strokes.contains(where: { $0.renderBounds.intersects(f) }) { return false }
+        if let ref = page.pdf, let pdf = PDFStore.page(ref) {
+            let box = pdf.bounds(for: .cropBox)
+            let sx = box.width / max(page.spec.width, 1)
+            let sy = box.height / max(page.spec.height, 1)
+            let r = CGRect(x: box.minX + f.minX * sx, y: box.minY + (page.spec.height - f.maxY) * sy,
+                           width: f.width * sx, height: f.height * sy)
+            if let text = pdf.selection(for: r)?.string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return false
+            }
+        }
+        return true
+    }
+
+    private static func plainContentRect(_ t: TextBox, page: NotePage) -> CGRect {
         var w = t.width
         var h: CGFloat
         if !t.text.isEmpty, MathRenderer.needsRender(t),
@@ -1852,14 +1909,46 @@ enum PageRenderer {
         }
         ctx.restoreGState()
         for t in texts where t.fill != nil {
-            if let f = frames[t.id] { TextBoxStyle.draw(t, rect: f, scale: k) }
+            guard let f = frames[t.id] else { continue }
+            if t.sticky == true && !stickyExpanded(t, page: page) {
+                drawFoldedSticky(t, rect: f, scale: k)
+            } else {
+                TextBoxStyle.draw(t, rect: f, scale: k)
+            }
+        }
+    }
+
+    /// 收成小圖示的便利貼（匯出、縮圖）
+    static func drawFoldedSticky(_ t: TextBox, rect: CGRect, scale k: CGFloat) {
+        let side = TextBoxView.foldedSide * k
+        let r = CGRect(x: rect.minX, y: rect.minY, width: side, height: side)
+        let path = UIBezierPath(roundedRect: r, cornerRadius: 5 * k)
+        (t.fill.map { TextBoxStyle.color($0) } ?? UIColor(red: 1, green: 0.9, blue: 0.45, alpha: 1)).setFill()
+        path.fill()
+        UIColor(white: 0, alpha: 0.18).setStroke()
+        path.lineWidth = max(k, 0.5)
+        path.stroke()
+        if let icon = UIImage(systemName: "note.text")?.withTintColor(UIColor(white: 0.25, alpha: 1), renderingMode: .alwaysOriginal) {
+            icon.draw(in: r.insetBy(dx: side * 0.2, dy: side * 0.22))
         }
     }
 
     static func drawTexts(_ page: NotePage, rect: CGRect) {
         let k = rect.width / max(page.spec.width, 1)
         drawTextStyles(page, rect: rect)
+        for t in page.texts ?? [] where t.sticky == true && stickyExpanded(t, page: page) {
+            // 便利貼上的手寫（v12.15.12）
+            guard let data = t.ink, let ink = try? PKDrawing(data: data), !ink.strokes.isEmpty else { continue }
+            let b = ink.bounds
+            var image = UIImage()
+            UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
+                image = ink.image(from: b, scale: max(k * 2, 1))
+            }
+            image.draw(in: CGRect(x: rect.minX + (t.x + b.minX) * k, y: rect.minY + (t.y + b.minY) * k,
+                                  width: b.width * k, height: b.height * k))
+        }
         for t in page.texts ?? [] where !t.text.isEmpty {
+            if t.sticky == true && !stickyExpanded(t, page: page) { continue }   // 收成小圖示的便利貼：字不畫
             // 數學式：有排好的圖片就畫圖片
             if MathRenderer.needsRender(t),
                let image = MathRenderer.shared.cached(MathRenderer.request(for: t, pageWidth: textWrapWidth(page.spec))) {

@@ -1759,7 +1759,8 @@ struct NotebookEditorView: View {
             }
             .sheet(item: $model.jumpRequest) { request in
                 JumpPickerSheet(library: library, currentID: model.meta.id, currentTitle: model.meta.title,
-                                currentRows: model.notebook.rows) { jump, label in
+                                currentRows: model.notebook.rows, isBoard: model.isBoard,
+                                frames: model.notebook.frames ?? [], pins: model.notebook.pins ?? []) { jump, label in
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                         model.documentView?.placeJump(jump, label: label, at: request.point)
                     }

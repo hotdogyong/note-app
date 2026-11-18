@@ -1043,7 +1043,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
     }
 
     private func refreshPlaceholder() {
-        let wanted = isActive || box.fill != nil || linked
+        let wanted = (isActive || box.fill != nil || linked) && box.ink == nil   // 便利貼只有手寫：不顯示「輸入文字」
         placeholder.isHidden = !wanted || !textView.text.isEmpty
     }
 

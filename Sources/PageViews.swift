@@ -1848,8 +1848,13 @@ enum PageRenderer {
             let sy = box.height / max(page.spec.height, 1)
             let r = CGRect(x: box.minX + f.minX * sx, y: box.minY + (page.spec.height - f.maxY) * sy,
                            width: f.width * sx, height: f.height * sy)
-            if let text = pdf.selection(for: r)?.string, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return false
+            // 一個字一個字看：字的範圍碰到便利貼就算擋到（selection(for:) 只選到整個在裡面的字，蓋一半的會漏掉）
+            if let text = pdf.string as NSString? {
+                for i in 0 ..< pdf.numberOfCharacters {
+                    if i < text.length, let scalar = UnicodeScalar(text.character(at: i)),
+                       CharacterSet.whitespacesAndNewlines.contains(scalar) { continue }
+                    if pdf.characterBounds(at: i).intersects(r) { return false }
+                }
             }
         }
         return true

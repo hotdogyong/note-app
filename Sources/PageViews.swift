@@ -1848,6 +1848,8 @@ enum PageRenderer {
             let sy = box.height / max(page.spec.height, 1)
             let r = CGRect(x: box.minX + f.minX * sx, y: box.minY + (page.spec.height - f.maxY) * sy,
                            width: f.width * sx, height: f.height * sy)
+            // 掃描的課本（整頁是圖）：看那一塊有沒有深色的東西
+            if pdfHasMarks(ref, page: page, in: f) { return false }
             // 一個字一個字看：字的範圍碰到便利貼就算擋到（selection(for:) 只選到整個在裡面的字，蓋一半的會漏掉）
             if let text = pdf.string as NSString? {
                 for i in 0 ..< pdf.numberOfCharacters {
@@ -1858,6 +1860,38 @@ enum PageRenderer {
             }
         }
         return true
+    }
+
+    /// PDF 頁的某一塊（頁面座標）有沒有字、圖（深色的點超過一點點就算有）
+    private static func pdfHasMarks(_ ref: PDFRef, page: NotePage, in f: CGRect) -> Bool {
+        guard let cg = PDFStore.image(ref, aspect: page.spec.height / max(page.spec.width, 1), pixelWidth: 400)?.cgImage else {
+            return false
+        }
+        let sx = CGFloat(cg.width) / max(page.spec.width, 1)
+        let sy = CGFloat(cg.height) / max(page.spec.height, 1)
+        let r = CGRect(x: f.minX * sx, y: f.minY * sy, width: f.width * sx, height: f.height * sy).integral
+            .intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        guard !r.isEmpty, let crop = cg.cropping(to: r) else { return false }
+        let w = min(Int(r.width), 80)
+        let h = min(Int(r.height), 80)
+        guard w > 0, h > 0 else { return false }
+        var pixels = [UInt8](repeating: 255, count: w * h * 4)
+        let drew: Bool = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            ctx.setFillColor(UIColor.white.cgColor)
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+            ctx.draw(crop, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drew else { return false }
+        var dark = 0
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let lum = (Int(pixels[i]) * 3 + Int(pixels[i + 1]) * 6 + Int(pixels[i + 2])) / 10
+            if lum < 150 { dark += 1 }
+        }
+        return Double(dark) / Double(w * h) > 0.004
     }
 
     private static func plainContentRect(_ t: TextBox, page: NotePage) -> CGRect {

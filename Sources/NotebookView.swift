@@ -2778,6 +2778,23 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         run(0)
     }
 
+    /// 自動測試（notetools，v12.15.11）：一張展開的便利貼、一張收起來的、一個跳到第 3 頁的捷徑
+    func selfTestNoteTools() {
+        guard let pv = pageViews.values.first(where: { $0.page.id == model.currentPageID }) ?? pageViews.values.first else { return }
+        func at(_ fx: CGFloat, _ fy: CGFloat) -> CGPoint {
+            pv.convert(CGPoint(x: pv.bounds.width * fx, y: pv.bounds.height * fy), to: self)
+        }
+        createSticky(at: at(0.15, 0.3))
+        updateActive { $0.text = "補充：高斯面要選對稱的，\n電場才能提出積分外面" }
+        endTextSelection()
+        createSticky(at: at(0.6, 0.3))
+        updateActive { $0.text = "收起來的便利貼" }
+        toggleStickyFold()
+        if model.notebook.rows.count > 2, let page = model.notebook.rows[2].pages.first {
+            placeJump(PageJump(notebook: nil, page: page.id), label: "→ 第 3 頁", at: at(0.15, 0.55))
+        }
+    }
+
     /// 自動測試（textzone）：新增一個文字方塊、打字中（看手寫區有沒有關掉）
     func selfTestTextZone() {
         guard let pv = pageViews.values.first else { return }

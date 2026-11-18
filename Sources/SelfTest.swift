@@ -92,6 +92,24 @@ enum SelfTest {
                     Store.saveNotebook(data, id: meta.id)
                 }
                 library.openNotebook = meta
+            case "pinhome":
+                // v12.15.11：釘選、資料夾和筆記本同名（留在首頁看）
+                let folder = library.addFolder(in: nil, name: "測試")
+                let same = library.addNotebook(in: nil, title: "測試")
+                let lecture = library.addNotebook(in: nil, title: "電磁學講義")
+                library.togglePin(ItemRef.folder(folder.id))
+                library.togglePin(ItemRef.notebook(lecture.id))
+                _ = same
+                library.goHome()
+            case "cardtitle":
+                // v12.15.11：白板上很長的卡片標題排兩行，不要「…」
+                library.openNotebook = library.addBoard(in: nil, title: "標題測試白板", width: 100 * 842, height: 100 * 595)
+            case "notetools", "textsel":
+                // v12.15.11：便利貼（展開、收起）、跳轉捷徑；選取文字＋反相
+                if let url = makeOutlinePDF(), library.importPDF(from: url, into: nil),
+                   let meta = library.library.notebooks.last(where: { $0.title.hasPrefix("目錄測試") }) {
+                    library.openNotebook = meta
+                }
             case "pagepos":
                 // v12.15.10：同一本裡移動頁面的位置選單（六頁的 PDF，選第 4 頁「移到這本的其他位置」）
                 if let url = makeOutlinePDF(), library.importPDF(from: url, into: nil),
@@ -214,6 +232,31 @@ enum SelfTest {
         if scene == "clip", view.model.embedded {
             // 視窗裡那一本打開了：剪一塊貼到白板（貼上的圖會是選取的，左下角應該有 ‹）
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak view] in view?.selfTestClip() }
+            return
+        }
+        if scene == "cardtitle", view.model.isBoard, !sceneDone, let library = library {
+            sceneDone = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                let long = library.addNotebook(inBoard: view.model.meta, title: "116學年度台聯大碩士班招生簡章（含系所組代碼）")
+                let short = library.addNotebook(inBoard: view.model.meta, title: "例題本")
+                view.placeCard(for: long, at: CGPoint(x: view.bounds.width * 0.3, y: view.bounds.height * 0.4))
+                view.placeCard(for: short, at: CGPoint(x: view.bounds.width * 0.65, y: view.bounds.height * 0.4))
+            }
+            return
+        }
+        if (scene == "notetools" || scene == "textsel"), !view.model.isBoard, !view.model.embedded, !sceneDone {
+            sceneDone = true
+            let tools = scene == "notetools"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak view] in
+                guard let view = view else { return }
+                if tools {
+                    view.selfTestNoteTools()
+                } else {
+                    view.model.inverted = true
+                    view.setTextSelectMode(true)
+                }
+            }
             return
         }
         if scene == "undoink", !view.model.isBoard, !sceneDone {

@@ -1,2 +1,5 @@
 board
-clip
+notetools
+textsel
+pinhome
+cardtitle

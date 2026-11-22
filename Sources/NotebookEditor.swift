@@ -1231,6 +1231,7 @@ struct NotebookEditorView: View {
     // 白板上開著的浮動視窗（v12.12.0）
     @State private var windows: [BoardWindow] = []
     @State private var windowsTucked = false
+    @State private var draftOpen = false               // 右邊的隨手記拉出來了（v12.16.0；Drafts.swift）
     @State private var showCardPicker = false
     @State private var cardPickerBoards = false        // 選取畫面列的是白板（子白板的「匯入現有的」）
     @State private var showCardPDF = false
@@ -1598,6 +1599,12 @@ struct NotebookEditorView: View {
                 }
             }
             .overlay {
+                // 隨手記（v12.16.0）：右邊緣的小把手、拉出來的抽屜；在筆盒下面
+                if !embedded && model.meta.draftOf == nil {
+                    DraftDrawerLayer(parent: model, open: $draftOpen)
+                }
+            }
+            .overlay {
                 // 筆盒：拖把手可以停靠在上下左右（浮動視窗裡不放：用白板的那一個）
                 if !embedded {
                     GeometryReader { geo in
@@ -1731,6 +1738,21 @@ struct NotebookEditorView: View {
                 }
                 if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
+                }
+                if !embedded && model.meta.draftOf == nil {
+                    // 隨手記（v12.16.0）：換了一本、或隔很久才進來 → 上一次的主題結束；右邊緣往內滑拉出來
+                    Drafts.library = library
+                    Drafts.enter(model.meta.id)
+                    let open = $draftOpen
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        model.documentView?.onRightEdgeSwipe = {
+                            model.documentView?.flushAll()
+                            withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) { open.wrappedValue = true }
+                        }
+                    }
+                    if SelfTest.scene == "drafts" || (SelfTest.scene == "draftend" && !SelfTest.sceneDone) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { open.wrappedValue = true }
+                    }
                 }
                 if !embedded, model.isBoard, let saved = SessionRestore.takeWindows(board: model.meta.id) {
                     // v12.16.0：6 小時內重進 App，離開時開著的浮動視窗照原樣開回來

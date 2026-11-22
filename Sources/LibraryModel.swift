@@ -357,7 +357,7 @@ final class LibraryModel: ObservableObject {
     }
 
     func notebooks(in folder: UUID?) -> [NotebookMeta] {
-        library.notebooks.filter { $0.folderID == folder && $0.boardID == nil }.sorted { $0.modified > $1.modified }
+        library.notebooks.filter { $0.folderID == folder && $0.boardID == nil && $0.draftOf == nil }.sorted { $0.modified > $1.modified }
     }
 
     /// 名字（v12.15.11，使用者：資料夾和筆記本可以同名）：只跟同一層、同一種的比，重複才加「 2」「 3」；
@@ -427,7 +427,7 @@ final class LibraryModel: ObservableObject {
             }
         }
         // 家在白板裡的筆記本（boardID 有值，v12.12.0）首頁不列
-        for n in library.notebooks where n.folderID == folder && n.deletedAt == nil && n.boardID == nil {
+        for n in library.notebooks where n.folderID == folder && n.deletedAt == nil && n.boardID == nil && n.draftOf == nil {   // 隨手記也不列（v12.16.0）
             if position[n.id] == nil {
                 newNotebooks.append(n)
             } else {
@@ -810,6 +810,19 @@ final class LibraryModel: ObservableObject {
             guardCount += 1
         }
         return names.isEmpty ? "所有文件" : names.joined(separator: " / ")
+    }
+
+    /// 某一本的隨手記（v12.16.0；Drawers.swift）：每本一本，藏起來；還沒有就建一本（橫的白紙，一開始沒有頁）
+    func draftNotebook(for parent: NotebookMeta) -> NotebookMeta {
+        if let existing = library.notebooks.first(where: { $0.draftOf == parent.id && $0.deletedAt == nil }) { return existing }
+        var made = addNotebook(in: parent.folderID, title: "隨手記－" + parent.title, data: NotebookData(rows: []))
+        if let i = library.notebooks.firstIndex(where: { $0.id == made.id }) {
+            library.notebooks[i].draftOf = parent.id
+            made = library.notebooks[i]
+        }
+        library.order = library.order?.filter { $0 != made.id }
+        save()
+        return made
     }
 
     func addNotebook(in folder: UUID?, title: String = "未命名筆記本",

@@ -509,6 +509,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         redoTap.allowedTouchTypes = Self.fingerOnly
         addGestureRecognizer(redoTap)
 
+        // 隨手記（v12.16.0）：從右邊緣（下半段，含右下角）往內滑，拉出來。手指、Pencil 都可以
+        if !model.embedded {
+            let edge = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleRightEdge(_:)))
+            edge.edges = .right
+            addGestureRecognizer(edge)
+        }
+
         // 手指點一下：點到筆跡就選取它，點到空白就結束選取
         dismissTap.addTarget(self, action: #selector(handleSingleTap(_:)))
         dismissTap.allowedTouchTypes = Self.fingerOnly
@@ -1831,6 +1838,48 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         box.x = min(max(p.x, 0), max(page.spec.width - box.width - 10, 0))
         box.y = min(max(p.y - box.fontSize * 0.7, 0), max(page.spec.height - 30, 0))
         return box
+    }
+
+    // MARK: 隨手記（v12.16.0；Drafts.swift）
+
+    /// 從右邊緣往內滑：拉出隨手記（NotebookEditorView 接）
+    var onRightEdgeSwipe: (() -> Void)?
+
+    @objc private func handleRightEdge(_ g: UIScreenEdgePanGestureRecognizer) {
+        guard g.state == .began || g.state == .changed else { return }
+        let p = g.location(in: self)
+        guard p.y > bounds.height * 0.45, g.translation(in: self).x < -24 else { return }
+        g.isEnabled = false                                    // 這一次滑動到此為止（不要一直觸發）
+        g.isEnabled = true
+        onRightEdgeSwipe?()
+    }
+
+    /// 隨手記整頁放進來：插在目前這頁後面（筆跡、文字、圖片一起複製過來；這一步不能用「上一步」復原）
+    func receiveRows(_ rows: [PageRow]) {
+        guard !readOnly, !isBoard else {
+            showMessage("rectangle.dashed", isBoard ? "白板不能加頁：用套索圈起來，按「放進筆記本」" : "這本是唯讀的")
+            return
+        }
+        endTextSelection()
+        dismissShapeEditor()
+        flushAll()
+        model.save()
+        Store.finishPendingSaves()
+        let at = min(focusRow + 1, model.notebook.rows.count)
+        guard Store.transferRows(rows, to: model.meta.id, at: at) else {
+            showMessage("exclamationmark.triangle", "放不進去（存檔失敗）")
+            return
+        }
+        model.notebook = Store.loadNotebook(model.meta.id)
+        history.removeAllActions()
+        model.canUndo = false
+        model.canRedo = false
+        rebuild()
+        layoutDocument()
+        jump(toRow: at, page: 0)
+        updateLoadedPages()
+        updateFocus(force: true)
+        showMessage("doc.badge.plus", "放進來了：第 \(at + 1) 頁")
     }
 
     // MARK: 心智圖的折疊（v12.16.0；TextLinks.swift 的 MindFold、NotePageView 的圓圈）
@@ -4183,6 +4232,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             dailySnapshotIfNeeded()                        // 每天第一次打開：存一份歷史版本
             SelfTest.notebookOpened(self)                  // 自動測試的場景才會做事
             if isBoard { refreshCardCovers() }             // 白板上的卡片：封面換成最新的（v12.12.2）
+            if model.meta.draftOf != nil { Drafts.drawerDoc = self }   // 抽屜裡的隨手記（v12.16.0）
         }
         if isBoard {
             restoreBoardView()                                 // 白板：回到上次的位置和縮放

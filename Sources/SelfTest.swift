@@ -14,7 +14,8 @@ enum SelfTest {
 
     static weak var library: LibraryModel?
     static var sceneDone = false
-    static var windowMode: BoardWindowMode?          // winsplit、winfull：新開的浮動視窗一開就是這個樣子
+    static var windowMode: BoardWindowMode?
+    static var otherNotebook: NotebookMeta?            // draftend：寫完隨手記之後換過去的那一本          // winsplit、winfull：新開的浮動視窗一開就是這個樣子
 
     static func run(_ library: LibraryModel) {
         Self.library = library
@@ -151,6 +152,11 @@ enum SelfTest {
             case "mindfold", "voice":
                 // v12.16.0：心智圖折疊；語音的膠囊和「一句一個方塊」
                 library.openNotebook = library.addBoard(in: nil, title: "測試白板 " + scene, width: 100 * 842, height: 100 * 595)
+            case "drafts", "draftend":
+                // v12.16.0：隨手記。drafts：拉出來、寫一行、整頁放進筆記本；draftend：寫了之後換到別本，問要不要保留
+                let a = library.addNotebook(in: nil, title: "電磁學 Griffiths 筆記")
+                if scene == "draftend" { otherNotebook = library.addNotebook(in: nil, title: "工數習題") }
+                library.openNotebook = a
             case "placemarks", "invert":
                 // v12.16.0：跳回記號；反相的新顏色（反相用白紙，像課本 PDF）
                 let meta = library.addNotebook(in: nil, title: scene == "invert" ? "反相測試" : "記號測試")
@@ -299,6 +305,40 @@ enum SelfTest {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
                 guard let view = view else { return }
                 show(view.selfTestTidyTree())
+            }
+            return
+        }
+        if scene == "drafts" || scene == "draftend", view.model.meta.draftOf != nil, !sceneDone, let library = library {
+            sceneDone = true
+            let end = scene == "draftend"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
+                guard let view = view, let pid = view.model.currentPageID else { return }
+                var box = TextBox()
+                box.text = "Gauss：先找對稱性 → 畫高斯面 → Q_enc"
+                box.fontSize = 26
+                box.rgba = [0.1, 0.1, 0.1, 1]
+                box.x = 40
+                box.y = 60
+                box.width = 520
+                view.setTextsRecorded([box], pageID: pid)
+                let draftRows = view.model.notebook.rows.count
+                if end {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        if let other = otherNotebook { library.openNotebook = other }   // 換到別本：應該跳出「要保留嗎？」
+                    }
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    Drafts.sendCurrentPage()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                        let parentRows = Drafts.parentDoc?.model.notebook.rows.count ?? -1
+                        let listed = library.items(in: nil).contains { ref in
+                            if case .notebook(let id) = ref { return library.notebook(id)?.draftOf != nil }
+                            return false
+                        }
+                        show("隨手記有 \(draftRows) 頁（應該 1）；整頁放進筆記本後，筆記本有 \(parentRows) 頁（應該 2）\n首頁列不列隨手記：" + (listed ? "列（不對）" : "不列（對）"))
+                    }
+                }
             }
             return
         }

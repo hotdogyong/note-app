@@ -950,6 +950,10 @@ final class SelectionEditorView: UIView, UIGestureRecognizerDelegate {
         if baseTexts.count >= 2 {
             makeButton("wand.and.stars", tint: .systemYellow).addTarget(self, action: #selector(tidyTapped), for: .touchUpInside)
         }
+        // 隨手記裡（v12.16.0）：放進外面那本筆記本
+        if host?.model.meta.draftOf != nil {
+            makeButton("arrow.left.doc.on.clipboard", tint: .systemOrange).addTarget(self, action: #selector(sendToNotebookTapped), for: .touchUpInside)
+        }
         // 白板（v12.8.2）：用選到的範圍建立區塊
         if pageView?.page.spec.flat == true {
             makeButton("rectangle.dashed").addTarget(self, action: #selector(frameTapped), for: .touchUpInside)
@@ -1643,6 +1647,14 @@ final class SelectionEditorView: UIView, UIGestureRecognizerDelegate {
         host?.copyToClipboard(currentStrokes(), from: pageView?.page, message: "已拷貝",
                               images: currentImages(), texts: currentTexts().map { $0.box })
         host?.dismissShapeEditor()                     // 拷貝完收起選取框
+    }
+
+    /// 隨手記：拷貝起來，貼到外面那本畫面中間（v12.16.0）
+    @objc private func sendToNotebookTapped() {
+        host?.copyToClipboard(currentStrokes(), from: pageView?.page, message: "放進筆記本了",
+                              images: currentImages(), texts: currentTexts().map { $0.box })
+        host?.dismissShapeEditor()
+        Drafts.pasteIntoParent()
     }
 
     @objc private func cutTapped() {

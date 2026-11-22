@@ -1,4 +1,6 @@
 board
+drafts
+draftend
 mindfold
 invert
 voice

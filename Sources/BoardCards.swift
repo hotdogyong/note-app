@@ -631,7 +631,7 @@ struct CardNotebookPicker: View {
         let key = searchText.trimmingCharacters(in: .whitespaces).lowercased()
         var byPath: [String: [NotebookMeta]] = [:]
         for meta in library.library.notebooks {
-            guard meta.deletedAt == nil, (meta.isBoard == true) == boards, meta.id != boardID else { continue }
+            guard meta.deletedAt == nil, meta.draftOf == nil, (meta.isBoard == true) == boards, meta.id != boardID else { continue }
             if !key.isEmpty && !meta.title.lowercased().contains(key) { continue }
             var path = library.folderPathText(meta.folderID)
             if let board = meta.boardID, let owner = library.notebook(board) {

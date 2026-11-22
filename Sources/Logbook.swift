@@ -281,7 +281,7 @@ struct LogbookPanel: View {
     private var modifiedCards: some View {
         let entries = ActivityLog.entries(on: selected)
         let books: [(meta: NotebookMeta, pages: [(id: UUID, first: Date, last: Date)])] = entries.compactMap { (id, pages) in
-            guard let meta = library.notebook(id), meta.deletedAt == nil else { return nil }
+            guard let meta = library.notebook(id), meta.deletedAt == nil, meta.draftOf == nil else { return nil }   // 隨手記不列
             let list = pages.map { (id: $0.key, first: $0.value.first, last: $0.value.last) }.sorted { $0.last > $1.last }
             return (meta, list)
         }.sorted { ($0.pages.first?.last ?? .distantPast) > ($1.pages.first?.last ?? .distantPast) }

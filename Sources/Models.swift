@@ -505,6 +505,7 @@ struct NotebookMeta: Codable, Hashable, Identifiable {
     var isBoard: Bool? = nil          // true：白板（首頁顯示用；真正的依據是 NotebookData.board）
     var boardID: UUID? = nil          // 有值：這本的「家」在那張白板裡（v12.12.0），首頁不列出來；檔案還是放在 folderID 那個資料夾
     var pinned: Date? = nil           // 釘選的時間（v12.15.11）
+    var draftOf: UUID? = nil          // 有值：這是那一本的「隨手記」（v12.16.0；Drafts.swift），首頁、搜尋、日誌都不列
 }
 
 /// 匯出旁頁的順序

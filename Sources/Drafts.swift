@@ -255,14 +255,7 @@ struct DraftDrawerLayer: View {
             } label: {
                 Image(systemName: "arrow.left.doc.on.clipboard")
             }
-            Button {
-                setFull(!full)
-            } label: {
-                Image(systemName: full ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            }
-            Button(action: closeDrawer) {
-                Image(systemName: "chevron.right.2")
-            }
+            // 全螢幕、收起：在下面那一排（裡面那本的工具列最左邊）
         }
         .font(.system(size: 17, weight: .semibold))
         .foregroundStyle(Color.primary)
@@ -308,7 +301,7 @@ struct DraftDrawerLayer: View {
         .background(UnevenRoundedRectangle(topLeadingRadius: 12, bottomLeadingRadius: 12, bottomTrailingRadius: 0,
                                            topTrailingRadius: 0, style: .continuous).fill(Color.orange.opacity(0.85)))
         .offset(x: min(0, handleDrag))
-        .position(x: size.width - 13, y: size.height * 0.74)
+        .position(x: size.width - 13, y: max(size.height * 0.6, size.height - 150))   // 靠近右下角（筆盒停在右邊時不會被擋住）
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { value in handleDrag = value.translation.width }

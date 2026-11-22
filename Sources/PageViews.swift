@@ -846,6 +846,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     // 兩種圓圈都可以長按：只展開到第 1、2、3 層／全部展開
 
     private(set) var foldHidden: Set<UUID> = []
+    var shownLinkCount: Int { linkLayers.count }             // 自動測試用：畫出來幾條線
     /// 要顯示「−」的方塊（選取中的方塊連著的那一整棵樹；NotebookView 設）
     var foldHandles: Set<UUID> = [] {
         didSet { if foldHandles != oldValue { layoutFoldButtons() } }

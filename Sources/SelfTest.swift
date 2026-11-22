@@ -152,8 +152,16 @@ enum SelfTest {
                 // v12.16.0：心智圖折疊；語音的膠囊和「一句一個方塊」
                 library.openNotebook = library.addBoard(in: nil, title: "測試白板 " + scene, width: 100 * 842, height: 100 * 595)
             case "placemarks", "invert":
-                // v12.16.0：跳回記號；反相的新顏色
-                library.openNotebook = library.addNotebook(in: nil, title: scene == "invert" ? "反相測試" : "記號測試")
+                // v12.16.0：跳回記號；反相的新顏色（反相用白紙，像課本 PDF）
+                let meta = library.addNotebook(in: nil, title: scene == "invert" ? "反相測試" : "記號測試")
+                if scene == "invert" {
+                    var data = Store.loadNotebook(meta.id)
+                    if !data.rows.isEmpty, !data.rows[0].pages.isEmpty {
+                        data.rows[0].pages[0].paper = PaperStyle(pattern: 4, color: 1)
+                        Store.saveNotebook(data, id: meta.id)
+                    }
+                }
+                library.openNotebook = meta
             case "winsplit", "winfull", "clip", "tidytree", "pills", "wintuck":
                 // v12.15.0：分屏、全屏的浮動視窗；視窗裡剪一塊貼到白板；四層的一鍵整理
                 if scene == "winsplit" || scene == "pills" || scene == "wintuck" { windowMode = .split }

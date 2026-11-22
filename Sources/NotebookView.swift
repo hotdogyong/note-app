@@ -1794,7 +1794,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             tv.textView.insertText((needsSpace ? " " : "") + text)
         case .notes(let pageID, let x, let y):
             guard let pv = pageViews[pageID] else { return }
-            let box = voiceNoteBox(text, at: CGPoint(x: x, y: y), page: pv.page)
+            // 太長的話換行：最寬到畫面的一半（白板放大縮小時也不會伸到筆盒底下）
+            let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+            let box = voiceNoteBox(text, at: CGPoint(x: x, y: y), page: pv.page, maxWidth: bounds.width * 0.5 / s)
             var texts = model.texts(of: pageID)
             texts.append(box)
             setTextsRecorded(texts, pageID: pageID)            // 每一句一步復原
@@ -1805,7 +1807,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     /// 一句話變成一個方塊：字級、顏色、外框跟點兩下新增的一樣；太長的話換行
-    private func voiceNoteBox(_ text: String, at p: CGPoint, page: NotePage) -> TextBox {
+    private func voiceNoteBox(_ text: String, at p: CGPoint, page: NotePage, maxWidth: CGFloat) -> TextBox {
         var box = TextBox()
         box.text = text
         box.fontSize = TextDefaults.size(model.meta.id) * pageScaleFactor(page.spec)
@@ -1819,7 +1821,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         let font = TextBoxView.font(for: box, scale: 1)
         let natural = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 2
-        let limit = min(420 * pageScaleFactor(page.spec), max(page.spec.width - p.x - 20, 120))
+        let limit = min(420 * pageScaleFactor(page.spec), maxWidth, max(page.spec.width - p.x - 20, 120))
         if natural > limit {
             box.fixedWidth = limit
             box.width = limit
@@ -3034,6 +3036,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             box.rgba = pv.page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
             box.x = center.x + CGFloat(i * 61 % 300) * k
             box.y = center.y + CGFloat(i * 47 % 260) * k - 130 * k
+            let font = TextBoxView.font(for: box, scale: 1)
+            box.width = ceil((name as NSString).size(withAttributes: [.font: font]).width) + 2
             boxes.append(box)
         }
         var links: [BoxLink] = []
@@ -3052,7 +3056,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let level1 = MindFold.expand(model.texts(of: id), links: model.links(of: id), from: boxes[0].id, level: 1)
         let folded1 = level1.filter { $0.branchFolded == true }.map { $0.text }.sorted().joined(separator: "、")
         let hidden1 = MindFold.hidden(texts: level1, links: model.links(of: id)).count
-        return "收起「C 結合」：藏了 \(hiddenNow) 個（應該 2）\n只展開到第 1 層：收起 \(folded1)，藏 \(hidden1) 個（應該 S、C、R，5 個）"
+        return "收起「C 結合」：藏了 \(hiddenNow) 個（應該 2），畫出來的線 \(pv.shownLinkCount) 條（應該 10）\n只展開到第 1 層：收起 \(folded1)，藏 \(hidden1) 個（應該 S、C、R，5 個）"
     }
 
     /// 自動測試（voice，v12.16.0）：語音的膠囊（不開麥克風），假裝講了三句，看「一句一個方塊」排得怎樣
@@ -3079,9 +3083,6 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 自動測試（invert，v12.16.0）：一頁寫幾筆、打一行字，打開反相
     func selfTestInvert() -> String {
         guard let page = model.notebook.rows.first?.pages.first, let pv = pageViews[page.id] else { return "沒有頁面" }
-        let strokes = BoardTileCheck.makeStrokes(count: 30, markers: 0, origin: CGPoint(x: 80, y: 200),
-                                                 spread: CGSize(width: 500, height: 400))
-        pv.canvas.drawing = PKDrawing(strokes: strokes)
         var box = TextBox()
         box.text = "反相：深灰底、米白字（紅筆會變青色）"
         box.fontSize = 24
@@ -3099,7 +3100,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         model.setTexts([box, red], pageID: page.id)
         pv.syncTexts(model.texts(of: page.id))
         model.inverted = true
-        return "反相開了"
+        return "反相開了（白紙＋黑字＋紅字：應該變成深灰底、米白字、青色字）"
     }
 
     /// 自動測試（placemarks，v12.16.0）：六頁；從第 1 頁用大綱跳到第 5 頁（自動記號），按 ↩︎ 回第 1 頁，

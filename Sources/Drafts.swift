@@ -57,10 +57,10 @@ enum Drafts {
         let draft = library.draftNotebook(for: parent)
         var all = sessions
         var data = Store.loadNotebook(draft.id)
-        if var s = all[parent.uuidString], s.draft == draft.id,
+        if var s = all[parent.id.uuidString], s.draft == draft.id,
            data.rows.contains(where: { $0.pages.contains { $0.id == s.startPage } }) {
             s.lastUsed = Date()
-            all[parent.uuidString] = s
+            all[parent.id.uuidString] = s
             sessions = all
             return draft
         }
@@ -70,7 +70,7 @@ enum Drafts {
         data.rows.append(row)
         data.lastPage = row.pages[0].id                       // 打開時直接在這張新的白頁
         Store.saveNotebook(data, id: draft.id)
-        all[parent.uuidString] = DraftSession(draft: draft.id, startPage: row.pages[0].id, lastUsed: Date())
+        all[parent.id.uuidString] = DraftSession(draft: draft.id, startPage: row.pages[0].id, lastUsed: Date())
         sessions = all
         return draft
     }

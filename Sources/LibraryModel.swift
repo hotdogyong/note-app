@@ -21,6 +21,8 @@ final class LibraryModel: ObservableObject {
             if let meta = openNotebook { addTab(meta.id) }     // 打開的筆記本都放進上面的分頁（v12.8.2）
         }
     }
+    /// 首頁右邊的日誌面板開著（v12.15.13）
+    @Published var logbookOpen = false
     /// 跳轉捷徑指到別本：打開那一本之後要跳到哪一頁（v12.15.11）
     var pendingJump: PageJump?
     /// 這一次換筆記本用「從中間放大」的動畫（白板上的浮動視窗放大成整個畫面；v12.12.3）

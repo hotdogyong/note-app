@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.15.12"
+let appVersion = "v12.15.13"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序
@@ -76,7 +76,16 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            splitView                                  // 首頁不顯示分頁（v12.8.4，使用者：回首頁時分頁要收起來）
+            // 日誌面板（v12.15.13，照 GUGA 的 My Logbook）：首頁右邊滑出來，首頁讓出那一塊
+            HStack(spacing: 0) {
+                splitView                              // 首頁不顯示分頁（v12.8.4，使用者：回首頁時分頁要收起來）
+                if library.logbookOpen {
+                    LogbookPanel(close: {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) { library.logbookOpen = false }
+                    })
+                    .transition(.move(edge: .trailing))
+                }
+            }
             // 筆記本：整個蓋在首頁（含側邊欄）上面，打開筆記本時完全看不到資料夾側邊欄
             if let meta = library.openNotebook {
                 notebookCover(meta)

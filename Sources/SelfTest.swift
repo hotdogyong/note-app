@@ -92,6 +92,17 @@ enum SelfTest {
                     Store.saveNotebook(data, id: meta.id)
                 }
                 library.openNotebook = meta
+            case "logbook":
+                // v12.15.13：首頁的日誌面板（今天改過兩本、一條自己寫的日誌）
+                let a = library.addNotebook(in: nil, title: "電磁學 Griffiths 筆記")
+                let b = library.addNotebook(in: nil, title: "工數習題")
+                for meta in [a, b] {
+                    let data = Store.loadNotebook(meta.id)
+                    for row in data.rows { for page in row.pages { ActivityLog.touch(pageID: page.id) } }
+                }
+                LogNotes.set([LogNote(text: "讀完 Griffiths 2.3，高斯定律的題目還要再練")], day: ActivityLog.dayKey(Date()))
+                library.goHome()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { library.logbookOpen = true }
             case "pinhome":
                 // v12.15.11：釘選、資料夾和筆記本同名（留在首頁看）
                 let folder = library.addFolder(in: nil, name: "測試")

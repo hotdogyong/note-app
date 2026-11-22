@@ -234,6 +234,11 @@ struct LibraryView: View {
         } label: {
             Image(systemName: "gearshape")
         }
+        Button {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) { library.logbookOpen.toggle() }
+        } label: {
+            Image(systemName: "calendar")                   // 日誌（v12.15.13，照 GUGA）：右邊滑出月曆
+        }
     }
 
     /// 新白板：寬 columns 張 A4、高 rows 張 A4，建立後直接打開

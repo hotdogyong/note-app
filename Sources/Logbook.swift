@@ -249,10 +249,10 @@ struct LogbookPanel: View {
                 }
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Label("自定義日誌條", systemImage: "plus")
+                    Label("自訂日誌條", systemImage: "plus")
                         .font(.system(size: 20, weight: .medium))
                         .foregroundStyle(Color.secondary)
-                    Text("輸入自定義文本，記錄當天的信息")
+                    Text("輸入文字，記下這一天的事")
                         .font(.caption)
                         .foregroundStyle(Color.secondary)
                 }

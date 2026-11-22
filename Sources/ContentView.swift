@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.15.14"
+let appVersion = "v12.16.0"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序
@@ -102,6 +102,9 @@ struct ContentView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             checkSpace()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            SessionRestore.touch()                     // v12.16.0：記下離開的時間（6 小時內重進回到這裡）
         }
         .alert("iPad 的空間快滿了", isPresented: Binding(get: { lowSpace != nil }, set: { if !$0 { lowSpace = nil } })) {
             Button("知道了", role: .cancel) { }

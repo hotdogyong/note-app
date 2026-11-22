@@ -520,3 +520,77 @@ struct TextStylePanel: View {
         .buttonStyle(.plain)
     }
 }
+
+// MARK: - 心智圖的折疊（v12.16.0，使用者：SCAMPER 長出 7 個分支，要能一鍵收起來；很多層的時候也要方便）
+// 方塊的 branchFolded = true：順著線（from → to）往下的全部方塊、圖片、線都藏起來；方塊旁邊一個橘色圓圈寫藏了幾個。
+// 只是不顯示（匯出、縮圖也照目前的樣子），資料都還在。
+enum MindFold {
+    /// 每個方塊往下接到哪些（線的 from → to）
+    static func children(_ links: [BoxLink]) -> [UUID: [UUID]] {
+        var out: [UUID: [UUID]] = [:]
+        for link in links where link.from != link.to { out[link.from, default: []].append(link.to) }
+        return out
+    }
+
+    /// 某個方塊往下的全部（不含自己；有繞回來的線也不會卡住）
+    static func descendants(of root: UUID, children: [UUID: [UUID]]) -> Set<UUID> {
+        var seen: Set<UUID> = [root]
+        var queue = children[root] ?? []
+        var out = Set<UUID>()
+        while let id = queue.popLast() {
+            guard seen.insert(id).inserted else { continue }
+            out.insert(id)
+            queue.append(contentsOf: children[id] ?? [])
+        }
+        return out
+    }
+
+    /// 被收起來、不顯示的方塊和圖片
+    static func hidden(texts: [TextBox], links: [BoxLink]) -> Set<UUID> {
+        let folded = texts.filter { $0.branchFolded == true }
+        guard !folded.isEmpty, !links.isEmpty else { return [] }
+        let kids = children(links)
+        var out = Set<UUID>()
+        for t in folded { out.formUnion(descendants(of: t.id, children: kids)) }
+        return out
+    }
+
+    /// 匯出、縮圖用：拿掉收起來的方塊、圖片和接著它們的線
+    static func visible(_ page: NotePage) -> NotePage {
+        let hide = hidden(texts: page.texts ?? [], links: page.links ?? [])
+        guard !hide.isEmpty else { return page }
+        var p = page
+        p.texts = page.texts?.filter { !hide.contains($0.id) }
+        p.images = page.images?.filter { !hide.contains($0.id) }
+        p.links = page.links?.filter { !hide.contains($0.from) && !hide.contains($0.to) }
+        return p
+    }
+
+    /// 從 root 往下，只展開到第 level 層（root 是第 0 層）：比 level 淺的全部打開，剛好第 level 層、底下還有的收起來。
+    /// level = nil：全部展開
+    static func expand(_ texts: [TextBox], links: [BoxLink], from root: UUID, level: Int?) -> [TextBox] {
+        let kids = children(links)
+        var depth: [UUID: Int] = [root: 0]
+        var queue = [root]
+        var head = 0
+        while head < queue.count {                         // 一層一層往外（同一個方塊只算最淺的那層）
+            let id = queue[head]
+            head += 1
+            for c in kids[id] ?? [] where depth[c] == nil {
+                depth[c] = depth[id]! + 1
+                queue.append(c)
+            }
+        }
+        var out = texts
+        for i in out.indices {
+            guard let d = depth[out[i].id] else { continue }
+            let hasKids = !(kids[out[i].id] ?? []).isEmpty
+            if let level = level, d == level, hasKids {
+                out[i].branchFolded = true
+            } else {
+                out[i].branchFolded = nil
+            }
+        }
+        return out
+    }
+}

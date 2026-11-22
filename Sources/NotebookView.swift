@@ -200,6 +200,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             return
         }
         let back = model.currentPageID
+        rememberPlace(before: jump.page)                       // v12.16.0：跳之前的位置記成跳回記號
         reveal(pageID: jump.page, pageRect: CGRect.null)
         // 跳過去之後，下面出現「‹ 回到原本那頁」幾秒
         jumpBackButton?.removeFromSuperview()
@@ -223,6 +224,126 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         jumpBackButton = button
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak button] in
             UIView.animate(withDuration: 0.3, animations: { button?.alpha = 0 }, completion: { _ in button?.removeFromSuperview() })
+        }
+    }
+
+    // MARK: 跳回記號（v12.16.0，使用者：暫時書籤，記號越多越好，但只有一個的時候要最方便按）
+    // 工具列的 ↩︎：沒有記號 → 在這裡放一個；有記號 → 跳回最新的那個，剛剛的位置變成新的記號（再按一次又跳回來，
+    // 像在兩頁之間來回翻）。用大綱、書籤、縮略圖、概覽、捷徑跳頁之前，也會自動把原本的位置記下來。
+    // 長按 ↩︎ 列出全部記號。只記到關掉這一本（暫時的，不進書籤）。白板不用（白板有圖釘）
+
+    /// 畫面正中間是哪一頁、那一頁的哪個高度（頁面座標）
+    func currentPlace() -> (page: UUID, y: CGFloat)? {
+        guard !isBoard else { return nil }
+        let cy = outer.contentOffset.y + outer.bounds.height / 2
+        var best: (page: UUID, y: CGFloat, gap: CGFloat)?
+        for row in model.notebook.rows {
+            guard let rv = rowViews[row.id], rv.pageFrames.indices.contains(rv.currentIndex),
+                  row.pages.indices.contains(rv.currentIndex) else { continue }
+            let pf = rv.pageFrames[rv.currentIndex]
+            let page = row.pages[rv.currentIndex]
+            let top = rv.frame.minY + pf.minY
+            let bottom = top + pf.height
+            let k = pf.width / max(page.spec.width, 1)
+            guard k > 0 else { continue }
+            let gap = cy < top ? top - cy : (cy > bottom ? cy - bottom : 0)
+            let y = (min(max(cy, top), bottom) - top) / k
+            if best == nil || gap < best!.gap { best = (page.id, y, gap) }
+            if gap == 0 { break }
+        }
+        return best.map { ($0.page, $0.y) }
+    }
+
+    /// 跳到某一頁的某個高度（放在畫面中間）
+    private func showPlace(page: UUID, y: CGFloat) -> Bool {
+        guard let row = model.notebook.rows.first(where: { $0.pages.contains { $0.id == page } }),
+              let index = row.pages.firstIndex(where: { $0.id == page }),
+              let rv = rowViews[row.id], rv.pageFrames.indices.contains(index) else { return false }
+        endTextSelection()
+        dismissShapeEditor()
+        let pf = rv.pageFrames[index]
+        let k = pf.width / max(row.pages[index].spec.width, 1)
+        if rv.currentIndex != index {
+            rv.currentIndex = index
+            rv.setContentOffset(CGPoint(x: rv.offsetFor(index, inPage: 0), y: 0), animated: true)
+        }
+        let target = rv.frame.minY + pf.minY + y * k
+        outer.setContentOffset(CGPoint(x: outer.contentOffset.x, y: clampOuterY(target - outer.bounds.height / 2)), animated: true)
+        return true
+    }
+
+    private static func samePlace(_ a: PlaceMark, _ page: UUID, _ y: CGFloat) -> Bool {
+        a.page == page && abs(a.y - y) < 200
+    }
+
+    private func addPlaceMark(page: UUID, y: CGFloat, auto: Bool) {
+        var marks = model.placeMarks
+        marks.removeAll { Self.samePlace($0, page, y) }       // 同一個地方不重複
+        marks.append(PlaceMark(page: page, y: y, auto: auto))
+        if marks.count > 30 { marks.removeFirst(marks.count - 30) }
+        model.placeMarks = marks
+    }
+
+    /// 要跳到別頁之前：把現在的位置記下來（跳到同一頁就不用）
+    func rememberPlace(before destination: UUID?) {
+        guard positionRestored, !isBoard, let here = currentPlace() else { return }
+        if let d = destination, d == here.page { return }
+        addPlaceMark(page: here.page, y: here.y, auto: true)
+    }
+
+    /// 從面板、概覽跳到某一頁：先記住現在的位置
+    func navigate(toRow r: Int, page p: Int) {
+        let rows = model.notebook.rows
+        guard rows.indices.contains(r), rows[r].pages.indices.contains(p) else { return }
+        rememberPlace(before: rows[r].pages[p].id)
+        jump(toRow: r, page: p)
+    }
+
+    /// 工具列的 ↩︎（點一下）
+    func placeMarkTapped() {
+        guard let here = currentPlace() else { return }
+        var marks = model.placeMarks
+        marks.removeAll { model.page($0.page) == nil }        // 頁被刪掉的記號不要了
+        guard let last = marks.last else {
+            addPlaceMark(page: here.page, y: here.y, auto: false)
+            showMessage("arrow.uturn.backward", "在這裡放了記號。翻到別的地方，再按一次就跳回來")
+            return
+        }
+        if Self.samePlace(last, here.page, here.y) {
+            // 就在最新的記號上：有更早的就跳到那個（輪流），沒有就提醒
+            guard marks.count >= 2 else {
+                model.placeMarks = marks
+                showMessage("arrow.uturn.backward", "你就在記號這裡。翻到別的地方，再按一次就跳回來")
+                return
+            }
+            let previous = marks.remove(at: marks.count - 2)
+            marks.append(previous)
+            model.placeMarks = marks
+            _ = showPlace(page: previous.page, y: previous.y)
+            return
+        }
+        marks.removeLast()
+        marks.append(PlaceMark(page: here.page, y: here.y, auto: last.auto))   // 剛剛的位置變成新的記號：再按一次跳回來
+        model.placeMarks = marks
+        _ = showPlace(page: last.page, y: last.y)
+    }
+
+    /// 長按選單：在這裡放記號
+    func addPlaceMarkHere() {
+        guard let here = currentPlace() else { return }
+        addPlaceMark(page: here.page, y: here.y, auto: false)
+        showMessage("arrow.uturn.backward", "放了記號（共 \(model.placeMarks.count) 個）")
+    }
+
+    /// 長按選單：跳到某一個記號（那個記號留著；現在的位置也記成一個）
+    func goToPlaceMark(_ id: UUID) {
+        guard let mark = model.placeMarks.first(where: { $0.id == id }) else { return }
+        if let here = currentPlace(), !Self.samePlace(mark, here.page, here.y) {
+            addPlaceMark(page: here.page, y: here.y, auto: true)
+        }
+        if !showPlace(page: mark.page, y: mark.y) {
+            model.placeMarks.removeAll { $0.id == id }
+            showMessage("questionmark.square.dashed", "找不到那一頁（可能被刪掉了）")
         }
     }
 
@@ -1299,7 +1420,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     private func textBox(at p: CGPoint) -> TextBoxView? {
         for pv in pageViews.values {
-            for tv in pv.textViews.values {
+            for tv in pv.textViews.values where !tv.isHidden {   // 心智圖收起來的不算（v12.16.0）
                 if tv.convert(tv.frameRect, to: self).insetBy(dx: -6, dy: -6).contains(p) { return tv }
             }
         }
@@ -1359,6 +1480,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             self.commit(tv)
         }
         tv.setActive(true)
+        // 心智圖（v12.16.0）：選到有連線的方塊，那一整棵樹有分支的方塊旁邊出現「−」
+        pageViews[tv.pageID]?.foldHandles = tv.linked ? connectedTexts(from: tv.box.id, pageID: tv.pageID) : []
         if edit { tv.textView.becomeFirstResponder() }
         if textBar.superview == nil { addSubview(textBar) }
         bringSubviewToFront(textBar)
@@ -1433,6 +1556,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         tv.onResize = nil
         tv.onLink = nil
         pageViews[tv.pageID]?.hideLinkPreview()
+        pageViews[tv.pageID]?.foldHandles = []
         var texts = model.texts(of: tv.pageID)
         growMarkdownPageIfNeeded(tv)
         // 空的方塊拿掉；有線接著的留著（v12.13.0：從點拉出來的新方塊還沒打字，也要看得到）
@@ -1516,8 +1640,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         positionLinkBar()
         guard let tv = activeText, textBar.superview != nil else { return }
         let r = tv.convert(tv.frameRect, to: self)
-        // v12.13.0：多了「卡片樣式」一顆（630 → 674）；畫面比較窄（浮動視窗裡）就縮到放得下
-        let size = CGSize(width: min(674, max(bounds.width - 16, 320)), height: 44)
+        // v12.13.0：多了「卡片樣式」一顆（630 → 674）；v12.16.0 多了麥克風（→ 718）；畫面比較窄（浮動視窗裡）就縮到放得下
+        let size = CGSize(width: min(718, max(bounds.width - 16, 320)), height: 44)
         var y: CGFloat
         if tv.textView.isFirstResponder {
             // 輸入中：放在文字上面，盡量不擋到要寫字的地方
@@ -1582,6 +1706,160 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     private weak var stylePanel: UIViewController?
+
+    // MARK: 語音轉文字（v12.16.0；VoiceInput.swift）
+    // 兩種用法：① 文字方塊工具列的麥克風：講的話打進這個方塊（游標的地方）。
+    // ② 長按空白處那一圈的「語音」：從長按的地方開始，每講完一句就變成一個新的文字方塊，往下排（白板腦力激盪用）。
+    // 下面一條黑色的膠囊：紅點、正在聽的字、「完成」
+
+    private enum VoiceMode {
+        case box(UUID, pageID: UUID)                   // 打進這個方塊
+        case notes(pageID: UUID, x: CGFloat, y: CGFloat)   // 每句一個新方塊，下一個放在 (x, y)（頁面座標）
+    }
+    private var voiceMode: VoiceMode?
+    private lazy var voiceBar = VoiceBar(onDone: { [weak self] in self?.stopVoice() })
+
+    var voiceRunning: Bool { voiceMode != nil }
+
+    /// 文字方塊工具列的麥克風
+    func toggleVoiceForActiveText() {
+        if voiceMode != nil { stopVoice(); return }
+        guard let tv = activeText, !readOnly else { return }
+        startVoice(.box(tv.box.id, pageID: tv.pageID))
+    }
+
+    /// 長按空白處的「語音」：從那裡開始一句一個方塊
+    private func startVoiceNotes(at p: CGPoint) {
+        guard !readOnly, let pv = pageViews.values.first(where: { $0.bounds.contains($0.convert(p, from: self)) }) else { return }
+        if voiceMode != nil { stopVoice() }
+        endTextSelection()
+        let s = pv.bounds.width / max(pv.page.spec.width, 1)
+        guard s > 0 else { return }
+        let local = pv.convert(p, from: self)
+        startVoice(.notes(pageID: pv.page.id, x: local.x / s, y: local.y / s))
+    }
+
+    private func startVoice(_ mode: VoiceMode) {
+        voiceMode = mode
+        let voice = VoiceInput.shared
+        voice.onPartial = { [weak self] text in self?.voiceBar.show(text: text) }
+        voice.onFinal = { [weak self] text in self?.voiceFinal(text) }
+        voice.onStatus = { [weak self] text in self?.voiceBar.show(status: text) }
+        voice.onError = { [weak self] text in
+            guard let self = self else { return }
+            self.voiceMode = nil
+            self.voiceBar.removeFromSuperview()
+            self.textBar.setVoice(false)
+            self.showMessage("mic.slash", text)
+        }
+        if voiceBar.superview == nil { addSubview(voiceBar) }
+        var hint = "講的話會打進這個方塊"
+        if case .notes = mode { hint = "講完一句停一下，就會變成一個方塊" }
+        voiceBar.reset(hint: hint)
+        layoutVoiceBar()
+        bringSubviewToFront(voiceBar)
+        textBar.setVoice(true)
+        Task { await voice.start() }
+    }
+
+    func stopVoice() {
+        guard voiceMode != nil else { return }
+        voiceBar.show(status: "整理最後一句…")
+        Task { [weak self] in
+            await VoiceInput.shared.stop()
+            guard let self = self else { return }
+            self.voiceMode = nil
+            self.voiceBar.removeFromSuperview()
+            self.textBar.setVoice(false)
+        }
+    }
+
+    private func layoutVoiceBar() {
+        let w = min(560, bounds.width - 32)
+        voiceBar.frame = CGRect(x: (bounds.width - w) / 2, y: bounds.height - safeAreaInsets.bottom - 86, width: w, height: 64)
+    }
+
+    /// 定稿的一句
+    private func voiceFinal(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        voiceBar.show(text: "")
+        guard !text.isEmpty, let mode = voiceMode else { return }
+        switch mode {
+        case .box(let id, let pageID):
+            guard let tv = pageViews[pageID]?.textViews[id] else { return }
+            if activeText !== tv { activate(tv, edit: true) }
+            if !tv.textView.isFirstResponder { tv.textView.becomeFirstResponder() }
+            let before = tv.textView.text ?? ""
+            let needsSpace = !before.isEmpty && !(before.last?.isWhitespace ?? true) && (text.first?.isASCII ?? false)
+            tv.textView.insertText((needsSpace ? " " : "") + text)
+        case .notes(let pageID, let x, let y):
+            guard let pv = pageViews[pageID] else { return }
+            let box = voiceNoteBox(text, at: CGPoint(x: x, y: y), page: pv.page)
+            var texts = model.texts(of: pageID)
+            texts.append(box)
+            setTextsRecorded(texts, pageID: pageID)            // 每一句一步復原
+            let frame = PageRenderer.textFrameRect(box, page: pv.page)
+            voiceMode = .notes(pageID: pageID, x: x, y: frame.maxY + 14 * pageScaleFactor(pv.page.spec))
+            reveal(pageID: pageID, pageRect: frame)
+        }
+    }
+
+    /// 一句話變成一個方塊：字級、顏色、外框跟點兩下新增的一樣；太長的話換行
+    private func voiceNoteBox(_ text: String, at p: CGPoint, page: NotePage) -> TextBox {
+        var box = TextBox()
+        box.text = text
+        box.fontSize = TextDefaults.size(model.meta.id) * pageScaleFactor(page.spec)
+        box.bold = TextDefaults.bold(model.meta.id)
+        box.rgba = TextDefaults.rgba(model.meta.id) ?? defaultTextRGBA(pdf: !page.isDarkBackground)
+        if let style = TextStyleDefault.load(), style.fill != nil {
+            box.fill = style.fill
+            box.fillMode = style.fillMode
+            box.shape = style.shape
+            box.rgba = TextBoxStyle.readable(text: box.rgba, fill: box.fill, mode: box.fillMode)
+        }
+        let font = TextBoxView.font(for: box, scale: 1)
+        let natural = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 2
+        let limit = min(420 * pageScaleFactor(page.spec), max(page.spec.width - p.x - 20, 120))
+        if natural > limit {
+            box.fixedWidth = limit
+            box.width = limit
+        } else {
+            box.width = natural
+        }
+        box.x = min(max(p.x, 0), max(page.spec.width - box.width - 10, 0))
+        box.y = min(max(p.y - box.fontSize * 0.7, 0), max(page.spec.height - 30, 0))
+        return box
+    }
+
+    // MARK: 心智圖的折疊（v12.16.0；TextLinks.swift 的 MindFold、NotePageView 的圓圈）
+
+    /// 點方塊旁邊的圓圈：收起／展開底下的分支（一步復原）
+    func toggleBranch(_ id: UUID, pageID: UUID) {
+        guard !readOnly else { return }
+        let keep = activeText?.box.id
+        endTextSelection()
+        var texts = model.texts(of: pageID)
+        guard let i = texts.firstIndex(where: { $0.id == id }) else { return }
+        texts[i].branchFolded = texts[i].branchFolded == true ? nil : true
+        setTextsRecorded(texts, pageID: pageID)
+        reselect(keep, pageID: pageID)
+    }
+
+    /// 長按圓圈：從這個方塊往下只展開到第 level 層（nil＝全部展開）
+    func expandBranch(_ id: UUID, pageID: UUID, level: Int?) {
+        guard !readOnly else { return }
+        let keep = activeText?.box.id
+        endTextSelection()
+        let texts = MindFold.expand(model.texts(of: pageID), links: model.links(of: pageID), from: id, level: level)
+        setTextsRecorded(texts, pageID: pageID)
+        reselect(keep, pageID: pageID)
+    }
+
+    /// 收起／展開之後：原本選著的方塊還看得到的話再選回來（「−」才會留著）
+    private func reselect(_ id: UUID?, pageID: UUID) {
+        guard let id = id, let tv = pageViews[pageID]?.textViews[id], !tv.isHidden else { return }
+        activate(tv, edit: false)
+    }
 
     // MARK: 選取一條連線、改它的樣子（v12.14.0）
 
@@ -2504,7 +2782,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                                          action: { [weak self] in self?.requestInsert(InsertKind.photos) },
                                          outerSymbol: "camera.fill", outerTitle: "相機", outerTint: UIColor.darkGray,
                                          outerAction: { [weak self] in self?.requestInsert(InsertKind.camera) }))
-        items.append(RadialMenuView.Item(symbol: "mic.fill", title: "錄音", tint: UIColor.black, action: later("錄音")))
+        // v12.16.0：錄音那一格改成「語音」：從這裡開始，講一句就變成一個文字方塊（不存錄音檔）
+        items.append(RadialMenuView.Item(symbol: "mic.fill", title: "語音", tint: UIColor.systemRed,
+                                         action: { [weak self] in self?.startVoiceNotes(at: p) }))
         if isBoard {
             items.append(RadialMenuView.Item(symbol: "book.closed.fill", title: "新筆記本", tint: UIColor.brown,
                                              action: { [weak self] in self?.model.cardRequest = CardRequest.newNotebook },
@@ -2733,6 +3013,121 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             }
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// 自動測試（mindfold，v12.16.0）：SCAMPER 七個分支，「C 結合」收起來，再選中間的方塊（看「−」和橘色的數字）
+    func selfTestMindFold() -> String {
+        guard let pv = boardPV else { return "沒有白板" }
+        let id = pv.page.id
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        let c = pv.convert(CGPoint(x: bounds.midX * 0.7, y: bounds.midY), from: self)
+        let center = CGPoint(x: c.x / s, y: c.y / s)
+        let k = pageScaleFactor(pv.page.spec)
+        let names = ["SCAMPER：讀書方法", "S 替代", "C 結合", "A 調整", "M 修改", "P 他用", "E 刪除", "R 重排",
+                     "換一本課本", "用影片代替", "例題＋公式卡", "跟同學對答案", "先看習題"]
+        let parents = [-1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 7]
+        var boxes: [TextBox] = []
+        for (i, name) in names.enumerated() {
+            var box = TextBox()
+            box.text = name
+            box.fontSize = 16 * k
+            box.rgba = pv.page.isDarkBackground ? [1, 1, 1, 1] : [0, 0, 0, 1]
+            box.x = center.x + CGFloat(i * 61 % 300) * k
+            box.y = center.y + CGFloat(i * 47 % 260) * k - 130 * k
+            boxes.append(box)
+        }
+        var links: [BoxLink] = []
+        for (i, p) in parents.enumerated() where p >= 0 {
+            links.append(BoxLink(from: boxes[p].id, fromSide: 1, to: boxes[i].id, toSide: 3))
+        }
+        model.setTexts(model.texts(of: id) + boxes, pageID: id)
+        model.setLinks(model.links(of: id) + links, pageID: id)
+        pv.syncLinks(model.links(of: id))
+        pv.syncTexts(model.texts(of: id))
+        tidyTexts(Set(boxes.map { $0.id }), pageID: id)
+        toggleBranch(boxes[2].id, pageID: id)                     // 「C 結合」收起來
+        if let tv = pv.textViews[boxes[0].id] { activate(tv, edit: false) }
+        let hiddenNow = pv.foldHidden.count
+        // 再試「只展開到第 1 層」算出來對不對（不寫回去）
+        let level1 = MindFold.expand(model.texts(of: id), links: model.links(of: id), from: boxes[0].id, level: 1)
+        let folded1 = level1.filter { $0.branchFolded == true }.map { $0.text }.sorted().joined(separator: "、")
+        let hidden1 = MindFold.hidden(texts: level1, links: model.links(of: id)).count
+        return "收起「C 結合」：藏了 \(hiddenNow) 個（應該 2）\n只展開到第 1 層：收起 \(folded1)，藏 \(hidden1) 個（應該 S、C、R，5 個）"
+    }
+
+    /// 自動測試（voice，v12.16.0）：語音的膠囊（不開麥克風），假裝講了三句，看「一句一個方塊」排得怎樣
+    func selfTestVoice() -> String {
+        guard let pv = boardPV else { return "沒有白板" }
+        let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        let local = pv.convert(CGPoint(x: bounds.width * 0.3, y: bounds.height * 0.3), from: self)
+        voiceMode = .notes(pageID: pv.page.id, x: local.x / s, y: local.y / s)
+        for sentence in ["高斯定律什麼時候可以用？要有足夠的對稱性",
+                         "球對稱、柱對稱、平面對稱三種，先畫 Gaussian surface",
+                         "如果電荷分布不對稱，就算 flux 還是對的，只是沒辦法把 E 拿出積分外面，這時候要改用 Coulomb 直接積"] {
+            voiceFinal(sentence)
+        }
+        if voiceBar.superview == nil { addSubview(voiceBar) }
+        voiceBar.reset(hint: "講完一句停一下，就會變成一個方塊")
+        voiceBar.show(text: "那電位的邊界條件呢")
+        voiceBar.show(status: "聽寫中（裝置上的新模型）")
+        layoutVoiceBar()
+        bringSubviewToFront(voiceBar)
+        let count = model.texts(of: pv.page.id).count
+        return "假裝講了三句：白板上有 \(count) 個文字方塊（應該 3）"
+    }
+
+    /// 自動測試（invert，v12.16.0）：一頁寫幾筆、打一行字，打開反相
+    func selfTestInvert() -> String {
+        guard let page = model.notebook.rows.first?.pages.first, let pv = pageViews[page.id] else { return "沒有頁面" }
+        let strokes = BoardTileCheck.makeStrokes(count: 30, markers: 0, origin: CGPoint(x: 80, y: 200),
+                                                 spread: CGSize(width: 500, height: 400))
+        pv.canvas.drawing = PKDrawing(strokes: strokes)
+        var box = TextBox()
+        box.text = "反相：深灰底、米白字（紅筆會變青色）"
+        box.fontSize = 24
+        box.rgba = [0, 0, 0, 1]
+        box.x = 60
+        box.y = 90
+        box.width = 460
+        var red = TextBox()
+        red.text = "這行是紅字"
+        red.fontSize = 24
+        red.rgba = [0.85, 0.15, 0.15, 1]
+        red.x = 60
+        red.y = 140
+        red.width = 200
+        model.setTexts([box, red], pageID: page.id)
+        pv.syncTexts(model.texts(of: page.id))
+        model.inverted = true
+        return "反相開了"
+    }
+
+    /// 自動測試（placemarks，v12.16.0）：六頁；從第 1 頁用大綱跳到第 5 頁（自動記號），按 ↩︎ 回第 1 頁，
+    /// 再跳到第 3 頁、放一個記號
+    func selfTestPlaceMarks(_ done: @escaping (String) -> Void) {
+        while model.notebook.rows.count < 6 { insertRow(at: model.notebook.rows.count) }
+        jump(toRow: 0, page: 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self = self else { return }
+            self.navigate(toRow: 4, page: 0)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self = self else { return }
+                let afterJump = self.model.focusRow + 1
+                self.placeMarkTapped()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                    guard let self = self else { return }
+                    let afterBack = self.model.focusRow + 1
+                    self.navigate(toRow: 2, page: 0)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                        guard let self = self else { return }
+                        self.addPlaceMarkHere()
+                        let rows = self.model.notebook.rows
+                        let list = self.model.placeMarks.map { Self.pageLabel($0.page, in: rows) + ($0.auto ? "（自動）" : "（自己放的）") }
+                        done("跳到第 \(afterJump) 頁（應該 5）→ 按 ↩︎ 回到第 \(afterBack) 頁（應該 1）\n記號：" + list.joined(separator: "、"))
+                    }
+                }
+            }
+        }
     }
 
     /// 自動測試（clip）：浮動視窗裡的筆記本，第一頁左上角剪一塊貼到白板
@@ -4137,7 +4532,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 左下角的位置：筆盒停在下面時往上讓開
     /// 白板上有分屏的浮動視窗（v12.15.0）：左半邊被視窗蓋住，左下角的按鈕往右讓這麼多
     var boardLeftInset: CGFloat = 0 {
-        didSet { if boardLeftInset != oldValue { layoutBoardHUD() } }
+        didSet {
+            guard boardLeftInset != oldValue else { return }
+            // v12.16.0：跟著視窗收起／分屏一起滑過去，不要一下子跳
+            UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseInOut, .beginFromCurrentState]) { self.layoutBoardHUD() }
+        }
     }
 
     func layoutBoardHUD() {

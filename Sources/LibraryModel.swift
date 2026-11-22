@@ -19,6 +19,7 @@ final class LibraryModel: ObservableObject {
     @Published var openNotebook: NotebookMeta? {       // 正在看的筆記本：蓋在整個首頁（含側邊欄）上面（v11.17）
         didSet {
             if let meta = openNotebook { addTab(meta.id) }     // 打開的筆記本都放進上面的分頁（v12.8.2）
+            if openNotebook?.id != oldValue?.id { SessionRestore.noteOpen(openNotebook?.id) }   // v12.16.0：6 小時內重進 App 回到這一本
         }
     }
     /// 首頁右邊的日誌面板開著（v12.15.13）
@@ -48,6 +49,14 @@ final class LibraryModel: ObservableObject {
         library = lib
         purgeExpiredTrash()                            // 最近刪除超過 30 天的：永久刪除
         openTabs = (UserDefaults.standard.stringArray(forKey: Self.tabsKey) ?? []).compactMap { UUID(uuidString: $0) }
+        // v12.16.0：6 小時內重進 App，打開離開時的那一本（白板上的浮動視窗由白板自己開回來）
+        if let id = SessionRestore.notebookToRestore(),
+           let meta = lib.notebooks.first(where: { $0.id == id && $0.deletedAt == nil }) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, self.openNotebook == nil else { return }
+                self.openNotebook = meta
+            }
+        }
     }
 
     // MARK: 上面的分頁（v12.8.2）

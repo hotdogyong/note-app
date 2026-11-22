@@ -148,9 +148,15 @@ enum SelfTest {
                 // 白板匯入文件（Markdown、PDF）、子白板（v12.14.0）：notebookOpened 裡匯入、放卡片、開一個視窗
                 library.openNotebook = library.addBoard(in: nil, title: scene == "subboard" ? "子白板測試" : "匯入文件測試",
                                                         width: 100 * 842, height: 100 * 595)
-            case "winsplit", "winfull", "clip", "tidytree", "pills":
+            case "mindfold", "voice":
+                // v12.16.0：心智圖折疊；語音的膠囊和「一句一個方塊」
+                library.openNotebook = library.addBoard(in: nil, title: "測試白板 " + scene, width: 100 * 842, height: 100 * 595)
+            case "placemarks", "invert":
+                // v12.16.0：跳回記號；反相的新顏色
+                library.openNotebook = library.addNotebook(in: nil, title: scene == "invert" ? "反相測試" : "記號測試")
+            case "winsplit", "winfull", "clip", "tidytree", "pills", "wintuck":
                 // v12.15.0：分屏、全屏的浮動視窗；視窗裡剪一塊貼到白板；四層的一鍵整理
-                if scene == "winsplit" || scene == "pills" { windowMode = .split }
+                if scene == "winsplit" || scene == "pills" || scene == "wintuck" { windowMode = .split }
                 if scene == "winfull" { windowMode = .full }
                 library.openNotebook = library.addBoard(in: nil, title: "視窗測試 " + scene, width: 100 * 842, height: 100 * 595)
             case "textzone":
@@ -288,7 +294,33 @@ enum SelfTest {
             }
             return
         }
-        if scene == "winsplit" || scene == "winfull" || scene == "clip" || scene == "pills", view.model.isBoard,
+        if scene == "mindfold", view.model.isBoard, !view.model.embedded {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                show(view.selfTestMindFold())
+            }
+            return
+        }
+        if scene == "voice", view.model.isBoard, !view.model.embedded {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                show(view.selfTestVoice())
+            }
+            return
+        }
+        if scene == "placemarks" || scene == "invert", !view.model.isBoard, !view.model.embedded {
+            let invert = scene == "invert"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                if invert {
+                    show(view.selfTestInvert())
+                } else {
+                    view.selfTestPlaceMarks { show($0) }
+                }
+            }
+            return
+        }
+        if scene == "winsplit" || scene == "winfull" || scene == "clip" || scene == "pills" || scene == "wintuck", view.model.isBoard,
            !view.model.embedded, !sceneDone,
            let library = library {
             sceneDone = true
@@ -302,6 +334,16 @@ enum SelfTest {
                 guard let open = meta else { return }
                 view.placeCard(for: open, at: CGPoint(x: view.bounds.width * 0.75, y: view.bounds.height * 0.3))
                 view.model.openCard(open.id)
+                if scene == "wintuck" {
+                    // v12.16.0：分屏之後按「收起視窗」：左下角的百分比那一排要回到最左邊
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak view] in
+                        view?.onToggleWindows?()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak view] in
+                            guard let view = view else { return }
+                            show("收起視窗後，左下角那一排往右讓了 \(Int(view.boardLeftInset)) 點（應該是 0）")
+                        }
+                    }
+                }
             }
             return
         }

@@ -566,6 +566,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
                 }
             }
             placeImage(view, box)
+            view.isHidden = foldHidden.contains(box.id)      // 心智圖收起來的分支（v12.16.0）
         }
         layoutLinks()                                    // 接在圖片上的線（v12.15.1）
     }
@@ -678,7 +679,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         }
         linkLayoutPaused = false
         markLinked()
-        layoutLinks()
+        applyFolds()                                           // 心智圖收起來的分支（v12.16.0）
     }
 
     // MARK: 剪去白板的範圍（v12.15.1）
@@ -837,7 +838,100 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     func syncLinks(_ list: [BoxLink]) {
         links = list
         markLinked()
+        applyFolds()
+    }
+
+    // MARK: 心智圖的折疊（v12.16.0；TextLinks.swift 的 MindFold）
+    // 收起來的方塊旁邊：橘色圓圈寫藏了幾個，點了展開。選取一個有連線的方塊時，那一整棵樹有分支的方塊旁邊多一個「−」，點了收起來。
+    // 兩種圓圈都可以長按：只展開到第 1、2、3 層／全部展開
+
+    private(set) var foldHidden: Set<UUID> = []
+    /// 要顯示「−」的方塊（選取中的方塊連著的那一整棵樹；NotebookView 設）
+    var foldHandles: Set<UUID> = [] {
+        didSet { if foldHandles != oldValue { layoutFoldButtons() } }
+    }
+    private var foldButtons: [UUID: UIButton] = [:]
+    static let foldButtonTag = 4344
+
+    /// 重新算哪些要藏起來
+    func applyFolds() {
+        let texts = textViews.values.map { $0.box }
+        let hidden = MindFold.hidden(texts: texts, links: links)
+        foldHidden = hidden
+        for (id, view) in textViews { view.isHidden = hidden.contains(id) }
+        for (id, view) in imageViews { view.isHidden = hidden.contains(id) }
         layoutLinks()
+    }
+
+    private func layoutFoldButtons() {
+        let s = bounds.width / max(page.spec.width, 1)
+        let kids = MindFold.children(links.filter { linkEndRect($0.from) != nil && linkEndRect($0.to) != nil })
+        var alive = Set<UUID>()
+        if s > 0 {
+            for (id, view) in textViews where !foldHidden.contains(id) {
+                guard let first = links.first(where: { $0.from == id && kids[id]?.contains($0.to) == true }),
+                      let rect = linkEndRect(id) else { continue }
+                let folded = view.box.branchFolded == true
+                guard folded || foldHandles.contains(id) else { continue }
+                let count = folded ? MindFold.descendants(of: id, children: kids).count : 0
+                let button = foldButton(id)
+                style(button, folded: folded, count: count)
+                // 放在第一條往下的線出去的那一邊，再往外一點
+                let r = rect.applying(CGAffineTransform(scaleX: s, y: s))
+                let a = BoxLinkPath.anchor(r, side: first.fromSide)
+                let out: CGFloat = 16
+                let d: CGPoint = [CGPoint(x: 0, y: -out), CGPoint(x: out, y: 0), CGPoint(x: 0, y: out), CGPoint(x: -out, y: 0)][max(0, min(3, first.fromSide))]
+                let size: CGFloat = folded ? max(26, 18 + CGFloat(String(count).count) * 8) : 24
+                button.frame = CGRect(x: a.x + d.x - size / 2, y: a.y + d.y - 12, width: size, height: 24)
+                button.layer.cornerRadius = 12
+                bringSubviewToFront(button)
+                alive.insert(id)
+            }
+        }
+        for (id, button) in foldButtons where !alive.contains(id) {
+            button.removeFromSuperview()
+            foldButtons[id] = nil
+        }
+    }
+
+    private func foldButton(_ id: UUID) -> UIButton {
+        if let b = foldButtons[id] { return b }
+        let b = UIButton(type: .custom)
+        b.tag = Self.foldButtonTag
+        b.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        b.layer.borderWidth = 1.5
+        b.layer.shadowColor = UIColor.black.cgColor
+        b.layer.shadowOpacity = 0.18
+        b.layer.shadowRadius = 2
+        b.layer.shadowOffset = CGSize(width: 0, height: 1)
+        let pageID = page.id
+        b.addAction(UIAction { [weak self] _ in self?.host?.toggleBranch(id, pageID: pageID) }, for: .touchUpInside)
+        let levels: [(String, Int?)] = [("只展開到第 1 層", 1), ("只展開到第 2 層", 2), ("只展開到第 3 層", 3), ("全部展開", nil)]
+        b.menu = UIMenu(title: "這一支往下", children: levels.map { item in
+            UIAction(title: item.0, image: UIImage(systemName: item.1 == nil ? "arrow.up.left.and.arrow.down.right" : "list.bullet.indent")) { [weak self] _ in
+                self?.host?.expandBranch(id, pageID: pageID, level: item.1)
+            }
+        })
+        b.showsMenuAsPrimaryAction = false                     // 點一下：收起／展開；長按：選單
+        addSubview(b)
+        foldButtons[id] = b
+        return b
+    }
+
+    private func style(_ b: UIButton, folded: Bool, count: Int) {
+        if folded {
+            b.backgroundColor = UIColor.systemOrange
+            b.layer.borderColor = UIColor.white.cgColor
+            b.setTitle("\(count)", for: .normal)
+            b.setTitleColor(.white, for: .normal)
+            b.setImage(nil, for: .normal)
+        } else {
+            b.backgroundColor = UIColor.systemBackground
+            b.layer.borderColor = UIColor.systemGray3.cgColor
+            b.setTitle(nil, for: .normal)
+            b.setImage(UIImage(systemName: "minus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)), for: .normal)
+            b.tintColor = UIColor.secondaryLabel
+        }
     }
 
     /// 告訴每個文字方塊有沒有線接著它（有的話，空的也留著、顯示「輸入文字」）
@@ -869,6 +963,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for link in links {
+            if foldHidden.contains(link.from) || foldHidden.contains(link.to) { continue }   // 收起來的分支（v12.16.0）
             guard let a0 = linkEndRect(link.from), let b0 = linkEndRect(link.to) else { continue }
             let ra = a0.applying(CGAffineTransform(scaleX: s, y: s))
             let rb = b0.applying(CGAffineTransform(scaleX: s, y: s))
@@ -905,6 +1000,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             linkPaths[id] = nil
         }
         CATransaction.commit()
+        layoutFoldButtons()
     }
 
     /// 從點往外拉的時候：先畫出線（跟放開後會多出來的方塊的位置）。座標都是頁面座標
@@ -971,28 +1067,41 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     // MARK: 頁面反相（v12.15.11，使用者：黑轉白，有一個按鈕隨時切換）
     // 頁面最上面蓋一層白色、用「差值」混合：底下的課本、筆跡、文字、圖片全部反相（白底黑字 → 黑底白字）。
     // 只是顯示，存檔、匯出、縮圖都不變。選取框、按鈕放在這一層上面，不跟著反相
-    private var invertView: UIView?
+    // v12.16.0（使用者：反相要比較好看的顏色）：純黑底配純白字太刺眼，改成深灰底、柔和的米白字。
+    // 疊三層：① 白色「差值」＝反相；② 灰色「濾色」把黑抬成深灰；③ 米白「色彩增值」把白壓暗一點、帶一點暖色。
+    // 底色約 #1F1F21、字約 #E6E1D8（像閱讀 App 的夜間模式）
+    private var invertViews: [UIView] = []
+    private var invertView: UIView? { invertViews.first }
 
     func setInverted(_ on: Bool) {
-        if on, invertView == nil {
-            let v = UIView(frame: bounds)
-            v.backgroundColor = .white
-            v.isUserInteractionEnabled = false
-            v.layer.compositingFilter = "differenceBlendMode"
-            addSubview(v)
-            invertView = v
+        if on, invertViews.isEmpty {
+            let layers: [(UIColor, String)] = [
+                (.white, "differenceBlendMode"),
+                (UIColor(red: 0.125, green: 0.125, blue: 0.135, alpha: 1), "screenBlendMode"),
+                (UIColor(red: 0.90, green: 0.88, blue: 0.84, alpha: 1), "multiplyBlendMode"),
+            ]
+            for (color, filter) in layers {
+                let v = UIView(frame: bounds)
+                v.backgroundColor = color
+                v.isUserInteractionEnabled = false
+                v.layer.compositingFilter = filter
+                addSubview(v)
+                invertViews.append(v)
+            }
             keepInvertOnTop()
-        } else if !on, let v = invertView {
-            v.removeFromSuperview()
-            invertView = nil
+        } else if !on, !invertViews.isEmpty {
+            for v in invertViews { v.removeFromSuperview() }
+            invertViews = []
         }
     }
 
     /// 反相那一層放在內容上面、選取框和按鈕下面
     func keepInvertOnTop() {
-        guard let v = invertView else { return }
-        v.frame = bounds
-        bringSubviewToFront(v)
+        guard !invertViews.isEmpty else { return }
+        for v in invertViews {                               // 照順序：反相 → 抬黑 → 壓白
+            v.frame = bounds
+            bringSubviewToFront(v)
+        }
         for sub in subviews where sub is SelectionEditorView || sub is ImageEditorView || sub.tag == Self.clipButtonTag {
             bringSubviewToFront(sub)
         }
@@ -1000,7 +1109,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
 
     override func didAddSubview(_ subview: UIView) {
         super.didAddSubview(subview)
-        if invertView != nil, subview !== invertView, !(subview is SelectionEditorView), !(subview is ImageEditorView),
+        if invertView != nil, !invertViews.contains(where: { $0 === subview }), !(subview is SelectionEditorView), !(subview is ImageEditorView),
            subview.tag != Self.clipButtonTag {
             keepInvertOnTop()
         }
@@ -1008,7 +1117,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
 
     func apply(scale s: CGFloat) {
         if page.pdf != nil { pdfView.frame = bounds }
-        invertView?.frame = bounds
+        for v in invertViews { v.frame = bounds }
         if let t = textLayer, t.frame != bounds {
             t.frame = bounds
             t.autoScales = true
@@ -1771,7 +1880,8 @@ enum PageRenderer {
     }
 
     /// 圖片（匯出、縮圖、截圖用）
-    static func drawImages(_ page: NotePage, rect: CGRect, above: Bool) {
+    static func drawImages(_ fullPage: NotePage, rect: CGRect, above: Bool) {
+        let page = MindFold.visible(fullPage)                  // 心智圖收起來的分支不畫（v12.16.0）
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         let k = rect.width / max(page.spec.width, 1)
         for box in page.images ?? [] where box.above == above {
@@ -1972,7 +2082,8 @@ enum PageRenderer {
         }
     }
 
-    static func drawTexts(_ page: NotePage, rect: CGRect) {
+    static func drawTexts(_ fullPage: NotePage, rect: CGRect) {
+        let page = MindFold.visible(fullPage)                  // 心智圖收起來的分支不畫（v12.16.0）
         let k = rect.width / max(page.spec.width, 1)
         drawTextStyles(page, rect: rect)
         for t in page.texts ?? [] where t.sticky == true && stickyExpanded(t, page: page) {

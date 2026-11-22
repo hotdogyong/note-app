@@ -1319,7 +1319,7 @@ struct OverviewSheet: View {
                     if selecting {
                         toggle(page, in: row)
                     } else {
-                        model.documentView?.jump(toRow: rowIndex, page: pageIndex)
+                        model.documentView?.navigate(toRow: rowIndex, page: pageIndex)
                         dismiss()
                     }
                 }

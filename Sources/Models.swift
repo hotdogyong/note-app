@@ -379,6 +379,7 @@ struct TextBox: Codable, Hashable, Identifiable {
     var sticky: Bool? = nil          // 便利貼（v12.15.11）：黃底的方塊，可以收成一個小圖示
     var folded: Bool? = nil          // 便利貼收起來了
     var ink: Data? = nil             // 便利貼上手寫的字（v12.15.12）：PKDrawing，座標從便利貼左上角算起
+    var branchFolded: Bool? = nil    // 心智圖（v12.16.0）：順著線往下的分支收起來了（TextLinks.swift 的 MindFold）
 
     var isLocked: Bool { locked ?? false }
     var isFolded: Bool { (sticky ?? false) && (folded ?? false) }
@@ -517,4 +518,13 @@ struct LibraryData: Codable {
     var folders: [NoteFolder] = []
     var notebooks: [NotebookMeta] = []
     var order: [UUID]? = nil           // 首頁自己排的順序（長按拖曳）；不在裡面的照修改時間排在前面
+}
+
+/// 跳回記號（v12.16.0）：某一頁的某個高度（頁面座標）。auto：跳頁前自動記的；false：自己按的
+struct PlaceMark: Identifiable, Equatable {
+    let id = UUID()
+    var page: UUID
+    var y: CGFloat
+    var date = Date()
+    var auto: Bool
 }

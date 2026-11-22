@@ -7,7 +7,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: 12.15.14
+    MARKETING_VERSION: 12.16.0
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGNING_ALLOWED: "NO"
 targets:
@@ -38,6 +38,8 @@ targets:
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         NSCameraUsageDescription: 拍照後把照片放進筆記
+        NSMicrophoneUsageDescription: 語音轉文字：把你講的話變成文字方塊（不存錄音檔）
+        NSSpeechRecognitionUsageDescription: 語音轉文字：把你講的話變成文字方塊
         ITSAppUsesNonExemptEncryption: false
     settings:
       base:

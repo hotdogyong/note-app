@@ -1998,6 +1998,7 @@ final class TextBar: UIView {
     private let markdownButton = UIButton(type: .system)     // Markdown 排版（v12.9）
     let styleButton = UIButton(type: .system)                // 卡片樣式（v12.13.0）
     private let stickyButton = UIButton(type: .system)       // 便利貼：收起來／變成便利貼（v12.15.11）
+    private let voiceButton = UIButton(type: .system)        // 語音：講的話打進這個方塊（v12.16.0）
 
     init(host: NotebookView) {
         self.host = host
@@ -2047,6 +2048,8 @@ final class TextBar: UIView {
         stickyButton.addAction(UIAction { [weak host] _ in host?.toggleStickyFold() }, for: .touchUpInside)
         stickyButton.setImage(UIImage(systemName: "note.text"), for: .normal)
         items.append(stickyButton)                                 // 便利貼：收起來（v12.15.11）
+        voiceButton.addAction(UIAction { [weak host] _ in host?.toggleVoiceForActiveText() }, for: .touchUpInside)
+        items.append(voiceButton)                                  // 語音轉文字（v12.16.0）
 
         // 分隔線：前面是文字樣式，後面是剪下、拷貝、複製、刪除
         let divider = UIView()
@@ -2069,9 +2072,16 @@ final class TextBar: UIView {
         items.append(done)
 
         for item in items { addSubview(item) }
+        setVoice(false)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// 語音聽寫中：麥克風變紅
+    func setVoice(_ on: Bool) {
+        voiceButton.setImage(UIImage(systemName: on ? "mic.fill" : "mic"), for: .normal)
+        voiceButton.tintColor = on ? UIColor.systemRed : UIColor.white
+    }
 
     private func button(_ symbol: String, action: @escaping () -> Void) -> UIButton {
         let b = UIButton(type: .system)

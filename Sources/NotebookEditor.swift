@@ -62,6 +62,51 @@ struct CropButton: View {
     }
 }
 
+/// 左上的跳回記號 ↩︎（v12.16.0）：點一下＝放記號／跳回最新的記號（再點跳回來）；長按＝全部記號
+struct PlaceMarkButton: View {
+    @ObservedObject var model: NotebookModel
+
+    var body: some View {
+        let marks = model.placeMarks
+        let rows = model.notebook.rows
+        return Menu {
+            ForEach(marks.reversed()) { mark in
+                Button {
+                    model.documentView?.goToPlaceMark(mark.id)
+                } label: {
+                    Label(NotebookView.pageLabel(mark.page, in: rows) + "　" + mark.date.formatted(date: .omitted, time: .shortened),
+                          systemImage: mark.auto ? "arrow.uturn.backward" : "bookmark.fill")
+                }
+            }
+            if !marks.isEmpty { Divider() }
+            Button {
+                model.documentView?.addPlaceMarkHere()
+            } label: {
+                Label("在這裡放記號", systemImage: "plus")
+            }
+            if !marks.isEmpty {
+                Button(role: .destructive) {
+                    model.placeMarks = []
+                } label: {
+                    Label("清除全部記號", systemImage: "xmark")
+                }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: marks.isEmpty ? "arrow.uturn.backward.circle" : "arrow.uturn.backward.circle.fill")
+                if marks.count > 1 {
+                    Text("\(marks.count)")
+                        .font(.caption2.weight(.bold))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(marks.isEmpty ? Color.primary : Color.orange)
+        } primaryAction: {
+            model.documentView?.placeMarkTapped()
+        }
+    }
+}
+
 /// 左上的「選取文字」（v12.15.11）：課本上的字可以選、拷貝；開著時寫字、長按都暫停
 struct TextSelectButton: View {
     @ObservedObject var model: NotebookModel
@@ -858,6 +903,8 @@ final class NotebookModel: ObservableObject {
     @Published var openJump: PageJump?                 // 跳轉捷徑指到別本：開成分頁再跳（v12.15.11）
     @Published var jumpRequest: JumpPick?              // 長按空白處「跳轉」：選要跳到哪裡
     @Published var canRedo = false
+    /// 跳回記號（v12.16.0）：只記到關掉這一本；最新的在最後面
+    @Published var placeMarks: [PlaceMark] = []
     weak var documentView: NotebookView?
     /// 刪掉的頁放進最近刪除（v12.9.2）：由編輯畫面接到首頁的資料（NotebookView 拿不到首頁）
     var trashPages: (@MainActor ([PageRow]) -> Void)?
@@ -1433,6 +1480,9 @@ struct NotebookEditorView: View {
         } label: {
             Image(systemName: "rectangle.split.3x3")
         }
+        if !model.isBoard && !embedded {
+            PlaceMarkButton(model: model)                      // 跳回記號（v12.16.0）
+        }
         CropButton(model: model)
         if !model.isBoard { TextSelectButton(model: model) }
     }
@@ -1682,6 +1732,10 @@ struct NotebookEditorView: View {
                 if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
                 }
+                if !embedded, model.isBoard, let saved = SessionRestore.takeWindows(board: model.meta.id) {
+                    // v12.16.0：6 小時內重進 App，離開時開著的浮動視窗照原樣開回來
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { restoreWindows(saved) }
+                }
                 if !embedded {                                   // 浮動視窗裡：筆盒是白板的，不要換成這一本的筆
                     penBox.onBoard = model.isBoard
                     penBox.enterNotebook(model.meta.id)          // 這本筆記本自己的筆（v12.3）
@@ -1721,10 +1775,10 @@ struct NotebookEditorView: View {
                 if full { fullTabsShown = false }
             }
             .onChange(of: windows) { _, list in
+                if !embedded, model.isBoard { SessionRestore.saveWindows(board: model.meta.id, list, tucked: windowsTucked) }
                 // 分屏（v12.15.0）：白板左下角的按鈕讓到右半邊
                 guard let doc = model.documentView else { return }
-                let fraction = list.first(where: { $0.mode == .split })?.split
-                doc.boardLeftInset = fraction.map { (doc.bounds.width * $0).rounded() } ?? 0
+                updateBoardLeftInset(list, tucked: windowsTucked)
                 // 左下角第一顆「收起視窗」：有視窗才出現
                 doc.boardWindowCount = list.count
                 let tucked = $windowsTucked
@@ -1735,6 +1789,8 @@ struct NotebookEditorView: View {
             }
             .onChange(of: windowsTucked) { _, tucked in
                 model.documentView?.boardWindowsTucked = tucked
+                updateBoardLeftInset(windows, tucked: tucked)     // v12.16.0：視窗收起來時，百分比那一排回到左下角
+                if !embedded, model.isBoard { SessionRestore.saveWindows(board: model.meta.id, windows, tucked: tucked) }
             }
             .onChange(of: windowActions?.frame) { _, frame in
                 if let frame = frame { model.windowFrame = frame }
@@ -1806,6 +1862,30 @@ struct NotebookEditorView: View {
     }
 
     // MARK: 白板上的筆記本（v12.12.0）
+
+    /// 6 小時內重進 App：把離開時開著的浮動視窗開回來（找不到、被刪掉的那本就跳過）
+    private func restoreWindows(_ saved: SavedBoardWindows) {
+        guard windows.isEmpty else { return }
+        var list: [BoardWindow] = []
+        for item in saved.windows.prefix(3) {
+            guard item.notebook != model.meta.id, let meta = library.notebook(item.notebook), meta.deletedAt == nil else { continue }
+            var window = BoardWindow(meta: meta, frame: item.frame)
+            window.mode = SessionRestore.mode(item.mode)
+            window.aspect = item.aspect
+            window.split = item.split
+            list.append(window)
+        }
+        guard !list.isEmpty else { return }
+        windows = list
+        if saved.tucked { windowsTucked = true }
+    }
+
+    /// 分屏時白板左下角那一排（收起視窗、百分比、鎖頭）往右讓開；視窗收起來（暫時全部不顯示）時回到左下角
+    private func updateBoardLeftInset(_ list: [BoardWindow], tucked: Bool) {
+        guard let doc = model.documentView else { return }
+        let fraction = tucked ? nil : list.first(where: { $0.mode == .split })?.split
+        doc.boardLeftInset = fraction.map { (doc.bounds.width * $0).rounded() } ?? 0
+    }
 
     private func handleCardRequest(_ request: CardRequest) {
         switch request {
@@ -2268,7 +2348,8 @@ struct NotePanel: View {
     }
 
     // 一張縮圖 + 頁碼；目前所在的頁用藍框
-    private func cell(row r: Int, page p: Int) -> some View {
+    /// closeAfter：點了跳過去之後收起面板（v12.16.0：書籤、大綱跳完收起來；縮略圖常連點比較，不收）
+    private func cell(row r: Int, page p: Int, closeAfter: Bool = false) -> some View {
         let page = model.notebook.rows[r].pages[p]
         let current = r == model.focusRow && p == model.focusPage
         let marked = model.notebook.bookmarks?.contains(page.id) ?? false
@@ -2276,7 +2357,8 @@ struct NotePanel: View {
         let sideCount = p == row.mainIndex ? row.pages.count - 1 : 0
         return VStack(alignment: .leading, spacing: 2) {
             Button {
-                model.documentView?.jump(toRow: r, page: p)
+                model.documentView?.navigate(toRow: r, page: p)
+                if closeAfter { close() }
             } label: {
                 Image(uiImage: thumbs.image(for: page, width: 140))
                     .resizable()
@@ -2432,7 +2514,7 @@ struct NotePanel: View {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: 14) {
                         ForEach(items, id: \.2) { item in
-                            cell(row: item.0, page: item.1)
+                            cell(row: item.0, page: item.1, closeAfter: true)
                                 .contextMenu {
                                     Button(role: .destructive) {
                                         model.removeBookmark(item.2)
@@ -2460,7 +2542,9 @@ struct NotePanel: View {
                 .padding(.horizontal, 4)
             ForEach(clips) { line in
                 Button {
+                    model.documentView?.rememberPlace(before: line.pageID)
                     model.documentView?.jumpTo(pageID: line.pageID, rect: line.clip.rect)
+                    close()
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "scissors")
@@ -2609,7 +2693,8 @@ struct NotePanel: View {
                 .buttonStyle(.plain)
             }
             Button {
-                model.documentView?.jump(toRow: r, page: p)
+                model.documentView?.navigate(toRow: r, page: p)
+                close()                                        // v12.16.0：跳過去之後收起四方格面板
             } label: {
                 HStack {
                     Text(title.isEmpty ? "（沒有標題）" : title)

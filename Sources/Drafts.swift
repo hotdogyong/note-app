@@ -279,7 +279,8 @@ struct DraftDrawerLayer: View {
     /// 開始拉出來：準備好這次的隨手記
     private func beginReveal() {
         parent.documentView?.flushAll()
-        let paper = parent.currentPageID.flatMap { parent.page($0) }?.paper
+        // 外面那本目前這頁看起來的紙（舊的頁沒存紙張＝預設的深灰方格，要用 paperStyle 才拿得到）
+        let paper = (parent.currentPageID.flatMap { parent.page($0) } ?? parent.notebook.rows.first?.pages.first)?.paperStyle
         if draft == nil || draft?.draftOf != parent.meta.id {
             draft = Drafts.open(for: parent.meta, paper: paper)
         } else {

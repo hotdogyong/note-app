@@ -1,5 +1,2 @@
 board
 draftpull
-mindfold
-placemarks
-logbook

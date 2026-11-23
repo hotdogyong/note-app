@@ -228,13 +228,32 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     // MARK: 跳回記號（v12.16.0，使用者：暫時書籤，記號越多越好，但只有一個的時候要最方便按）
-    // 工具列的 ↩︎：沒有記號 → 在這裡放一個；有記號 → 跳回最新的那個，剛剛的位置變成新的記號（再按一次又跳回來，
-    // 像在兩頁之間來回翻）。用大綱、書籤、縮略圖、概覽、捷徑跳頁之前，也會自動把原本的位置記下來。
-    // 長按 ↩︎ 列出全部記號。只記到關掉這一本（暫時的，不進書籤）。白板不用（白板有圖釘）
+    // 工具列的 🚩：沒有記號 → 在這裡放一個；有記號 → 跳回最新的那個，剛剛的位置變成新的記號（再按一次又跳回來，
+    // 像在兩頁之間來回翻）。用大綱、書籤、縮略圖、概覽、捷徑、圖釘、區塊跳過去之前，也會自動把原本的位置記下來。
+    // 長按 🚩 列出全部記號。只記到關掉這一本（暫時的，不進書籤）。
+    // v12.16.1（使用者：頁面上要看得到暫時的記號，用完就消失；白板也要；圖示不要像上一步）：
+    // 記號在頁面上是一個橘色的小旗子（筆記本：那一頁左邊、那個高度；白板：那時畫面正中間的位置）。
+    // 跳回去用掉的那一個就消失，剛剛離開的地方插一個新的（就是下一次按 🚩 會回去的地方）
 
-    /// 畫面正中間是哪一頁、那一頁的哪個高度（頁面座標）
-    func currentPlace() -> (page: UUID, y: CGFloat)? {
-        guard !isBoard else { return nil }
+    /// 一個位置：筆記本只記哪一頁的哪個高度；白板另外記左右位置和縮放
+    struct Place {
+        var page: UUID
+        var x: CGFloat?
+        var y: CGFloat
+        var zoom: CGFloat?
+    }
+
+    /// 畫面正中間是哪一頁、那一頁的哪個高度（頁面座標）；白板：畫面正中間在白板上的哪一點、縮放
+    func currentPlace() -> Place? {
+        if isBoard {
+            guard let row = model.notebook.rows.first, let page = row.pages.first, let rv = rowViews[row.id],
+                  rv.pageFrames.indices.contains(0) else { return nil }
+            let s = max(scale, 0.0001)
+            let pf = rv.pageFrames[0]
+            let x = (rv.contentOffset.x + rv.bounds.width / 2 - pf.minX) / s
+            let y = (outer.contentOffset.y + outer.bounds.height / 2 - rv.frame.minY - pf.minY) / s
+            return Place(page: page.id, x: x, y: y, zoom: zoom)
+        }
         let cy = outer.contentOffset.y + outer.bounds.height / 2
         var best: (page: UUID, y: CGFloat, gap: CGFloat)?
         for row in model.notebook.rows {
@@ -251,13 +270,19 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             if best == nil || gap < best!.gap { best = (page.id, y, gap) }
             if gap == 0 { break }
         }
-        return best.map { ($0.page, $0.y) }
+        return best.map { Place(page: $0.page, x: nil, y: $0.y, zoom: nil) }
     }
 
-    /// 跳到某一頁的某個高度（放在畫面中間）
-    private func showPlace(page: UUID, y: CGFloat) -> Bool {
-        guard let row = model.notebook.rows.first(where: { $0.pages.contains { $0.id == page } }),
-              let index = row.pages.firstIndex(where: { $0.id == page }),
+    /// 跳到一個記號（筆記本：那一頁的那個高度放在畫面中間；白板：那一點放在畫面中間、回到那時的縮放）
+    private func showPlace(_ mark: PlaceMark) -> Bool {
+        if isBoard {
+            guard model.notebook.rows.first?.pages.first?.id == mark.page else { return false }
+            boardShow(center: CGPoint(x: mark.x ?? 0, y: mark.y), zoom: mark.zoom ?? zoom)
+            refreshPlaceFlags()
+            return true
+        }
+        guard let row = model.notebook.rows.first(where: { $0.pages.contains { $0.id == mark.page } }),
+              let index = row.pages.firstIndex(where: { $0.id == mark.page }),
               let rv = rowViews[row.id], rv.pageFrames.indices.contains(index) else { return false }
         endTextSelection()
         dismissShapeEditor()
@@ -267,28 +292,37 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             rv.currentIndex = index
             rv.setContentOffset(CGPoint(x: rv.offsetFor(index, inPage: 0), y: 0), animated: true)
         }
-        let target = rv.frame.minY + pf.minY + y * k
+        let target = rv.frame.minY + pf.minY + mark.y * k
         outer.setContentOffset(CGPoint(x: outer.contentOffset.x, y: clampOuterY(target - outer.bounds.height / 2)), animated: true)
         return true
     }
 
-    private static func samePlace(_ a: PlaceMark, _ page: UUID, _ y: CGFloat) -> Bool {
-        a.page == page && abs(a.y - y) < 200
+    /// 兩個位置算不算同一個地方（筆記本：同一頁、高度差不多；白板：畫面上離不到 150 點）
+    private func samePlace(_ a: PlaceMark, _ b: Place) -> Bool {
+        guard a.page == b.page else { return false }
+        if let ax = a.x, let bx = b.x {
+            return hypot(ax - bx, a.y - b.y) * scale < 150
+        }
+        return abs(a.y - b.y) < 200
     }
 
-    private func addPlaceMark(page: UUID, y: CGFloat, auto: Bool) {
+    private func makeMark(_ p: Place, auto: Bool) -> PlaceMark {
+        PlaceMark(page: p.page, x: p.x, y: p.y, zoom: p.zoom, auto: auto)
+    }
+
+    private func addPlaceMark(_ p: Place, auto: Bool) {
         var marks = model.placeMarks
-        marks.removeAll { Self.samePlace($0, page, y) }       // 同一個地方不重複
-        marks.append(PlaceMark(page: page, y: y, auto: auto))
+        marks.removeAll { samePlace($0, p) }                  // 同一個地方不重複
+        marks.append(makeMark(p, auto: auto))
         if marks.count > 30 { marks.removeFirst(marks.count - 30) }
         model.placeMarks = marks
     }
 
-    /// 要跳到別頁之前：把現在的位置記下來（跳到同一頁就不用）
+    /// 要跳到別的地方之前：把現在的位置記下來（筆記本跳到同一頁就不用；白板 destination 給 nil）
     func rememberPlace(before destination: UUID?) {
-        guard positionRestored, !isBoard, let here = currentPlace() else { return }
-        if let d = destination, d == here.page { return }
-        addPlaceMark(page: here.page, y: here.y, auto: true)
+        guard positionRestored, let here = currentPlace() else { return }
+        if !isBoard, let d = destination, d == here.page { return }
+        addPlaceMark(here, auto: true)
     }
 
     /// 從面板、概覽跳到某一頁：先記住現在的位置
@@ -299,51 +333,108 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         jump(toRow: r, page: p)
     }
 
-    /// 工具列的 ↩︎（點一下）
+    /// 工具列的 🚩（點一下）
     func placeMarkTapped() {
         guard let here = currentPlace() else { return }
         var marks = model.placeMarks
-        marks.removeAll { model.page($0.page) == nil }        // 頁被刪掉的記號不要了
+        marks.removeAll { mark in !model.notebook.rows.contains { $0.pages.contains { $0.id == mark.page } } }   // 頁被刪掉的記號不要了
         guard let last = marks.last else {
-            addPlaceMark(page: here.page, y: here.y, auto: false)
-            showMessage("arrow.uturn.backward", "在這裡放了記號。翻到別的地方，再按一次就跳回來")
+            model.placeMarks = marks
+            addPlaceMark(here, auto: false)
+            showMessage("flag.fill", "在這裡插了旗子。到別的地方，再按一次 🚩 就跳回來")
             return
         }
-        if Self.samePlace(last, here.page, here.y) {
+        if samePlace(last, here) {
             // 就在最新的記號上：有更早的就跳到那個（輪流），沒有就提醒
             guard marks.count >= 2 else {
                 model.placeMarks = marks
-                showMessage("arrow.uturn.backward", "你就在記號這裡。翻到別的地方，再按一次就跳回來")
+                showMessage("flag.fill", "你就在旗子這裡。到別的地方，再按一次 🚩 就跳回來")
                 return
             }
             let previous = marks.remove(at: marks.count - 2)
             marks.append(previous)
             model.placeMarks = marks
-            _ = showPlace(page: previous.page, y: previous.y)
+            _ = showPlace(previous)
             return
         }
-        marks.removeLast()
-        marks.append(PlaceMark(page: here.page, y: here.y, auto: last.auto))   // 剛剛的位置變成新的記號：再按一次跳回來
+        marks.removeLast()                                     // 用掉的旗子拿掉
+        marks.append(makeMark(here, auto: last.auto))          // 剛剛的位置插一個新的：再按一次跳回來
         model.placeMarks = marks
-        _ = showPlace(page: last.page, y: last.y)
+        _ = showPlace(last)
     }
 
     /// 長按選單：在這裡放記號
     func addPlaceMarkHere() {
         guard let here = currentPlace() else { return }
-        addPlaceMark(page: here.page, y: here.y, auto: false)
-        showMessage("arrow.uturn.backward", "放了記號（共 \(model.placeMarks.count) 個）")
+        addPlaceMark(here, auto: false)
+        showMessage("flag.fill", "插了旗子（共 \(model.placeMarks.count) 個）")
     }
 
-    /// 長按選單：跳到某一個記號（那個記號留著；現在的位置也記成一個）
+    /// 長按選單：跳到某一個記號（用掉的那個拿掉；現在的位置記成一個）
     func goToPlaceMark(_ id: UUID) {
         guard let mark = model.placeMarks.first(where: { $0.id == id }) else { return }
-        if let here = currentPlace(), !Self.samePlace(mark, here.page, here.y) {
-            addPlaceMark(page: here.page, y: here.y, auto: true)
+        var marks = model.placeMarks
+        marks.removeAll { $0.id == id }
+        if let here = currentPlace(), !samePlace(mark, here) {
+            marks.removeAll { samePlace($0, here) }
+            marks.append(makeMark(here, auto: true))
         }
-        if !showPlace(page: mark.page, y: mark.y) {
-            model.placeMarks.removeAll { $0.id == id }
+        model.placeMarks = marks
+        if !showPlace(mark) {
             showMessage("questionmark.square.dashed", "找不到那一頁（可能被刪掉了）")
+        }
+    }
+
+    // 頁面上的小旗子
+    private var placeFlags: [UUID: UIView] = [:]
+
+    private func makePlaceFlag() -> UIView {
+        let v = UIView(frame: CGRect(x: 0, y: 0, width: 30, height: 30))
+        v.backgroundColor = UIColor.systemOrange
+        v.layer.cornerRadius = 15
+        v.layer.borderColor = UIColor.white.cgColor
+        v.layer.borderWidth = 2
+        v.layer.shadowColor = UIColor.black.cgColor
+        v.layer.shadowOpacity = 0.3
+        v.layer.shadowRadius = 3
+        v.layer.shadowOffset = CGSize(width: 0, height: 1)
+        v.layer.zPosition = 20                                  // 在頁面、筆跡上面
+        v.isUserInteractionEnabled = false                      // 只是看的，不擋寫字
+        let icon = UIImageView(image: UIImage(systemName: "flag.fill",
+                                              withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .bold)))
+        icon.tintColor = .white
+        icon.frame = v.bounds
+        icon.contentMode = .center
+        v.addSubview(icon)
+        return v
+    }
+
+    /// 記號變了、版面變了：重新擺旗子
+    func refreshPlaceFlags() {
+        let marks = model.placeMarks
+        var alive = Set<UUID>()
+        for (i, mark) in marks.enumerated() {
+            guard let row = model.notebook.rows.first(where: { $0.pages.contains { $0.id == mark.page } }),
+                  let index = row.pages.firstIndex(where: { $0.id == mark.page }),
+                  let rv = rowViews[row.id], rv.pageFrames.indices.contains(index) else { continue }
+            let pf = rv.pageFrames[index]
+            let k = pf.width / max(row.pages[index].spec.width, 1)
+            let flag = placeFlags[mark.id] ?? makePlaceFlag()
+            placeFlags[mark.id] = flag
+            if flag.superview !== rv { rv.addSubview(flag) }
+            let center: CGPoint
+            if let x = mark.x {
+                center = CGPoint(x: pf.minX + x * k, y: pf.minY + mark.y * k)          // 白板：那時畫面的正中間
+            } else {
+                center = CGPoint(x: pf.minX + 22, y: pf.minY + min(max(mark.y * k, 22), pf.height - 22))   // 筆記本：頁面左邊
+            }
+            flag.center = center
+            flag.alpha = i == marks.count - 1 ? 1 : 0.5            // 最新的（按 🚩 會回去的）最清楚
+            alive.insert(mark.id)
+        }
+        for (id, flag) in placeFlags where !alive.contains(id) {
+            flag.removeFromSuperview()
+            placeFlags[id] = nil
         }
     }
 
@@ -872,6 +963,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if let v = touch.view, v.isDescendant(of: linkBar) { return false }      // 連線的小工具列（v12.14.0）
         if touch.view?.tag == TextBoxView.handleTag { return false }            // 文字方塊的角
         if touch.view?.tag == NotePageView.clipButtonTag { return false }       // 剪去白板的框的 →（v12.15.2）
+        if touch.view?.tag == NotePageView.foldButtonTag { return false }       // 心智圖折疊的圓圈（v12.16.1）
         // Pencil 在文字方塊裡寫字（手寫轉文字）：不要當成畫線、停筆變形或套索
         if gestureRecognizer === holdTracker || gestureRecognizer === lassoPan,
            let v = touch.view, sequence(first: v, next: { $0.superview }).contains(where: { $0 is TextBoxView }) {
@@ -1488,6 +1580,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         tv.setActive(true)
         // 心智圖（v12.16.0）：選到有連線的方塊，那一整棵樹有分支的方塊旁邊出現「−」
+        pageViews[tv.pageID]?.foldActive = tv.box.id
         pageViews[tv.pageID]?.foldHandles = tv.linked ? connectedTexts(from: tv.box.id, pageID: tv.pageID) : []
         if edit { tv.textView.becomeFirstResponder() }
         if textBar.superview == nil { addSubview(textBar) }
@@ -1564,6 +1657,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         tv.onLink = nil
         pageViews[tv.pageID]?.hideLinkPreview()
         pageViews[tv.pageID]?.foldHandles = []
+        pageViews[tv.pageID]?.foldActive = nil
         var texts = model.texts(of: tv.pageID)
         growMarkdownPageIfNeeded(tv)
         // 空的方塊拿掉；有線接著的留著（v12.13.0：從點拉出來的新方塊還沒打字，也要看得到）
@@ -1842,16 +1936,64 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     // MARK: 隨手記（v12.16.0；Drafts.swift）
 
-    /// 從右邊緣往內滑：拉出隨手記（NotebookEditorView 接）
-    var onRightEdgeSwipe: (() -> Void)?
+    /// 從右邊緣往內滑：拉出隨手記（NotebookEditorView 接）。v12.16.1：一路把手指的位置（螢幕座標的 x）、放開時的速度交出去，
+    /// 抽屜跟著手指出來，放手的地方決定寬度
+    var onRightEdgePan: ((UIGestureRecognizer.State, CGFloat, CGFloat) -> Void)?
+    private var rightEdgeActive = false
 
     @objc private func handleRightEdge(_ g: UIScreenEdgePanGestureRecognizer) {
-        guard g.state == .began || g.state == .changed else { return }
-        let p = g.location(in: self)
-        guard p.y > bounds.height * 0.45, g.translation(in: self).x < -24 else { return }
-        g.isEnabled = false                                    // 這一次滑動到此為止（不要一直觸發）
-        g.isEnabled = true
-        onRightEdgeSwipe?()
+        let x = g.location(in: nil).x
+        switch g.state {
+        case .began:
+            // 下半段才算（上半段留給系統、筆盒）
+            rightEdgeActive = g.location(in: self).y > bounds.height * 0.45
+            if rightEdgeActive { onRightEdgePan?(.began, x, 0) }
+        case .changed:
+            if rightEdgeActive { onRightEdgePan?(.changed, x, 0) }
+        case .ended:
+            if rightEdgeActive { onRightEdgePan?(.ended, x, g.velocity(in: nil).x) }
+            rightEdgeActive = false
+        default:
+            if rightEdgeActive { onRightEdgePan?(.cancelled, x, 0) }
+            rightEdgeActive = false
+        }
+    }
+
+    /// 隨手記的抽屜開著時，從這本畫到抽屜底下（v12.16.1，使用者：畫到交界就該停，被蓋住的地方不要留筆跡）：
+    /// 放開後把這一筆從第一次越過交界的地方切斷，後面不要。回傳 true＝切過了（就不再做停筆變形）
+    private func trimUnderDrawer(_ pv: NotePageView, countBefore: Int) -> Bool {
+        guard Drafts.parentDoc === self, let edge = Drafts.edgeX, window != nil else { return false }
+        var drawing = pv.canvas.drawing
+        guard drawing.strokes.count > countBefore else { return false }
+        let canvas = pv.canvas
+        let z = max(canvas.zoomScale, 0.0001)
+        // 交界（螢幕座標）換成頁面座標的 x
+        let edgeX = canvas.convert(CGPoint(x: edge, y: 0), from: nil).x / z
+        var changed = false
+        var kept: [PKStroke] = []
+        for stroke in drawing.strokes[countBefore...] {
+            let path = stroke.path
+            var cut: Int?
+            for i in 0 ..< path.count where path[i].location.applying(stroke.transform).x > edgeX {
+                cut = i
+                break
+            }
+            guard let c = cut else {
+                kept.append(stroke)
+                continue
+            }
+            changed = true
+            guard c >= 2 else { continue }                       // 一開始就在抽屜底下：整筆不要
+            let points = Array(path[0 ..< c])
+            var piece = stroke
+            piece.path = PKStrokePath(controlPoints: points, creationDate: path.creationDate)
+            kept.append(piece)
+        }
+        guard changed else { return false }
+        drawing.strokes.removeSubrange(countBefore...)
+        drawing.strokes.append(contentsOf: kept)
+        pv.replaceSilently(drawing, updateBaseline: true)
+        return true
     }
 
     /// 隨手記整頁放進來：插在目前這頁後面（筆跡、文字、圖片一起複製過來；這一步不能用「上一步」復原）
@@ -3178,6 +3320,32 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 }
             }
         }
+    }
+
+    /// 自動測試（draftpull，v12.16.1）：抽屜開著時，在外面這本畫一條橫過交界的線，看放開後有沒有切在交界
+    func selfTestTrim() -> String {
+        guard let row = model.notebook.rows.first, let page = row.pages.first, let pv = pageViews[page.id],
+              let edge = Drafts.edgeX else { return "抽屜沒開或找不到頁面（edgeX=\(Drafts.edgeX.map { "\($0)" } ?? "nil")）" }
+        let ink = PKInk(.pen, color: .systemRed)
+        let y: CGFloat = 260
+        var points: [PKStrokePoint] = []
+        var x: CGFloat = 40
+        while x < page.spec.width - 20 {
+            points.append(PKStrokePoint(location: CGPoint(x: x, y: y), timeOffset: TimeInterval(points.count) * 0.01,
+                                        size: CGSize(width: 4, height: 4), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2))
+            x += 6
+        }
+        let stroke = PKStroke(ink: ink, path: PKStrokePath(controlPoints: points, creationDate: Date()))
+        let before = pv.canvas.drawing.strokes.count
+        var drawing = pv.canvas.drawing
+        drawing.strokes.append(stroke)
+        pv.setDrawingRecorded(drawing)
+        finishPenStroke(on: pv, countBefore: before)
+        guard let last = pv.canvas.drawing.strokes.last else { return "沒有筆跡" }
+        let maxX = last.path.map { $0.location.applying(last.transform).x }.max() ?? 0
+        let z = max(pv.canvas.zoomScale, 0.0001)
+        let endOnScreen = pv.canvas.convert(CGPoint(x: maxX * z, y: 0), to: nil).x
+        return String(format: "抽屜左邊緣 %.0f；紅線畫到頁面 %.0f，切完停在螢幕 %.0f（應該 ≤ 交界）", edge, page.spec.width - 20, endOnScreen)
     }
 
     /// 自動測試（clip）：浮動視窗裡的筆記本，第一頁左上角剪一塊貼到白板
@@ -5165,6 +5333,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 跳到圖釘：回到放的時候的縮放，圖釘在畫面中間
     func jumpToPin(_ id: UUID) {
         guard let pin = boardPins.first(where: { $0.id == id }) else { return }
+        rememberPlace(before: isBoard ? nil : pin.pageID)            // 跳回記號（v12.16.1：白板也記）
         if isBoard {
             boardShow(center: CGPoint(x: pin.x, y: pin.y), zoom: pin.percent * boardZoom100)
         } else if let pid = pin.pageID {
@@ -5789,6 +5958,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 點區塊清單：整個區塊放進畫面
     func jumpToFrame(_ id: UUID) {
         guard let f = boardFrames.first(where: { $0.id == id }), bounds.width > 0 else { return }
+        rememberPlace(before: nil)                                   // 跳回記號（v12.16.1）
         let s = min((bounds.width * 0.9) / max(f.width, 1), (bounds.height * 0.8) / max(f.height, 1))
         boardShow(center: CGPoint(x: f.rect.midX, y: f.rect.midY), zoom: s / max(baseScale, 0.0001))
     }
@@ -6087,6 +6257,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         outer.contentSize = CGSize(width: viewWidth, height: contentHeight)
         topPull.center = CGPoint(x: viewWidth / 2, y: -55)
         bottomPull.center = CGPoint(x: viewWidth / 2, y: contentHeight + 60)
+        if !model.placeMarks.isEmpty || !placeFlags.isEmpty { refreshPlaceFlags() }   // 跳回記號的旗子跟著頁面
     }
 
     /// 依照資料重新整理所有列；頁面視圖只建立畫面附近的（見 updateLoadedPages）
@@ -7271,6 +7442,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 螢光筆放開：有停住過就拉直，然後移到最下面
     func finishMarkerStroke(on pv: NotePageView?, countBefore: Int) {
         guard let pv = pv else { return }
+        if trimUnderDrawer(pv, countBefore: countBefore) {
+            pendingMarkerLine = nil
+            markerGuide.path = nil
+            return
+        }
         let pending = pendingMarkerLine
         pendingMarkerLine = nil
         markerGuide.path = nil
@@ -8454,6 +8630,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     /// 手寫（不是螢光筆）放開筆之後：停住過就換成標準圖形；虛線筆切成一段一段
     func finishPenStroke(on pv: NotePageView?, countBefore: Int) {
         guard let pv = pv else { return }
+        if trimUnderDrawer(pv, countBefore: countBefore) {              // 畫進隨手記底下的部分切掉（v12.16.1）
+            pendingShape = nil
+            markerGuide.path = nil
+            return
+        }
         let pending = pendingShape
         pendingShape = nil
         if pending != nil { markerGuide.path = nil }

@@ -152,6 +152,9 @@ enum SelfTest {
             case "mindfold", "voice":
                 // v12.16.0：心智圖折疊；語音的膠囊和「一句一個方塊」
                 library.openNotebook = library.addBoard(in: nil, title: "測試白板 " + scene, width: 100 * 842, height: 100 * 595)
+            case "draftpull":
+                // v12.16.1：手指從右邊緣拉出隨手記（紙跟外面這本一樣）；外面畫一條橫過交界的線要被切斷
+                library.openNotebook = library.addNotebook(in: nil, title: "熱統筆記")
             case "drafts", "draftend":
                 // v12.16.0：隨手記。drafts：拉出來、寫一行、整頁放進筆記本；draftend：寫了之後換到別本，問要不要保留
                 let a = library.addNotebook(in: nil, title: "電磁學 Griffiths 筆記")
@@ -339,6 +342,13 @@ enum SelfTest {
                         show("隨手記有 \(draftRows) 頁（應該 1）；整頁放進筆記本後，筆記本有 \(parentRows) 頁（應該 2）\n首頁列不列隨手記：" + (listed ? "列（不對）" : "不列（對）"))
                     }
                 }
+            }
+            return
+        }
+        if scene == "draftpull", view.model.meta.draftOf == nil, !view.model.embedded {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak view] in
+                guard let view = view else { return }
+                show(view.selfTestTrim())
             }
             return
         }

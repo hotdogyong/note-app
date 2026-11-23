@@ -1,3 +1,5 @@
 board
-drafts
-draftend
+draftpull
+mindfold
+placemarks
+logbook

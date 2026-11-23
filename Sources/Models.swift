@@ -522,10 +522,13 @@ struct LibraryData: Codable {
 }
 
 /// 跳回記號（v12.16.0）：某一頁的某個高度（頁面座標）。auto：跳頁前自動記的；false：自己按的
+/// 白板（v12.16.1）：x、y 是那時畫面正中間在白板上的位置，zoom 是那時的縮放
 struct PlaceMark: Identifiable, Equatable {
     let id = UUID()
     var page: UUID
+    var x: CGFloat? = nil
     var y: CGFloat
+    var zoom: CGFloat? = nil
     var date = Date()
     var auto: Bool
 }

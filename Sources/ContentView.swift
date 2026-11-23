@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.16.0"
+let appVersion = "v12.16.1"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序
@@ -73,17 +73,50 @@ struct ContentView: View {
     @State private var path: [LibraryRoute] = []
     @State private var columns: NavigationSplitViewVisibility = .automatic
     @State private var lowSpace: String?             // iPad 快沒空間了（v12.15.9）：打開 App、回到 App 時檢查
+    @State private var logDrag: CGFloat = 0         // 日誌面板正被往右拉多少（v12.16.1）
 
     var body: some View {
         ZStack {
             // 日誌面板（v12.15.13，照 GUGA 的 My Logbook）：首頁右邊滑出來，首頁讓出那一塊
+            // v12.16.1（使用者要求）：首頁從最右邊往內滑叫出來；面板往右滑收進去（跟著手指）
             HStack(spacing: 0) {
                 splitView                              // 首頁不顯示分頁（v12.8.4，使用者：回首頁時分頁要收起來）
+                    .overlay(alignment: .trailing) {
+                        if !library.logbookOpen && library.openNotebook == nil {
+                            Color.clear
+                                .frame(width: 18)
+                                .frame(maxHeight: .infinity)
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                                        .onChanged { v in
+                                            if v.translation.width < -36 && !library.logbookOpen { openLogbook() }
+                                        }
+                                        .onEnded { v in
+                                            if v.velocity.width < -300 && !library.logbookOpen { openLogbook() }
+                                        }
+                                )
+                        }
+                    }
                 if library.logbookOpen {
-                    LogbookPanel(close: {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) { library.logbookOpen = false }
-                    })
-                    .transition(.move(edge: .trailing))
+                    LogbookPanel(close: closeLogbook)
+                        .offset(x: logDrag)
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 14, coordinateSpace: .global)
+                                .onChanged { v in
+                                    // 橫的才算（直的留給面板裡的捲動）
+                                    guard logDrag > 0 || abs(v.translation.width) > abs(v.translation.height) * 1.3 else { return }
+                                    logDrag = max(0, v.translation.width)
+                                }
+                                .onEnded { v in
+                                    if logDrag > 90 || (logDrag > 10 && v.velocity.width > 500) {
+                                        closeLogbook()
+                                    } else if logDrag > 0 {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { logDrag = 0 }
+                                    }
+                                }
+                        )
+                        .transition(.move(edge: .trailing))
                 }
             }
             // 筆記本：整個蓋在首頁（含側邊欄）上面，打開筆記本時完全看不到資料夾側邊欄
@@ -110,6 +143,18 @@ struct ContentView: View {
             Button("知道了", role: .cancel) { }
         } message: {
             Text(lowSpace ?? "")
+        }
+    }
+
+    private func openLogbook() {
+        logDrag = 0
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.88)) { library.logbookOpen = true }
+    }
+
+    private func closeLogbook() {
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.92)) {
+            library.logbookOpen = false
+            logDrag = 0
         }
     }
 

@@ -4,7 +4,7 @@ import UIKit
 // Drafts.swift（v12.16.0）：隨手記（使用者：取代讀書時在平板旁邊撕幾張白紙；要有空白感、可以翻頁的小白板）。
 // ・每本筆記本（白板也是）各有一本藏起來的隨手記（NotebookMeta.draftOf），首頁、搜尋、日誌都不列。
 // ・從右邊滑出來（右邊緣偏下的把手，或從右下角往內滑），佔畫面約 45%，可以拉寬、可以放大成全螢幕。左邊的筆記本照樣能看、能寫。
-// ・頁面是橫的白紙（842 × 595，空白）。一次「主題」從新的一張白頁開始，往上滑看得到之前的頁；要新的一頁往下拉或按 ＋。
+// ・頁面是橫的（842 × 595），紙跟外面那本目前這頁一樣（v12.16.1；以前是空白的白紙）。一次「主題」從新的一張白頁開始，往上滑看得到之前的頁；要新的一頁往下拉或按 ＋。
 // ・主題什麼時候結束（使用者決定）：換到別本筆記本，或隔 6 小時以上再進這本。結束時完全沒寫就直接拿掉，有寫一點就問保留／不保留
 //   （不保留的移到最近刪除，30 天內救得回來）。
 // ・好的東西放進筆記本：套索圈起來 →「放進筆記本」（貼在筆記本畫面中間，可以再拖）；或整頁 → 插在筆記本目前這頁的後面。
@@ -20,7 +20,7 @@ struct DraftSession: Codable {
 enum Drafts {
     static let staleAfter: TimeInterval = 6 * 3600
     static let pageSize = PageSpec(width: 842, height: 595)          // 橫的 A4
-    static let paper = PaperStyle(pattern: 0, color: 1)              // 空白、白色
+    static let paper = PaperStyle(pattern: 0, color: 1)              // 空白、白色（外面那本的紙拿不到時才用）
 
     static var library: LibraryModel?
     /// 抽屜裡的隨手記、外面的筆記本（放進筆記本用）
@@ -28,6 +28,8 @@ enum Drafts {
     static weak var parentDoc: NotebookView?
     /// 抽屜蓋住外面筆記本右邊多少（0～1；全螢幕＝1）
     static var covered: CGFloat = 0.45
+    /// 抽屜的左邊緣在螢幕上的 x（全域座標）；收起來＝nil。外面那本畫到這裡就切斷（v12.16.1）
+    static var edgeX: CGFloat?
 
     private static let sessionsKey = "draftSessions"
     private static let lastParentKey = "draftLastParent"
@@ -51,22 +53,33 @@ enum Drafts {
         UserDefaults.standard.set(parent.uuidString, forKey: lastParentKey)
     }
 
-    /// 拉出隨手記：這一次主題還在就接著用；沒有就在最後面加一張新的白頁
-    static func open(for parent: NotebookMeta) -> NotebookMeta? {
+    /// 拉出隨手記：這一次主題還在就接著用；沒有就在最後面加一張新的白頁。
+    /// paper：外面那本目前這頁的紙（v12.16.1，使用者：預設跟旁邊那本一樣的底色和格線）
+    static func open(for parent: NotebookMeta, paper wanted: PaperStyle? = nil) -> NotebookMeta? {
         guard let library = library else { return nil }
         let draft = library.draftNotebook(for: parent)
         var all = sessions
         var data = Store.loadNotebook(draft.id)
+        let newPaper = wanted ?? paper
         if var s = all[parent.id.uuidString], s.draft == draft.id,
-           data.rows.contains(where: { $0.pages.contains { $0.id == s.startPage } }) {
+           let start = data.rows.firstIndex(where: { $0.pages.contains { $0.id == s.startPage } }) {
             s.lastUsed = Date()
             all[parent.id.uuidString] = s
             sessions = all
+            // 這次主題裡還沒寫的頁：換成外面那本現在的紙
+            var changed = false
+            for r in start ..< data.rows.count {
+                for p in data.rows[r].pages.indices where data.rows[r].pages[p].paper != newPaper && isBlank(data.rows[r].pages[p]) {
+                    data.rows[r].pages[p].paper = newPaper
+                    changed = true
+                }
+            }
+            if changed { Store.saveNotebook(data, id: draft.id) }
             return draft
         }
         var row = PageRow()
         row.pages[0].spec = pageSize
-        row.pages[0].paper = paper
+        row.pages[0].paper = newPaper
         data.rows.append(row)
         data.lastPage = row.pages[0].id                       // 打開時直接在這張新的白頁
         Store.saveNotebook(data, id: draft.id)
@@ -159,137 +172,263 @@ enum Drafts {
     }
 }
 
-/// 筆記本畫面右邊的隨手記：收起來時只有右邊緣偏下的一個小把手；拉出來是一本嵌在裡面的筆記本
+/// 抽屜的狀態：NotebookEditorView、右邊緣的手勢（UIKit）、抽屜本身共用（v12.16.1）
+@MainActor
+final class DraftDrawerState: ObservableObject {
+    /// 停在打開的樣子（外面要打開也是設這個，例如自動測試）
+    @Published var open = false
+    /// 手指正拉著抽屜的左邊緣：在螢幕上的 x（全域座標）；沒在拉＝nil
+    @Published var drag: CGFloat?
+    /// 放開了：往右的速度（點／秒），抽屜決定要停在哪、還是收回去
+    @Published var released: CGFloat?
+}
+
+/// 筆記本畫面右邊的隨手記：收起來時只有右下角的一個小把手；拉出來是一本嵌在裡面的筆記本。
+/// v12.16.1（使用者要求）：
+/// ・拉出來時紙跟著手指出來，放手的地方就是抽屜的寬度（太窄就收回去）
+/// ・抓左邊那一條：左右拖改寬度；往右拖到底（或往右甩）就收回去，一路跟著手指
+/// ・上面只留一排（收起、全螢幕、頁數；上一步、下一步、＋、放進筆記本）
 struct DraftDrawerLayer: View {
     @EnvironmentObject private var library: LibraryModel
     @ObservedObject var parent: NotebookModel
-    @Binding var open: Bool
+    @ObservedObject var state: DraftDrawerState
     @State private var draft: NotebookMeta?
     @State private var full = false
     @State private var fraction: CGFloat = {
         let saved = UserDefaults.standard.double(forKey: "draftWidth")
         return saved > 0.2 ? CGFloat(saved) : 0.45
     }()
-    @State private var dragStart: CGFloat?
-    @State private var handleDrag: CGFloat = 0
+    @State private var shown = false             // 抽屜在畫面上（拉著、打開、正在收）
+    @State private var offset: CGFloat = 0       // 往右移出去多少（收回、點把手滑進來的動畫）
+    @State private var settle: CGFloat?          // 放手後動畫中的寬度（動畫結束就回到 fraction）
+    @State private var handleMoved = false
+    @State private var closing = false
+
+    /// 拉著的時候，抽屜最窄多寬；比這個窄就改成整個往右移（看起來是被手指推回去）
+    static let minWidth: CGFloat = 300
 
     var body: some View {
         GeometryReader { geo in
+            let box = geo.frame(in: .global)
+            let size = geo.size
+            let width = drawerWidth(size, box: box)
             ZStack(alignment: .trailing) {
-                if open, let draft = draft {
-                    drawer(draft, size: geo.size)
-                        .transition(.move(edge: .trailing))
-                } else if !open {
-                    handle(geo.size)
+                handle(size, box: box)
+                    .opacity(shown ? 0 : 1)
+                    .allowsHitTesting(!shown || handleMoved)          // 拉著把手時抽屜已經出來了：手勢不能斷
+                if shown, let draft = draft {
+                    drawer(draft, size: size, width: width)
+                        .offset(x: drawerOffset(size, box: box))
                 }
             }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .trailing)
-        }
-        .onChange(of: open) { _, now in
-            if now {
-                if draft == nil || draft?.draftOf != parent.meta.id { draft = Drafts.open(for: parent.meta) }
-                else { _ = Drafts.open(for: parent.meta) }
-                Drafts.parentDoc = parent.documentView
-                Drafts.covered = full ? 1 : fraction
-            } else {
-                Drafts.touch(parent.meta.id)
+            .frame(width: size.width, height: size.height, alignment: .trailing)
+            .onChange(of: state.drag) { _, x in
+                if x != nil && !shown { beginReveal() }
+                publishEdge(box: box, width: width)
             }
+            .onChange(of: shown) { _, _ in publishEdge(box: box, width: width) }
+            .onChange(of: state.released) { _, v in
+                guard let v = v else { return }
+                state.released = nil
+                finishDrag(velocity: v, size: size, box: box)
+            }
+            .onChange(of: state.open) { _, now in
+                if now && !shown { slideIn(size: size, box: box) }      // 外面要打開（自動測試）
+                if !now && shown && state.drag == nil { slideOut(size: size, box: box) }
+            }
+            .onChange(of: width) { _, w in publishEdge(box: box, width: w) }
+            .onChange(of: offset) { _, _ in publishEdge(box: box, width: width) }
         }
     }
 
-    private func drawer(_ meta: NotebookMeta, size: CGSize) -> some View {
-        let width = full ? size.width : min(max(320, size.width * fraction), size.width - 120)
-        let shape = UnevenRoundedRectangle(topLeadingRadius: full ? 0 : 18, bottomLeadingRadius: full ? 0 : 18,
-                                           bottomTrailingRadius: 0, topTrailingRadius: 0, style: .continuous)
-        return HStack(spacing: 0) {
-            if !full { resizeGrip(size) }
-            VStack(spacing: 0) {
-                header
-                NotebookEditorView(meta: meta, embedded: true,
-                                   windowActions: BoardWindowActions(close: closeDrawer,
-                                                                     expand: { setFull(true) },
-                                                                     back: { setFull(false) },
-                                                                     mode: full ? .full : .float,
-                                                                     openCard: { _, _ in },
-                                                                     pasteToBoard: { image, _, _, _, _ in
-                                                                         // 剪刀：剪下來的圖貼到外面那本
-                                                                         let p = parent.documentView
-                                                                         let w = (p?.bounds.width ?? 0) * max(1 - Drafts.covered, 0.3)
-                                                                         p?.pasteImage(image, at: CGPoint(x: w / 2, y: (p?.bounds.midY ?? 0)))
-                                                                         return nil
-                                                                     },
-                                                                     revealOnBoard: { _, _ in },
-                                                                     frame: CGRect(x: size.width - width, y: 0, width: width, height: size.height)))
-                    .id(meta.id)
-            }
-            .background(Color(uiColor: .systemBackground))
+    // MARK: 寬度、位置
+
+    private func restingWidth(_ size: CGSize) -> CGFloat {
+        if full { return size.width }
+        return min(max(Self.minWidth, size.width * fraction), size.width - 120)
+    }
+
+    /// 手指拉著時：抽屜左邊緣到右邊的距離（可能比最窄還窄，那時整個往右移）
+    private func liveWidth(_ box: CGRect) -> CGFloat? {
+        state.drag.map { box.maxX - $0 }
+    }
+
+    private func drawerWidth(_ size: CGSize, box: CGRect) -> CGFloat {
+        if let live = liveWidth(box) { return min(max(live, Self.minWidth), size.width - 60) }
+        return settle ?? restingWidth(size)
+    }
+
+    private func drawerOffset(_ size: CGSize, box: CGRect) -> CGFloat {
+        if let live = liveWidth(box) { return max(0, Self.minWidth - max(live, 0)) }
+        return offset
+    }
+
+    /// 告訴外面那本：抽屜蓋到哪裡（筆跡畫到這裡就切斷；放進筆記本時貼在露出來那一塊的中間）
+    private func publishEdge(box: CGRect, width: CGFloat) {
+        guard shown else {
+            Drafts.edgeX = nil
+            return
         }
-        .frame(width: width)
+        let left = box.maxX - width + (state.drag == nil ? offset : drawerOffset(box.size, box: box))
+        Drafts.edgeX = left
+        Drafts.covered = min(max((box.maxX - left) / max(box.width, 1), 0), 1)
+    }
+
+    // MARK: 打開、收起
+
+    /// 開始拉出來：準備好這次的隨手記
+    private func beginReveal() {
+        parent.documentView?.flushAll()
+        let paper = parent.currentPageID.flatMap { parent.page($0) }?.paper
+        if draft == nil || draft?.draftOf != parent.meta.id {
+            draft = Drafts.open(for: parent.meta, paper: paper)
+        } else {
+            _ = Drafts.open(for: parent.meta, paper: paper)
+        }
+        Drafts.parentDoc = parent.documentView
+        shown = true
+        offset = 0
+        settle = nil
+    }
+
+    /// 點把手：從右邊滑進來，停在上次的寬度
+    private func slideIn(size: CGSize, box: CGRect) {
+        if !shown { beginReveal() }
+        let w = restingWidth(size)
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { offset = w + 30 }
+        state.open = true
+        DispatchQueue.main.async {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.88)) { offset = 0 }
+        }
+    }
+
+    /// 收起：整個往右滑出去
+    private func slideOut(size: CGSize, box: CGRect) {
+        guard !closing else { return }
+        closing = true
+        Drafts.drawerDoc?.flushAll()
+        let w = settle ?? restingWidth(size)
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.92)) {
+            offset = w + 30
+        } completion: {
+            shown = false
+            closing = false
+            offset = 0
+            settle = nil
+            full = false
+            Drafts.edgeX = nil
+            Drafts.touch(parent.meta.id)
+        }
+        state.open = false
+    }
+
+    /// 放手：太窄（或往右甩）就收回去；不然就停在放手的地方
+    private func finishDrag(velocity: CGFloat, size: CGSize, box: CGRect) {
+        guard let live = liveWidth(box) else { return }
+        let shownWidth = min(max(live, Self.minWidth), size.width - 60)
+        let shownOffset = max(0, Self.minWidth - max(live, 0))
+        // 先把「拉著」的樣子原封不動交給 settle、offset，再動畫到最後的樣子
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) {
+            settle = shownWidth
+            offset = shownOffset
+            state.drag = nil
+        }
+        let closing = (live < 180 && velocity > -300) || velocity > 900
+        if closing {
+            if state.open {
+                state.open = false                               // onChange(state.open) 會收回去
+            } else {
+                slideOut(size: size, box: box)                   // 剛拉出來就放回去
+            }
+            return
+        }
+        // 停下來：放手的地方就是寬度（往左甩：再寬一點）
+        var target = live - min(velocity, 0) * 0.15
+        if target > size.width * 0.9 {
+            full = true
+            target = size.width
+        } else {
+            full = false
+            fraction = min(max(target / max(size.width, 1), 0.28), 0.85)
+            UserDefaults.standard.set(Double(fraction), forKey: "draftWidth")
+            target = restingWidth(size)
+        }
+        state.open = true
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) {
+            settle = target
+            offset = 0
+        } completion: {
+            settle = nil
+        }
+    }
+
+    private func setFull(_ on: Bool, size: CGSize) {
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) { full = on }
+    }
+
+    // MARK: 畫面
+
+    private func drawer(_ meta: NotebookMeta, size: CGSize, width: CGFloat) -> some View {
+        let isFull = full && state.drag == nil
+        let shape = UnevenRoundedRectangle(topLeadingRadius: isFull ? 0 : 18, bottomLeadingRadius: isFull ? 0 : 18,
+                                           bottomTrailingRadius: 0, topTrailingRadius: 0, style: .continuous)
+        let inner = isFull ? width : width - 16
+        return HStack(spacing: 0) {
+            if !isFull { grip(size) }
+            NotebookEditorView(meta: meta, embedded: true,
+                               windowActions: BoardWindowActions(close: { state.open = false },
+                                                                 expand: { setFull(true, size: size) },
+                                                                 back: { setFull(false, size: size) },
+                                                                 mode: full ? .full : .float,
+                                                                 openCard: { _, _ in },
+                                                                 pasteToBoard: { image, _, _, _, _ in
+                                                                     // 剪刀：剪下來的圖貼到外面那本
+                                                                     let p = parent.documentView
+                                                                     let w = (p?.bounds.width ?? 0) * max(1 - Drafts.covered, 0.3)
+                                                                     p?.pasteImage(image, at: CGPoint(x: w / 2, y: (p?.bounds.midY ?? 0)))
+                                                                     return nil
+                                                                 },
+                                                                 revealOnBoard: { _, _ in },
+                                                                 frame: CGRect(x: size.width - width, y: 0, width: width, height: size.height)))
+                .id(meta.id)
+                .frame(width: inner)
+                .frame(maxHeight: .infinity)
+                .clipped()
+                .background(Color(uiColor: .systemBackground))
+        }
+        .frame(width: width, alignment: .leading)
         .frame(maxHeight: .infinity)
         .clipShape(shape)
         .background(shape.fill(Color.black).shadow(color: Color.black.opacity(0.35), radius: 14, x: -3))
         .overlay(shape.stroke(Color.white.opacity(0.15), lineWidth: 1))
     }
 
-    /// 最上面一條：隨手記、＋新的一頁、放進筆記本
-    private var header: some View {
-        HStack(spacing: 16) {
-            Image(systemName: "square.and.pencil")
-                .foregroundStyle(Color.orange)
-            Text("隨手記")
-                .font(.headline)
-            Spacer()
-            Button {
-                guard let doc = Drafts.drawerDoc else { return }
-                doc.insertRow(at: doc.model.notebook.rows.count)
-            } label: {
-                Image(systemName: "plus.rectangle")
-            }
-            Menu {
-                Button {
-                    Drafts.sendCurrentPage()
-                } label: {
-                    Label("這一頁放進筆記本（插在目前這頁後面）", systemImage: "doc.badge.plus")
-                }
-                Text("要放一小塊：用套索圈起來，按「放進筆記本」")
-            } label: {
-                Image(systemName: "arrow.left.doc.on.clipboard")
-            }
-            // 全螢幕、收起：在下面那一排（裡面那本的工具列最左邊）
-        }
-        .font(.system(size: 17, weight: .semibold))
-        .foregroundStyle(Color.primary)
-        .padding(.horizontal, 16)
-        .frame(height: 44)
-        .background(Color(uiColor: .secondarySystemBackground))
-    }
-
-    /// 左邊的一條：拖著改寬度
-    private func resizeGrip(_ size: CGSize) -> some View {
+    /// 左邊的一條：左右拖改寬度；往右拖到底、或往右甩就收回去
+    private func grip(_ size: CGSize) -> some View {
         ZStack {
             Color(uiColor: .secondarySystemBackground)
-            Capsule().fill(Color.secondary.opacity(0.6)).frame(width: 4, height: 44)
+            Capsule().fill(Color.secondary.opacity(0.7)).frame(width: 5, height: 52)
         }
-        .frame(width: 14)
-        .contentShape(Rectangle())
+        .frame(width: 16)
+        .contentShape(Rectangle().inset(by: -10))
         .gesture(
-            DragGesture(minimumDistance: 2, coordinateSpace: .global)
+            DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { value in
-                    let start = dragStart ?? fraction
-                    if dragStart == nil { dragStart = start }
-                    let f = start - value.translation.width / max(size.width, 1)
-                    fraction = min(max(f, 0.3), 0.85)
-                    Drafts.covered = fraction
+                    state.drag = value.location.x - 8
                 }
-                .onEnded { _ in
-                    dragStart = nil
-                    UserDefaults.standard.set(Double(fraction), forKey: "draftWidth")
+                .onEnded { value in
+                    state.drag = value.location.x - 8
+                    state.released = value.velocity.width
                 }
         )
     }
 
-    /// 收起來時：右邊緣偏下一個小把手（點一下、或往左拉就打開）
-    private func handle(_ size: CGSize) -> some View {
+    /// 收起來時：右下角一個小把手（點一下打開；往左拉：抽屜跟著手指出來）
+    private func handle(_ size: CGSize, box: CGRect) -> some View {
         VStack(spacing: 4) {
             Image(systemName: "square.and.pencil")
                 .font(.system(size: 13, weight: .semibold))
@@ -300,30 +439,24 @@ struct DraftDrawerLayer: View {
         .frame(width: 26, height: 64)
         .background(UnevenRoundedRectangle(topLeadingRadius: 12, bottomLeadingRadius: 12, bottomTrailingRadius: 0,
                                            topTrailingRadius: 0, style: .continuous).fill(Color.orange.opacity(0.85)))
-        .offset(x: min(0, handleDrag))
+        .contentShape(Rectangle().inset(by: -8))
         .position(x: size.width - 13, y: max(size.height * 0.6, size.height - 150))   // 靠近右下角（筆盒停在右邊時不會被擋住）
         .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in handleDrag = value.translation.width }
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { value in
+                    if !handleMoved && abs(value.translation.width) < 6 { return }
+                    handleMoved = true
+                    state.drag = min(value.location.x, box.maxX)
+                }
                 .onEnded { value in
-                    handleDrag = 0
-                    if value.translation.width < -24 || abs(value.translation.width) < 8 { openDrawer() }
+                    if handleMoved {
+                        state.drag = min(value.location.x, box.maxX)
+                        state.released = value.velocity.width
+                    } else {
+                        slideIn(size: size, box: box)
+                    }
+                    handleMoved = false
                 }
         )
-    }
-
-    private func openDrawer() {
-        parent.documentView?.flushAll()
-        withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) { open = true }
-    }
-
-    private func closeDrawer() {
-        Drafts.drawerDoc?.flushAll()
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.9)) { open = false }
-    }
-
-    private func setFull(_ on: Bool) {
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.9)) { full = on }
-        Drafts.covered = on ? 1 : fraction
     }
 }

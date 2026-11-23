@@ -851,6 +851,10 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     var foldHandles: Set<UUID> = [] {
         didSet { if foldHandles != oldValue { layoutFoldButtons() } }
     }
+    /// 選取中的那一個方塊（它四邊有拉新方塊的灰點：「−」要讓開，放在灰點再外面；v12.16.1）
+    var foldActive: UUID? {
+        didSet { if foldActive != oldValue { layoutFoldButtons() } }
+    }
     private var foldButtons: [UUID: UIButton] = [:]
     static let foldButtonTag = 4344
 
@@ -877,14 +881,18 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
                 let count = folded ? MindFold.descendants(of: id, children: kids).count : 0
                 let button = foldButton(id)
                 style(button, folded: folded, count: count)
-                // 放在第一條往下的線出去的那一邊，再往外一點
+                // 放在第一條往下的線出去的那一邊，再往外一點。
+                // v12.16.1（使用者：「−」不好點，很容易變成在拉線）：以前剛好疊在選取方塊四邊的灰點上（拉新方塊用的），
+                // 一按就變成拉線。選取中的方塊：放到灰點再外面（灰點在邊外 20 點、摸得到的範圍半徑 16）；
+                // 其他方塊沒有灰點，放近一點。圓圈也加大（30 點，摸得到的範圍再外擴 8 點）
                 let r = rect.applying(CGAffineTransform(scaleX: s, y: s))
                 let a = BoxLinkPath.anchor(r, side: first.fromSide)
-                let out: CGFloat = 16
+                let side: CGFloat = 30
+                let out: CGFloat = id == foldActive ? 20 + 16 + 4 + side / 2 : side / 2 + 4
                 let d: CGPoint = [CGPoint(x: 0, y: -out), CGPoint(x: out, y: 0), CGPoint(x: 0, y: out), CGPoint(x: -out, y: 0)][max(0, min(3, first.fromSide))]
-                let size: CGFloat = folded ? max(26, 18 + CGFloat(String(count).count) * 8) : 24
-                button.frame = CGRect(x: a.x + d.x - size / 2, y: a.y + d.y - 12, width: size, height: 24)
-                button.layer.cornerRadius = 12
+                let width: CGFloat = folded ? max(side, 20 + CGFloat(String(count).count) * 9) : side
+                button.frame = CGRect(x: a.x + d.x - width / 2, y: a.y + d.y - side / 2, width: width, height: side)
+                button.layer.cornerRadius = side / 2
                 bringSubviewToFront(button)
                 alive.insert(id)
             }
@@ -897,9 +905,9 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
 
     private func foldButton(_ id: UUID) -> UIButton {
         if let b = foldButtons[id] { return b }
-        let b = UIButton(type: .custom)
+        let b = FoldButton(type: .custom)
         b.tag = Self.foldButtonTag
-        b.titleLabel?.font = UIFont.systemFont(ofSize: 13, weight: .bold)
+        b.titleLabel?.font = UIFont.systemFont(ofSize: 15, weight: .bold)
         b.layer.borderWidth = 1.5
         b.layer.shadowColor = UIColor.black.cgColor
         b.layer.shadowOpacity = 0.18
@@ -930,7 +938,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
             b.backgroundColor = UIColor.systemBackground
             b.layer.borderColor = UIColor.systemGray3.cgColor
             b.setTitle(nil, for: .normal)
-            b.setImage(UIImage(systemName: "minus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)), for: .normal)
+            b.setImage(UIImage(systemName: "minus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)), for: .normal)
             b.tintColor = UIColor.secondaryLabel
         }
     }
@@ -2135,5 +2143,12 @@ enum Thumbnail {
             PageRenderer.draw(page, in: ctx.cgContext, rect: CGRect(origin: .zero, size: size),
                               inkScale: width / max(page.spec.width, 1) * 2, drawing: drawing)
         }
+    }
+}
+
+/// 心智圖折疊的圓圈（v12.16.1）：摸得到的範圍比看到的大一圈
+final class FoldButton: UIButton {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        bounds.insetBy(dx: -8, dy: -8).contains(point)
     }
 }

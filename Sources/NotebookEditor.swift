@@ -62,38 +62,41 @@ struct CropButton: View {
     }
 }
 
-/// 左上的跳回記號 ↩︎（v12.16.0）：點一下＝放記號／跳回最新的記號（再點跳回來）；長按＝全部記號
+/// 跳回記號 🚩（v12.16.0；v12.16.1 換成旗子，使用者：↩︎ 看起來像上一步）：
+/// 點一下＝插旗子／跳回最新的旗子（再點跳回來）；長按＝全部記號。筆記本在左上，白板在右上
 struct PlaceMarkButton: View {
     @ObservedObject var model: NotebookModel
 
     var body: some View {
         let marks = model.placeMarks
         let rows = model.notebook.rows
+        let board = model.isBoard
         return Menu {
             ForEach(marks.reversed()) { mark in
                 Button {
                     model.documentView?.goToPlaceMark(mark.id)
                 } label: {
-                    Label(NotebookView.pageLabel(mark.page, in: rows) + "　" + mark.date.formatted(date: .omitted, time: .shortened),
-                          systemImage: mark.auto ? "arrow.uturn.backward" : "bookmark.fill")
+                    Label((board ? "白板上的位置" : NotebookView.pageLabel(mark.page, in: rows)) + "　"
+                          + mark.date.formatted(date: .omitted, time: .shortened) + (mark.auto ? "（跳過去之前）" : ""),
+                          systemImage: mark.auto ? "flag" : "flag.fill")
                 }
             }
             if !marks.isEmpty { Divider() }
             Button {
                 model.documentView?.addPlaceMarkHere()
             } label: {
-                Label("在這裡放記號", systemImage: "plus")
+                Label("在這裡插旗子", systemImage: "plus")
             }
             if !marks.isEmpty {
                 Button(role: .destructive) {
                     model.placeMarks = []
                 } label: {
-                    Label("清除全部記號", systemImage: "xmark")
+                    Label("拿掉全部旗子", systemImage: "xmark")
                 }
             }
         } label: {
             HStack(spacing: 2) {
-                Image(systemName: marks.isEmpty ? "arrow.uturn.backward.circle" : "arrow.uturn.backward.circle.fill")
+                Image(systemName: marks.isEmpty ? "flag" : "flag.fill")
                 if marks.count > 1 {
                     Text("\(marks.count)")
                         .font(.caption2.weight(.bold))
@@ -904,7 +907,9 @@ final class NotebookModel: ObservableObject {
     @Published var jumpRequest: JumpPick?              // 長按空白處「跳轉」：選要跳到哪裡
     @Published var canRedo = false
     /// 跳回記號（v12.16.0）：只記到關掉這一本；最新的在最後面
-    @Published var placeMarks: [PlaceMark] = []
+    @Published var placeMarks: [PlaceMark] = [] {
+        didSet { documentView?.refreshPlaceFlags() }   // 頁面上的旗子（v12.16.1）
+    }
     weak var documentView: NotebookView?
     /// 刪掉的頁放進最近刪除（v12.9.2）：由編輯畫面接到首頁的資料（NotebookView 拿不到首頁）
     var trashPages: (@MainActor ([PageRow]) -> Void)?
@@ -1231,7 +1236,7 @@ struct NotebookEditorView: View {
     // 白板上開著的浮動視窗（v12.12.0）
     @State private var windows: [BoardWindow] = []
     @State private var windowsTucked = false
-    @State private var draftOpen = false               // 右邊的隨手記拉出來了（v12.16.0；Drafts.swift）
+    @StateObject private var drawer = DraftDrawerState()   // 右邊的隨手記（v12.16.0；Drafts.swift）
     @State private var showCardPicker = false
     @State private var cardPickerBoards = false        // 選取畫面列的是白板（子白板的「匯入現有的」）
     @State private var showCardPDF = false
@@ -1262,7 +1267,97 @@ struct NotebookEditorView: View {
     }
 
     /// 分頁下面那一排工具（v12.8.4，以前在系統的工具列裡）
+    /// 隨手記抽屜裡的那一本（v12.16.1）
+    private var isDraftDrawer: Bool { embedded && model.meta.draftOf != nil }
+
     private var toolRow: some View {
+        Group {
+            if isDraftDrawer {
+                ViewThatFits(in: .horizontal) {
+                    draftRowContent(gap: 16)
+                    draftRowContent(gap: 11)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        draftRowContent(gap: 9)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                }
+            } else {
+                normalToolRow
+            }
+        }
+        .tint(Color.primary)
+        .padding(.horizontal, embedded ? 8 : 16)
+        .padding(.vertical, embedded ? 4 : 6)
+        .background {
+            if !model.isBoard {
+                Color.black.ignoresSafeArea(edges: .top)      // 筆記本：黑色的工具列（跟以前系統的一樣）；白板：浮在白板上
+            }
+        }
+    }
+
+    /// 隨手記抽屜裡只留一排（v12.16.1，使用者：上面太亂，選字、剪刀不用）：
+    /// 左：收起、全螢幕、四方格＋頁數；右：上一步、下一步、新的一頁、放進筆記本
+    private func draftRowContent(gap: CGFloat) -> some View {
+        HStack(spacing: 8) {
+            if let actions = windowActions {
+                toolCapsule(gap) {
+                    Button(action: actions.close) {
+                        Image(systemName: "chevron.right.2")              // 收回右邊
+                    }
+                    Button(action: actions.mode == .full ? actions.back : actions.expand) {
+                        Image(systemName: actions.mode == .full ? "arrow.down.right.and.arrow.up.left"
+                                                                : "arrow.up.left.and.arrow.down.right")
+                    }
+                }
+            }
+            toolCapsule(gap) {
+                Button {
+                    model.documentView?.flushAll()
+                    withAnimation(.easeOut(duration: 0.2)) { showPanel.toggle() }
+                } label: {
+                    Label(model.pageLabel, systemImage: "square.grid.2x2")
+                        .labelStyle(.titleAndIcon)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            Spacer(minLength: 0)
+            toolCapsule(gap) {
+                Button {
+                    model.documentView?.performUndo()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .disabled(!model.canUndo)
+                Button {
+                    model.documentView?.performRedo()
+                } label: {
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .disabled(!model.canRedo)
+                Button {
+                    guard let doc = model.documentView else { return }
+                    doc.insertRow(at: doc.model.notebook.rows.count)      // 新的一頁（加在最後面）
+                } label: {
+                    Image(systemName: "plus.rectangle")
+                }
+                Menu {
+                    Button {
+                        Drafts.sendCurrentPage()
+                    } label: {
+                        Label("這一頁放進筆記本（插在目前這頁後面）", systemImage: "doc.badge.plus")
+                    }
+                    Text("要放一小塊：用套索圈起來，按「放進筆記本」")
+                } label: {
+                    Image(systemName: "arrow.left.doc.on.clipboard")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var normalToolRow: some View {
         // v12.12.1：這一排放不下的時候（直式、分頁收起來、名稱又長），以前整排被擠壓，
         // 左邊的「四宮格＋頁數」變成上下疊、頁數不見，兩邊還超出畫面。
         // 現在準備四種寬度，由寬到窄，用第一個放得下的：按鈕間隔 30 → 20 → 13 → 9，名稱 16 字 → 10 → 6 → 不顯示
@@ -1275,14 +1370,6 @@ struct NotebookEditorView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 toolRowContent(gap: embedded ? 6 : 9, titleMax: 0)
                     .fixedSize(horizontal: true, vertical: false)
-            }
-        }
-        .tint(Color.primary)
-        .padding(.horizontal, embedded ? 8 : 16)
-        .padding(.vertical, embedded ? 4 : 6)
-        .background {
-            if !model.isBoard {
-                Color.black.ignoresSafeArea(edges: .top)      // 筆記本：黑色的工具列（跟以前系統的一樣）；白板：浮在白板上
             }
         }
     }
@@ -1504,6 +1591,7 @@ struct NotebookEditorView: View {
         }
         .disabled(!model.canRedo)
         if model.isBoard {
+            if !embedded { PlaceMarkButton(model: model) }     // 白板也有跳回記號（v12.16.1，使用者要求）
             BoardToolbarButtons(model: model, showPins: $showPins, showFrames: $showFrames)
             expandTabsButton
         } else {
@@ -1601,7 +1689,7 @@ struct NotebookEditorView: View {
             .overlay {
                 // 隨手記（v12.16.0）：右邊緣的小把手、拉出來的抽屜；在筆盒下面
                 if !embedded && model.meta.draftOf == nil {
-                    DraftDrawerLayer(parent: model, open: $draftOpen)
+                    DraftDrawerLayer(parent: model, state: drawer)
                 }
             }
             .overlay {
@@ -1743,15 +1831,34 @@ struct NotebookEditorView: View {
                     // 隨手記（v12.16.0）：換了一本、或隔很久才進來 → 上一次的主題結束；右邊緣往內滑拉出來
                     Drafts.library = library
                     Drafts.enter(model.meta.id)
-                    let open = $draftOpen
+                    let state = drawer
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        model.documentView?.onRightEdgeSwipe = {
-                            model.documentView?.flushAll()
-                            withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) { open.wrappedValue = true }
+                        // 從右邊緣往內滑：抽屜跟著手指出來（v12.16.1）
+                        model.documentView?.onRightEdgePan = { phase, x, velocity in
+                            switch phase {
+                            case .began, .changed: state.drag = x
+                            case .ended: state.drag = x; state.released = velocity
+                            default: state.drag = x; state.released = 2000          // 被打斷：收回去
+                            }
                         }
                     }
                     if SelfTest.scene == "drafts" || (SelfTest.scene == "draftend" && !SelfTest.sceneDone) {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { open.wrappedValue = true }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { state.open = true }
+                    }
+                    if SelfTest.scene == "draftpull" {
+                        // 自動測試：假裝手指從右邊緣拉到畫面 55% 的地方放開
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                            let w = model.documentView?.window?.bounds.width ?? 1000
+                            Task { @MainActor in
+                                var x = w
+                                while x > w * 0.55 {
+                                    x -= w * 0.45 / 30
+                                    state.drag = x
+                                    try? await Task.sleep(nanoseconds: 16_000_000)
+                                }
+                                state.released = 0
+                            }
+                        }
                     }
                 }
                 if !embedded, model.isBoard, let saved = SessionRestore.takeWindows(board: model.meta.id) {

@@ -3340,30 +3340,33 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         voiceMode = .notes(pageID: pv.page.id, x: local.x / s, y: local.y / s)
         voiceLastBox = nil
         VoiceWords.text = "特徵直 → 特徵值"                // v12.16.2：詞庫改字、拿掉句號
-        for sentence in ["高斯定律什麼時候可以用？要有足夠的對稱性。",
-                         "球對稱、柱對稱、平面對稱三種。先畫 Gaussian surface。",
-                         "特徵直怎麼求，先寫特徵方程式。"] {
-            voiceFinal(sentence)
-        }
-        let texts = model.texts(of: pv.page.id).map { $0.text }
-        VoiceWords.text = ""
-        let periods = texts.contains { $0.contains("。") }
-        voiceBar.show(text: "")
-        defer { showMessage("mic", (periods ? "還有句號（錯）" : "沒有句號（對）") + "；第三句：" + (texts.last ?? "")) }
         if voiceBar.superview == nil { addSubview(voiceBar) }
         voiceBar.reset(hint: "講完一句停一下，就會變成一個方塊")
-        voiceBar.show(text: "那電位的邊界條件呢")
         voiceBar.show(status: "聽寫中（裝置上的新模型）")
         layoutVoiceBar()
         bringSubviewToFront(voiceBar)
-        let count = model.texts(of: pv.page.id).count
-        pv.layoutIfNeeded()
-        let detail = model.texts(of: pv.page.id).map { t -> String in
-            let est = PageRenderer.textFrameRect(t, page: pv.page)
-            let real = pv.textViews[t.id]?.linkRect ?? .zero
-            return String(format: "y%.0f 估h%.0f 實h%.0f w%.0f fix%.0f", t.y, est.height, real.height, t.width, t.fixedWidth ?? -1)
-        }.joined(separator: "｜")
-        return "假裝講了三句：白板上有 \(count) 個文字方塊（應該 3）\n" + detail
+        // 一句一句隔一下（像真的在講），下一個方塊才看得到上一個排好的樣子
+        let sentences = ["高斯定律什麼時候可以用？要有足夠的對稱性。",
+                         "球對稱、柱對稱、平面對稱三種。先畫 Gaussian surface。",
+                         "特徵直怎麼求，先寫特徵方程式。"]
+        for (i, sentence) in sentences.enumerated() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 * Double(i)) { [weak self] in
+                self?.voiceFinal(sentence)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6 * Double(sentences.count) + 0.4) { [weak self] in
+            guard let self = self else { return }
+            VoiceWords.text = ""
+            self.voiceBar.show(text: "那電位的邊界條件呢")
+            let texts = self.model.texts(of: pv.page.id)
+            let periods = texts.contains { $0.text.contains("。") }
+            let rects = texts.compactMap { pv.textViews[$0.id]?.linkRect }.sorted { $0.minY < $1.minY }
+            var overlap = false
+            for i in 1 ..< max(rects.count, 1) where rects[i].minY < rects[i - 1].maxY { overlap = true }
+            SelfTest.show("假裝講了三句：\(texts.count) 個方塊（應該 3）；" + (overlap ? "有疊到（錯）" : "沒有疊到（對）")
+                          + "；" + (periods ? "還有句號（錯）" : "沒有句號（對）") + "\n第三句：" + (texts.last?.text ?? ""))
+        }
+        return "講三句中…"
     }
 
     /// 自動測試（textedge，v12.16.2）：頁面右邊放一個方塊、打一長句，看有沒有收在頁面裡面；再打開卡片樣式面板

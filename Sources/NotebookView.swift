@@ -1874,6 +1874,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         case notes(pageID: UUID, x: CGFloat, y: CGFloat)   // 每句一個新方塊，下一個放在 (x, y)（頁面座標）
     }
     private var voiceMode: VoiceMode?
+    private var voiceLastBox: UUID?                    // 一句一個方塊：上一句的方塊
     private lazy var voiceBar = VoiceBar(onDone: { [weak self] in self?.stopVoice() },
                                          onWords: { VoiceWordsSheet.present() })
 
@@ -1899,6 +1900,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     private func startVoice(_ mode: VoiceMode) {
         voiceMode = mode
+        voiceLastBox = nil
         let voice = VoiceInput.shared
         voice.onPartial = { [weak self] text in self?.voiceBar.show(text: text) }
         voice.onFinal = { [weak self] text in self?.voiceFinal(text) }
@@ -1965,14 +1967,21 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             guard let pv = pageViews[pageID] else { return }
             // 太長的話換行：最寬到畫面的一半（白板放大縮小時也不會伸到筆盒底下）
             let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
-            let box = voiceNoteBox(text, at: CGPoint(x: x, y: y), page: pv.page, maxWidth: bounds.width * 0.5 / s)
+            let gap = 14 * pageScaleFactor(pv.page.spec)
+            // v12.16.2：上一句的方塊已經排在畫面上了，用它真正的外框決定這一句放哪（以前用估的，兩行的方塊會被下一個疊到）
+            var top = y
+            if let last = voiceLastBox, let prev = pv.textViews[last] {
+                pv.layoutIfNeeded()
+                prev.layoutIfNeeded()
+                top = max(top, prev.linkRect.maxY + gap)
+            }
+            let box = voiceNoteBox(text, at: CGPoint(x: x, y: top), page: pv.page, maxWidth: bounds.width * 0.5 / s)
             var texts = model.texts(of: pageID)
             texts.append(box)
             setTextsRecorded(texts, pageID: pageID)            // 每一句一步復原
-            // 下一句放在這個方塊的外框下面（v12.16.2：有外框樣式時以前算矮了，下一個方塊會疊上來）
-            var frame = PageRenderer.textFrameRect(box, page: pv.page)
-            if let tv = pv.textViews[box.id] { frame = frame.union(tv.linkRect) }
-            voiceMode = .notes(pageID: pageID, x: x, y: frame.maxY + 14 * pageScaleFactor(pv.page.spec))
+            voiceLastBox = box.id
+            let frame = PageRenderer.textFrameRect(box, page: pv.page)
+            voiceMode = .notes(pageID: pageID, x: x, y: frame.maxY + gap)
             reveal(pageID: pageID, pageRect: frame)
         }
     }
@@ -3329,6 +3338,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
         let local = pv.convert(CGPoint(x: bounds.width * 0.3, y: bounds.height * 0.3), from: self)
         voiceMode = .notes(pageID: pv.page.id, x: local.x / s, y: local.y / s)
+        voiceLastBox = nil
         VoiceWords.text = "特徵直 → 特徵值"                // v12.16.2：詞庫改字、拿掉句號
         for sentence in ["高斯定律什麼時候可以用？要有足夠的對稱性。",
                          "球對稱、柱對稱、平面對稱三種。先畫 Gaussian surface。",

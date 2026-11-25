@@ -2395,6 +2395,10 @@ struct NotePanel: View {
         .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
         .onAppear {
             pdfOutline = PDFOutlineReader.entries(for: model.notebook)
+            // v12.16.2（使用者：大綱不用分自帶的還是我的）：PDF 的目錄第一次就整份併進大綱，照頁碼排在一起，只有一個列表
+            if model.notebook.pdfOutlineImported != true, !pdfOutline.isEmpty, SelfTest.scene != "pdfoutline" {
+                _ = model.importPDFOutline(pdfOutline, folded: [])
+            }
             if SelfTest.scene == "outline" {                     // 自動測試：直接看大綱，第一項滑開
                 tab = 2
                 openOutline = model.notebook.outline?.first?.id
@@ -2719,7 +2723,7 @@ struct NotePanel: View {
                             .padding(.top, 20)
                     }
                     if !mine.isEmpty {
-                        sectionTitle("我的大綱（往左滑：改名、加下一層、刪除）")
+                        sectionTitle("往左滑：改名、加下一層、刪除")
                         ForEach(mine) { line in
                             // v12.11.0：往左滑露出三顆按鈕（照 GUGA）；長按的選單也留著
                             SwipeRow(id: line.id, openID: $openOutline, actions: [
@@ -2761,7 +2765,7 @@ struct NotePanel: View {
                     if !fromPDF.isEmpty {
                         // v12.11.1：PDF 的目錄也能往左滑。它本來是直接從 PDF 檔讀出來的、不能改；
                         // 第一次編輯時整份搬進「我的大綱」（之後這一段就不再列），再對那一項做事
-                        sectionTitle("PDF 自帶的目錄（往左滑就能編輯，會整份搬進我的大綱）")
+                        if mine.isEmpty { sectionTitle("往左滑：改名、加下一層、刪除") }
                         ForEach(fromPDF) { line in
                             SwipeRow(id: line.id, openID: $openOutline, actions: [
                                 SwipeRowAction(symbol: "square.and.pencil", tint: Color.primary, background: Color.gray.opacity(0.35)) {

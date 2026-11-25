@@ -33,16 +33,26 @@ struct TextStyleDefault: Codable, Equatable {
 
     static let key = "textDefaultStyle"
 
-    static func load() -> TextStyleDefault? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(TextStyleDefault.self, from: data)
+    /// v12.16.2（使用者：預設想要淺藍色；像筆一樣，深色紙、淺色紙各一個預設）
+    private static func key(dark: Bool) -> String { key + (dark ? ".dark" : ".light") }
+
+    /// 沒存過的時候：淡紫藍的圓角外框（使用者指定的那個）
+    static let builtIn = TextStyleDefault(fill: TextBoxStyle.linkedFill, fillMode: 2, shape: 1)
+
+    /// 這種紙的預設（fill 是 nil＝沒有樣式）。舊版存的（不分紙）還在的話先用它
+    static func load(dark: Bool) -> TextStyleDefault {
+        for k in [key(dark: dark), key] {
+            if let data = UserDefaults.standard.data(forKey: k),
+               let style = try? JSONDecoder().decode(TextStyleDefault.self, from: data) {
+                return style
+            }
+        }
+        return builtIn
     }
 
-    static func save(_ style: TextStyleDefault?) {
-        if let style = style, style.fill != nil, let data = try? JSONEncoder().encode(style) {
-            UserDefaults.standard.set(data, forKey: key)
-        } else {
-            UserDefaults.standard.removeObject(forKey: key)
+    static func save(_ style: TextStyleDefault, dark: Bool) {
+        if let data = try? JSONEncoder().encode(style) {
+            UserDefaults.standard.set(data, forKey: key(dark: dark))
         }
     }
 }
@@ -383,10 +393,12 @@ struct TextStylePanel: View {
     @State private var shape: Int
     private let change: ([Double]?, Int, Int) -> Void
     private let tidy: (() -> Void)?              // 有值：這個方塊有連線，下面多一顆「一鍵整理」
+    private let dark: Bool                       // 這一頁是深色的紙（預設分深色、淺色紙各一個；v12.16.2）
     @State private var note = ""
 
-    init(fill: [Double]?, mode: Int, shape: Int, tidy: (() -> Void)? = nil,
+    init(fill: [Double]?, mode: Int, shape: Int, dark: Bool, tidy: (() -> Void)? = nil,
          change: @escaping ([Double]?, Int, Int) -> Void) {
+        self.dark = dark
         _fill = State(initialValue: fill)
         _mode = State(initialValue: mode)
         _shape = State(initialValue: shape)
@@ -397,6 +409,14 @@ struct TextStylePanel: View {
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 4)
 
     var body: some View {
+        // v12.16.2（使用者截圖：上面的標題、下面的按鈕被切掉）：放不下就可以上下滑
+        ScrollView(.vertical) {
+            content
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("卡片樣式")
                 .font(.headline)
@@ -427,10 +447,7 @@ struct TextStylePanel: View {
             Divider()
             HStack(spacing: 8) {
                 action("套用預設") {
-                    guard let saved = TextStyleDefault.load() else {
-                        note = "還沒有存過預設"
-                        return
-                    }
+                    let saved = TextStyleDefault.load(dark: dark)
                     fill = saved.fill
                     mode = saved.fillMode ?? 0
                     shape = saved.shape ?? 1
@@ -438,8 +455,9 @@ struct TextStylePanel: View {
                     push()
                 }
                 action("存成預設") {
-                    TextStyleDefault.save(TextStyleDefault(fill: fill, fillMode: mode, shape: shape))
-                    note = fill == nil ? "預設改回沒有樣式" : "之後新的文字方塊都用這個樣式"
+                    TextStyleDefault.save(TextStyleDefault(fill: fill, fillMode: mode, shape: shape), dark: dark)
+                    let paper = dark ? "深色紙" : "淺色紙（課本、白紙）"
+                    note = fill == nil ? "\(paper)上新的文字方塊：沒有樣式" : "之後\(paper)上新的文字方塊都用這個樣式"
                 }
                 action("清除") {
                     fill = nil

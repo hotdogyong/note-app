@@ -184,6 +184,9 @@ enum SelfTest {
             case "textlinks":
                 // 文字方塊的外框樣式、連線（v12.13.0）：白板上放幾個方塊和線，選取其中一個（看四邊的點）
                 library.openNotebook = library.addBoard(in: nil, title: "連線測試白板", width: 100 * 842, height: 100 * 595)
+            case "textedge":
+                // v12.16.2：方塊超出頁面右邊要收進來；預設樣式；卡片樣式面板放不下可以滑
+                library.openNotebook = library.addNotebook(in: nil, title: "文字邊界測試")
             case "textstyle":
                 // 同上，在一般筆記本裡，而且打開「卡片樣式」面板
                 library.openNotebook = library.addNotebook(in: nil, title: "連線測試")
@@ -356,6 +359,13 @@ enum SelfTest {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
                 guard let view = view else { return }
                 show(view.selfTestMindFold())
+            }
+            return
+        }
+        if scene == "textedge", !view.model.isBoard, !view.model.embedded {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                show(view.selfTestTextEdge())
             }
             return
         }

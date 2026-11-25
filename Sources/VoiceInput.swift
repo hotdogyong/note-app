@@ -2,6 +2,7 @@ import Foundation
 import UIKit
 import AVFoundation
 import Speech
+import SwiftUI
 
 // VoiceInput.swift（v12.16.0）：語音轉文字（使用者：白板腦力激盪時不讓想法消失、加快輸出；中文夾英文物理術語；不留錄音檔）。
 // 優先用 iPadOS 26 新的 SpeechAnalyzer／SpeechTranscriber（裝置上的新模型，長一點的話也穩，邊講邊出字，講完一句就定稿一句）；
@@ -138,6 +139,10 @@ final class VoiceInput {
                 self?.onError?("辨識中斷：\(error.localizedDescription)")
             }
         }
+        // 詞庫（v12.16.2）：常用詞當成提示
+        let context = AnalysisContext()
+        context.contextualStrings[.general] = VoiceWords.hints
+        try? await analyzer.setContext(context)
         do {
             try await analyzer.start(inputSequence: stream)
             let input = audio.inputNode
@@ -171,7 +176,7 @@ final class VoiceInput {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.addsPunctuation = true
-        request.contextualStrings = Self.terms
+        request.contextualStrings = VoiceWords.hints
         let input = audio.inputNode
         let micFormat = input.outputFormat(forBus: 0)
         let box = TapBox(converter: nil, format: micFormat, builder: nil, request: request)
@@ -302,9 +307,10 @@ final class VoiceBar: UIView {
     private let label = UILabel()
     private let status = UILabel()
     private let done = UIButton(type: .system)
+    private let words = UIButton(type: .system)             // 詞庫（v12.16.2）
     private var hint = ""
 
-    init(onDone: @escaping () -> Void) {
+    init(onDone: @escaping () -> Void, onWords: @escaping () -> Void) {
         super.init(frame: .zero)
         backgroundColor = UIColor(white: 0.12, alpha: 0.96)
         layer.cornerRadius = 32
@@ -330,6 +336,11 @@ final class VoiceBar: UIView {
         done.configuration = config
         done.addAction(UIAction { _ in onDone() }, for: .touchUpInside)
         addSubview(done)
+        words.setImage(UIImage(systemName: "character.book.closed",
+                               withConfiguration: UIImage.SymbolConfiguration(pointSize: 18, weight: .semibold)), for: .normal)
+        words.tintColor = UIColor(white: 1, alpha: 0.8)
+        words.addAction(UIAction { _ in onWords() }, for: .touchUpInside)
+        addSubview(words)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -368,9 +379,119 @@ final class VoiceBar: UIView {
         let h = bounds.height
         dot.frame = CGRect(x: 22, y: (h - 14) / 2, width: 14, height: 14)
         done.frame = CGRect(x: bounds.width - 96, y: (h - 40) / 2, width: 80, height: 40)
+        words.frame = CGRect(x: bounds.width - 146, y: (h - 44) / 2, width: 44, height: 44)
         let x: CGFloat = 50
-        let w = max(bounds.width - x - 110, 40)
+        let w = max(bounds.width - x - 160, 40)
         label.frame = CGRect(x: x, y: 10, width: w, height: 26)
         status.frame = CGRect(x: x, y: 36, width: w, height: 16)
+    }
+}
+
+/// 語音詞庫（v12.16.2，使用者：有沒有像辭典的地方可以存）。存在這台 iPad（UserDefaults），不上傳。
+/// 一行一個：
+/// ・只寫一個詞（例如「標準矩陣」）＝提示辨識器這個詞常出現
+/// ・「聽錯的 → 正確的」（也可以用 = 或 ->）＝辨識出來後自動改掉，最確實
+@MainActor
+enum VoiceWords {
+    static let key = "voiceDictionary"
+
+    static var text: String {
+        get { UserDefaults.standard.string(forKey: key) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+
+    private static func lines() -> [String] {
+        text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+    }
+
+    /// 「聽錯 → 正確」
+    static var fixes: [(String, String)] {
+        lines().compactMap { line in
+            for sep in ["→", "->", "＝", "="] where line.contains(sep) {
+                let parts = line.components(separatedBy: sep)
+                guard parts.count >= 2 else { continue }
+                let from = parts[0].trimmingCharacters(in: .whitespaces)
+                let to = parts[1...].joined(separator: sep).trimmingCharacters(in: .whitespaces)
+                return from.isEmpty ? nil : (from, to)
+            }
+            return nil
+        }
+    }
+
+    /// 給辨識器的提示：內建的物理詞＋詞庫裡的詞＋改正後的詞
+    static var hints: [String] {
+        var list = VoiceInput.terms
+        for line in lines() where !["→", "->", "＝", "="].contains(where: { line.contains($0) }) {
+            list.append(contentsOf: line.components(separatedBy: CharacterSet(charactersIn: "、,，")).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }.filter { !$0.isEmpty })
+        }
+        list.append(contentsOf: fixes.map { $0.1 }.filter { !$0.isEmpty })
+        var seen = Set<String>()
+        return list.filter { seen.insert($0).inserted }
+    }
+
+    /// 定稿的一句：照詞庫改字；句號拿掉（使用者：句子通常不用句號，逗號照留）——句尾的去掉，中間的換成逗號
+    static func clean(_ raw: String) -> String {
+        var t = raw
+        for (from, to) in fixes { t = t.replacingOccurrences(of: from, with: to) }
+        t = t.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let last = t.last, "。．".contains(last) || (last == "." && !(t.dropLast().last?.isNumber ?? false)) {
+            t.removeLast()
+            t = t.trimmingCharacters(in: .whitespaces)
+        }
+        t = t.replacingOccurrences(of: "。", with: "，")
+        return t
+    }
+}
+
+/// 詞庫的編輯畫面
+struct VoiceWordsSheet: View {
+    @State private var text = VoiceWords.text
+    let close: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("一行一個。只寫一個詞：提醒辨識器這個詞常出現。寫「聽錯的 → 正確的」：辨識出來後自動改掉（最確實）。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text("例如：\n標準矩陣\n高斯面\n特徵直 → 特徵值\n標準舉陣 → 標準矩陣")
+                    .font(.callout.monospaced())
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $text)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(uiColor: .secondarySystemBackground)))
+            }
+            .padding(16)
+            .navigationTitle("語音詞庫")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", action: close)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("儲存") {
+                        VoiceWords.text = text
+                        close()
+                    }
+                }
+            }
+        }
+    }
+
+    /// 開詞庫（語音的黑色膠囊、麥克風長按）
+    static func present() {
+        var holder: UIViewController?
+        let sheet = VoiceWordsSheet(close: { holder?.dismiss(animated: true) })
+        let vc = UIHostingController(rootView: sheet)
+        vc.modalPresentationStyle = .formSheet
+        vc.preferredContentSize = CGSize(width: 520, height: 560)
+        holder = vc
+        Presenter.present(vc)
     }
 }

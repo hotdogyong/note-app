@@ -2049,6 +2049,11 @@ final class TextBar: UIView {
         stickyButton.setImage(UIImage(systemName: "note.text"), for: .normal)
         items.append(stickyButton)                                 // 便利貼：收起來（v12.15.11）
         voiceButton.addAction(UIAction { [weak host] _ in host?.toggleVoiceForActiveText() }, for: .touchUpInside)
+        // 長按麥克風：語音詞庫（v12.16.2）
+        voiceButton.menu = UIMenu(children: [UIAction(title: "語音詞庫…", image: UIImage(systemName: "character.book.closed")) { _ in
+            VoiceWordsSheet.present()
+        }])
+        voiceButton.showsMenuAsPrimaryAction = false
         items.append(voiceButton)                                  // 語音轉文字（v12.16.0）
 
         // 分隔線：前面是文字樣式，後面是剪下、拷貝、複製、刪除

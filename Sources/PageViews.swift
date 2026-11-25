@@ -29,6 +29,12 @@ final class PageRowView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizer
     private let leftPull = PullIndicator(text: "新增旁頁", width: 100)
     private let rightPull = PullIndicator(text: "新增旁頁", width: 100)
 
+    /// Pencil 寫字時手掌碰到不要左右滑（v12.16.2）
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        if g === panGestureRecognizer, host?.pencilBusy == true { return false }
+        return super.gestureRecognizerShouldBegin(g)
+    }
+
     init(rowID: UUID, host: NotebookView) {
         self.rowID = rowID
         self.host = host
@@ -1289,6 +1295,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     }
 
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
+        host?.pencilActivity(down: true)               // 手掌防誤觸（v12.16.2）
         host?.dismissShapeEditor()                     // 開始寫下一筆：結束調整
         host?.endTextSelection()
         // v12.15.6（使用者：寫完很久的一筆，寫下一筆後按上一步，那一筆跟著不見）：
@@ -1309,6 +1316,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     }
 
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
+        host?.pencilActivity(down: false)
         let usedMarker = (canvasView.tool as? PKInkingTool).map { isHighlighterInk($0.inkType, $0.color) } ?? false
         toolActive = false
         if changedDuringTool {                         // 這一次下筆的所有變化合成一步
@@ -1361,6 +1369,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     }
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+        if toolActive { host?.pencilActivity(down: nil) }
         if !silent { restoreDroppedStrokes(canvasView) }
         syncOverlay()
         scheduleSave()

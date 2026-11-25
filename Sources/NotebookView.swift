@@ -17,7 +17,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     let model: NotebookModel
     let toolPicker = NotebookView.makeToolPicker()
 
-    private let outer = UIScrollView()
+    private let outer = PalmScrollView()             // v12.16.2：寫字時手掌碰到不捲動
     private let container = UIView()
     private let topPull = PullIndicator(text: "拉動以在最前面增加頁面", width: 200)
     private let bottomPull = PullIndicator(text: "拉動以增加頁面", width: 160)
@@ -574,6 +574,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         applyBackdrop()
 
         outer.delegate = self
+        outer.host = self
         outer.alwaysBounceVertical = true
         outer.showsHorizontalScrollIndicator = false
         outer.contentInsetAdjustmentBehavior = .never
@@ -947,7 +948,31 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         return false
     }
 
+    // MARK: 手掌防誤觸（v12.16.2，使用者要求）
+    // Pencil 寫字的時候、剛放開的一下子（0.5 秒內），手指的點、點兩下、長按、雙指點（上一步）、縮放、捲動都不算：
+    // 那時碰到畫面的多半是手掌。另外很大一片的觸碰（手掌、手側）任何時候都不算點。
+    private var pencilDown = false
+    private var pencilLastActivity: CFTimeInterval = 0
+
+    /// Pencil 開始寫、寫的時候、放開（NotePageView 的畫布叫）
+    func pencilActivity(down: Bool?) {
+        if let d = down { pencilDown = d }
+        pencilLastActivity = CACurrentMediaTime()
+    }
+
+    /// 現在碰到的手指可能是手掌（沒收到「放開」時最多算 2 秒，不會一直擋住）
+    var pencilBusy: Bool {
+        let since = CACurrentMediaTime() - pencilLastActivity
+        return (pencilDown && since < 2) || since < 0.5
+    }
+
+    private func isPalm(_ touch: UITouch) -> Bool {
+        guard touch.type == .direct else { return false }
+        return touch.majorRadius > 40 || pencilBusy
+    }
+
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if isPalm(touch) { return false }                       // 手掌（v12.16.2）
         if gestureRecognizer === pinchGesture { return true }   // 縮放：手指按在哪都算
         // 白板的圖釘、區塊標題、區塊的把手和工具列：自己處理觸控（v12.7）
         if let v = touch.view, sequence(first: v, next: { $0.superview }).contains(where: { $0 is BoardMarkView }) {
@@ -960,6 +985,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         if let v = touch.view, v.isDescendant(of: tapeDeleteButton) { return false }
         if let v = touch.view, v.isDescendant(of: regretBar) { return false }
         if let v = touch.view, v.isDescendant(of: textBar) { return false }      // 文字工具列上的按鈕
+        // 語音的黑色膠囊（v12.16.2）：以前按「完成」會被當成點外面，空的新方塊先被收掉，最後一句就沒地方放
+        if let v = touch.view, v.isDescendant(of: voiceBar) { return false }
         if let v = touch.view, v.isDescendant(of: linkBar) { return false }      // 連線的小工具列（v12.14.0）
         if touch.view?.tag == TextBoxView.handleTag { return false }            // 文字方塊的角
         if touch.view?.tag == NotePageView.clipButtonTag { return false }       // 剪去白板的框的 →（v12.15.2）
@@ -1549,7 +1576,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let darkPage = pv.page.isDarkBackground
         box.rgba = TextDefaults.rgba(model.meta.id) ?? defaultTextRGBA(pdf: !darkPage)
         // 存成預設的外框樣式（v12.13.0；「卡片樣式」面板的「存成預設」）
-        if let style = TextStyleDefault.load(), style.fill != nil {
+        // v12.16.2：深色紙、淺色紙各一個預設；沒存過＝淡紫藍圓角外框
+        let style = TextStyleDefault.load(dark: darkPage)
+        if style.fill != nil {
             box.fill = style.fill
             box.fillMode = style.fillMode
             box.shape = style.shape
@@ -1661,7 +1690,10 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         var texts = model.texts(of: tv.pageID)
         growMarkdownPageIfNeeded(tv)
         // 空的方塊拿掉；有線接著的留著（v12.13.0：從點拉出來的新方塊還沒打字，也要看得到）
-        if let i = texts.firstIndex(where: { $0.id == tv.box.id }), !texts[i].isMarkdownPage,   // Markdown 頁的方塊空了也留著
+        // 正在用語音打進這個方塊（v12.16.2）：還沒講完、字還沒進來，先留著
+        var voiceTarget = false
+        if case .box(let id, _) = voiceMode, id == tv.box.id { voiceTarget = true }
+        if !voiceTarget, let i = texts.firstIndex(where: { $0.id == tv.box.id }), !texts[i].isMarkdownPage,   // Markdown 頁的方塊空了也留著
            !tv.linked, texts[i].sticky != true,                                           // 便利貼空的也留著（可能只有手寫）
            texts[i].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             texts.remove(at: i)
@@ -1700,6 +1732,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// 文字方塊的內容改了：寫回資料
     private func commit(_ tv: TextBoxView) {
+        keepInsidePage(tv)
         var texts = model.texts(of: tv.pageID)
         if let i = texts.firstIndex(where: { $0.id == tv.box.id }) {
             texts[i] = tv.box
@@ -1709,6 +1742,28 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         model.setTexts(texts, pageID: tv.pageID)
         textBar.refresh(tv.box, size: displaySize(tv))
         positionTextBar()
+    }
+
+    /// 文字方塊超出頁面右邊（v12.16.2，使用者：超出線的時候要往內收）：
+    /// 右邊還有地方就在頁邊換行（改成固定寬度，之後移動也不會再重新換行）；太靠右、放不下幾個字就整個往左移
+    private func keepInsidePage(_ tv: TextBoxView) {
+        guard !isBoard, let pv = pageViews[tv.pageID], !tv.box.isMarkdownPage, tv.box.sticky != true,
+              tv.box.jump == nil else { return }
+        let pageW = pv.page.spec.width
+        let frame = tv.linkRect
+        let limit = pageW - 6
+        let over = frame.maxX - limit
+        guard over > 0.5 else { return }
+        var box = tv.box
+        let extra = max(frame.width - box.width, 0)            // 外框、留白
+        let room = limit - frame.minX - extra
+        if room >= max(120, box.fontSize * 5) {
+            box.fixedWidth = room
+            box.width = room
+        } else {
+            box.x = max(0, box.x - over)
+        }
+        tv.update(box)
     }
 
     private func updateActive(_ change: (inout TextBox) -> Void) {
@@ -1791,13 +1846,14 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
                 self.tidyTexts(self.connectedTexts(from: start, pageID: pageID), pageID: pageID)
             }
         }
-        let panel = TextStylePanel(fill: box.fill, mode: box.fillMode ?? 0, shape: box.shape ?? 1, tidy: tidy) { [weak self] fill, mode, shape in
+        let dark = pageViews[tv.pageID]?.page.isDarkBackground ?? false
+        let panel = TextStylePanel(fill: box.fill, mode: box.fillMode ?? 0, shape: box.shape ?? 1, dark: dark, tidy: tidy) { [weak self] fill, mode, shape in
             self?.applyTextStyle(fill: fill, mode: mode, shape: shape)
         }
         let vc = UIHostingController(rootView: panel)
         stylePanel = vc
         vc.modalPresentationStyle = .popover
-        vc.preferredContentSize = CGSize(width: 300, height: tidy == nil ? 500 : 548)
+        vc.preferredContentSize = CGSize(width: 300, height: tidy == nil ? 600 : 650)   // v12.16.2：以前太矮，上下被切掉；放不下時面板裡可以滑
         if let pop = vc.popoverPresentationController {
             pop.sourceView = textBar
             pop.sourceRect = textBar.styleButton.frame
@@ -1818,7 +1874,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         case notes(pageID: UUID, x: CGFloat, y: CGFloat)   // 每句一個新方塊，下一個放在 (x, y)（頁面座標）
     }
     private var voiceMode: VoiceMode?
-    private lazy var voiceBar = VoiceBar(onDone: { [weak self] in self?.stopVoice() })
+    private lazy var voiceBar = VoiceBar(onDone: { [weak self] in self?.stopVoice() },
+                                         onWords: { VoiceWordsSheet.present() })
 
     var voiceRunning: Bool { voiceMode != nil }
 
@@ -1869,6 +1926,17 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         Task { [weak self] in
             await VoiceInput.shared.stop()
             guard let self = self else { return }
+            // 打進方塊的：已經不在選取中、又沒講到字的空方塊，收掉（跟平常一樣）
+            if case .box(let id, let pageID) = self.voiceMode, self.activeText?.box.id != id {
+                var texts = self.model.texts(of: pageID)
+                if let i = texts.firstIndex(where: { $0.id == id }),
+                   texts[i].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   self.pageViews[pageID]?.textViews[id]?.linked != true, texts[i].sticky != true {
+                    texts.remove(at: i)
+                    self.model.setTexts(texts, pageID: pageID)
+                    self.pageViews[pageID]?.syncTexts(texts)
+                }
+            }
             self.voiceMode = nil
             self.voiceBar.removeFromSuperview()
             self.textBar.setVoice(false)
@@ -1882,7 +1950,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// 定稿的一句
     private func voiceFinal(_ raw: String) {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = VoiceWords.clean(raw)                   // 詞庫改字、拿掉句號（v12.16.2）
         voiceBar.show(text: "")
         guard !text.isEmpty, let mode = voiceMode else { return }
         switch mode {
@@ -1914,7 +1982,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         box.fontSize = TextDefaults.size(model.meta.id) * pageScaleFactor(page.spec)
         box.bold = TextDefaults.bold(model.meta.id)
         box.rgba = TextDefaults.rgba(model.meta.id) ?? defaultTextRGBA(pdf: !page.isDarkBackground)
-        if let style = TextStyleDefault.load(), style.fill != nil {
+        let style = TextStyleDefault.load(dark: page.isDarkBackground)
+        if style.fill != nil {
             box.fill = style.fill
             box.fillMode = style.fillMode
             box.shape = style.shape
@@ -2914,6 +2983,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
         if activeText?.textView.isFirstResponder == true { return }         // 輸入文字中：長按是移動游標
         let p = g.location(in: self)
+        // 選取中的文字方塊旁邊（拉四個角改大小、拉灰點）：不要跳一圈按鈕（v12.16.2，使用者：收縮的時候會跳圓盤）
+        if let tv = activeText, tv.convert(tv.bounds, to: self).insetBy(dx: -44, dy: -44).contains(p) { return }
         // 跳轉捷徑、收起來的便利貼（v12.15.12，使用者：捷徑要可以移動）：點一下是跳過去／打開，長按才是選取（選取後可以拖）
         if let tv = textBox(at: p), tv !== activeText, tv.box.jump != nil || tv.box.isFolded {
             hidePasteButton()
@@ -3256,11 +3327,17 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let s = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
         let local = pv.convert(CGPoint(x: bounds.width * 0.3, y: bounds.height * 0.3), from: self)
         voiceMode = .notes(pageID: pv.page.id, x: local.x / s, y: local.y / s)
-        for sentence in ["高斯定律什麼時候可以用？要有足夠的對稱性",
-                         "球對稱、柱對稱、平面對稱三種，先畫 Gaussian surface",
-                         "如果電荷分布不對稱，就算 flux 還是對的，只是沒辦法把 E 拿出積分外面，這時候要改用 Coulomb 直接積"] {
+        VoiceWords.text = "特徵直 → 特徵值"                // v12.16.2：詞庫改字、拿掉句號
+        for sentence in ["高斯定律什麼時候可以用？要有足夠的對稱性。",
+                         "球對稱、柱對稱、平面對稱三種。先畫 Gaussian surface。",
+                         "特徵直怎麼求，先寫特徵方程式。"] {
             voiceFinal(sentence)
         }
+        let texts = model.texts(of: pv.page.id).map { $0.text }
+        VoiceWords.text = ""
+        let periods = texts.contains { $0.contains("。") }
+        voiceBar.show(text: "")
+        defer { showMessage("mic", (periods ? "還有句號（錯）" : "沒有句號（對）") + "；第三句：" + (texts.last ?? "")) }
         if voiceBar.superview == nil { addSubview(voiceBar) }
         voiceBar.reset(hint: "講完一句停一下，就會變成一個方塊")
         voiceBar.show(text: "那電位的邊界條件呢")
@@ -3269,6 +3346,29 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         bringSubviewToFront(voiceBar)
         let count = model.texts(of: pv.page.id).count
         return "假裝講了三句：白板上有 \(count) 個文字方塊（應該 3）"
+    }
+
+    /// 自動測試（textedge，v12.16.2）：頁面右邊放一個方塊、打一長句，看有沒有收在頁面裡面；再打開卡片樣式面板
+    func selfTestTextEdge() -> String {
+        guard let page = model.notebook.rows.first?.pages.first, let pv = pageViews[page.id] else { return "沒有頁面" }
+        var box = TextBox()
+        box.fontSize = 22
+        box.rgba = [0.1, 0.1, 0.1, 1]
+        box.x = page.spec.width - 230
+        box.y = 160
+        let style = TextStyleDefault.load(dark: page.isDarkBackground)
+        box.fill = style.fill
+        box.fillMode = style.fillMode
+        box.shape = style.shape
+        model.setTexts([box], pageID: page.id)
+        pv.syncTexts([box])
+        guard let tv = pv.textViews[box.id] else { return "方塊沒出來" }
+        activate(tv, edit: false)
+        updateActive { $0.text = "用將個別基底代入轉換的那個公式，再排成矩陣的行" }
+        let r = tv.linkRect
+        showTextStyle()
+        return String(format: "方塊右邊 %.0f，頁面寬 %.0f（應該 ≤ 頁寬）；固定寬度 %.0f；預設樣式 %@",
+                      r.maxX, page.spec.width, tv.box.fixedWidth ?? -1, style.fill == nil ? "沒有" : "淡紫藍外框")
     }
 
     /// 自動測試（invert，v12.16.0）：一頁寫幾筆、打一行字，打開反相
@@ -6467,6 +6567,16 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         }
     }
 
+    /// 點螢幕最上面（狀態列）會捲回第一頁（v12.16.2，使用者：很容易誤觸）：捲之前先插一面旗子，按 🚩 就回得來
+    func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        guard scrollView === outer, !isBoard else { return true }
+        if let here = currentPlace(), let first = model.notebook.rows.first?.pages.first?.id, here.page != first {
+            rememberPlace(before: first)
+            showMessage("flag.fill", "回到第一頁了。剛剛的地方插了旗子，按 🚩 回去")
+        }
+        return true
+    }
+
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard scrollView === outer else { return }
         if cropMode, outer.isDragging, cropRectView != nil { clearCropRect() }   // 截圖中捲動：框跟不上，拿掉
@@ -8685,4 +8795,14 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
 
+}
+
+/// 筆記本最外層的上下捲動（v12.16.2）：Pencil 寫字時手掌碰到不要捲
+final class PalmScrollView: UIScrollView {
+    weak var host: NotebookView?
+
+    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        if g === panGestureRecognizer, host?.pencilBusy == true { return false }
+        return super.gestureRecognizerShouldBegin(g)
+    }
 }

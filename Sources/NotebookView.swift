@@ -1054,7 +1054,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // 那個方向已經是這一列的最後一頁（v12.2）：停久一點（1.2 秒）就新增一張旁頁，再捲過去
         var side = 0
         var adds = false
-        if speed == 0, !isBoard, let pv = shapeEditor?.pageView, let rv = pv.superview as? PageRowView {
+        if speed == 0, !isBoard, let pv = edgeDragTarget?.pageView, let rv = pv.superview as? PageRowView {
             if p.x < 44 {
                 side = -1
             } else if p.x > bounds.width - 44 {
@@ -1111,7 +1111,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         // 上下停 0.4 秒才開始；左右換頁停久一點（0.6 秒）；要新增旁頁再久一點（1.2 秒）
         let wait: TimeInterval = autoScrollSide == 0 ? 0.4 : (autoScrollAdds ? 1.2 : 0.6)
         guard let since = edgeSince, Date().timeIntervalSince(since) > wait else { return }
-        guard let editor = shapeEditor else {
+        guard let editor = edgeDragTarget else {
             stopAutoScroll()
             return
         }
@@ -1130,7 +1130,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     /// 選取框拖到左右邊緣（v12.1）：這一列一格一格捲到隔壁那一頁（主頁、旁頁都可以），到了就停。
     /// 選取框跟著手指留在原地，放開後由 transferSelection 搬到那一頁
-    private func stepSideScroll(_ editor: SelectionEditorView) {
+    private func stepSideScroll(_ editor: EdgeDragging) {
         guard let pv = editor.pageView, let rv = pv.superview as? PageRowView else {
             stopAutoScroll()
             return
@@ -1228,6 +1228,41 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         history.registerUndo(withTarget: self) { notebook in
             notebook.restoreImages(pageID: pageID, to: old)
         }
+    }
+
+    /// 正在拖到畫面邊緣的東西：選取框，或選取中的圖片（v12.16.2）
+    private var edgeDragTarget: EdgeDragging? { shapeEditor ?? imageEditor }
+
+    /// 選取中的圖片拖到另一頁（上下、左右的旁頁）放開：搬過去，位置、大小照兩頁的比例換算（v12.16.2）
+    func transferImage(_ moved: ImageBox) -> Bool {
+        guard let src = imageEditor?.pageView, !isBoard else { return false }
+        let s1 = src.bounds.width / max(src.page.spec.width, 1)
+        let center = src.convert(CGPoint(x: (moved.x + moved.width / 2) * s1, y: (moved.y + moved.height / 2) * s1), to: self)
+        if src.bounds.contains(src.convert(center, from: self)) { return false }       // 還在原本這一頁
+        guard let dst = pageViews.values.first(where: {
+            $0 !== src && $0.bounds.contains($0.convert(center, from: self))
+        }) else { return false }
+        let s2 = dst.bounds.width / max(dst.page.spec.width, 1)
+        let o = src.convert(CGPoint.zero, to: dst)
+        let k = s1 / s2
+        let t = CGAffineTransform(a: k, b: 0, c: 0, d: k, tx: o.x / s2, ty: o.y / s2)
+        var copy = moved
+        let c = CGPoint(x: moved.x + moved.width / 2, y: moved.y + moved.height / 2).applying(t)
+        copy.width = moved.width * k
+        copy.height = moved.height * k
+        copy.x = c.x - copy.width / 2
+        copy.y = c.y - copy.height / 2
+        endImageSelection()                                     // 之前的改動先登記
+        let srcImages = model.images(of: src.page.id).filter { $0.id != moved.id }
+        let dstImages = model.images(of: dst.page.id) + [copy]
+        history.beginUndoGrouping()
+        setImagesRecorded(srcImages, pageID: src.page.id)
+        setImagesRecorded(dstImages, pageID: dst.page.id)
+        history.endUndoGrouping()
+        src.syncImages(srcImages)
+        selectImage(copy, on: dst)
+        showMessage("photo", "圖片搬到這一頁了")
+        return true
     }
 
     /// 選取的東西拖到另一頁：搬過去（兩頁的變化合成一步復原）
@@ -1970,10 +2005,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             let gap = 14 * pageScaleFactor(pv.page.spec)
             // v12.16.2：上一句的方塊已經排在畫面上了，用它真正的外框決定這一句放哪（以前用估的，兩行的方塊會被下一個疊到）
             var top = y
-            if let last = voiceLastBox, let prev = pv.textViews[last] {
-                pv.layoutIfNeeded()
-                prev.layoutIfNeeded()
-                top = max(top, prev.linkRect.maxY + gap)
+            if let last = voiceLastBox, let prevBox = model.texts(of: pageID).first(where: { $0.id == last }) {
+                // 剛放上去的方塊會晚一點才換行：估的高度和畫出來的高度取大的，才不會疊到
+                var bottom = PageRenderer.textFrameRect(prevBox, page: pv.page).maxY
+                if let prev = pv.textViews[last] { bottom = max(bottom, prev.linkRect.maxY) }
+                top = max(top, bottom + gap)
             }
             let box = voiceNoteBox(text, at: CGPoint(x: x, y: top), page: pv.page, maxWidth: bounds.width * 0.5 / s)
             var texts = model.texts(of: pageID)
@@ -4001,6 +4037,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let editor = ImageEditorView(box: box, pageView: pv, host: self)
         pv.addSubview(editor)
         imageEditor = editor
+        // 拖到別頁時圖片不會被蓋住（v12.16.2）：這一頁放到這一列最上層，這一列放到所有列最上層
+        if !isBoard, let rv = pv.superview {
+            rv.bringSubviewToFront(pv)
+            rv.superview?.bringSubviewToFront(rv)
+        }
     }
 
     /// 圖片被拖動、縮放、旋轉：commit = 放開手（寫進資料）
@@ -8826,4 +8867,13 @@ final class PalmScrollView: UIScrollView {
         if g === panGestureRecognizer, host?.pencilBusy == true { return false }
         return super.gestureRecognizerShouldBegin(g)
     }
+}
+
+/// 拖到畫面邊緣會自動捲動、換到旁頁的東西：套索的選取框、選取中的圖片（v12.16.2）
+@MainActor
+protocol EdgeDragging: AnyObject {
+    var pageView: NotePageView? { get }
+    func scrolled(by dy: CGFloat)
+    func scrolledSideways(by dx: CGFloat)
+    func prepareForRelayout()
 }

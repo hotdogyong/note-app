@@ -12,7 +12,7 @@ import WebKit
 
 /// 圖片的選取框（v12.15.1 照 GUGA 改樣子）：拖中間移動；四個角（黑色中空點）等比例縮放；右邊外面的 ⟳ 旋轉；
 /// 四邊中間的灰點往外拉＝拉出一條線和一個文字方塊（卡片也一樣）；右下角「裁剪」「放大看」；下面有工具列
-final class ImageEditorView: UIView {
+final class ImageEditorView: UIView, EdgeDragging {
     weak var host: NotebookView?
     weak var pageView: NotePageView?
     private(set) var box: ImageBox
@@ -498,6 +498,23 @@ final class ImageEditorView: UIView {
         return .idle
     }
 
+    // 拖著圖片到畫面邊緣、自動捲動時（v12.16.2）：手指沒動，畫面捲了，圖片要跟著手指
+    func scrolled(by dy: CGFloat) {
+        guard mode == .move else { return }
+        box.y += dy / max(scale, 0.0001)
+        setNeedsLayout()
+        host?.imageEdited(box, commit: false)
+    }
+
+    func scrolledSideways(by dx: CGFloat) {
+        guard mode == .move else { return }
+        box.x += dx / max(scale, 0.0001)
+        setNeedsLayout()
+        host?.imageEdited(box, commit: false)
+    }
+
+    func prepareForRelayout() { }
+
     @objc private func handlePress(_ g: UILongPressGestureRecognizer) {
         let s = max(scale, 0.0001)
         let v = g.location(in: self)
@@ -529,6 +546,11 @@ final class ImageEditorView: UIView {
             case .move:
                 box.x = startBox.x + p.x - startPoint.x
                 box.y = startBox.y + p.y - startPoint.y
+                // 拖到畫面邊緣停一下：自動捲動、換到左右的旁頁（v12.16.2，使用者：圖片不能左右頁移動）
+                if let host = host {
+                    let r = CGRect(x: box.x * s, y: box.y * s, width: box.width * s, height: box.height * s)
+                    host.selectionDragged(to: g.location(in: host), box: convert(r, to: host))
+                }
             case .scale:
                 // 對角固定，等比例縮放：手指投影到對角線上，算出變成幾倍
                 let minK = 20 / max(min(startBox.width, startBox.height), 1)
@@ -579,6 +601,7 @@ final class ImageEditorView: UIView {
         case .ended, .cancelled, .failed:
             let pressed = mode
             mode = .idle
+            if pressed == .move { host?.stopAutoScroll() }
             switch pressed {
             case .link(let side):
                 host?.imageLinkDrag(box, side: side, state: g.state == .ended ? .ended : .cancelled, at: v)
@@ -617,7 +640,11 @@ final class ImageEditorView: UIView {
                 if g.state == .ended, modeAt(v) == pressed { host?.cardButton(index, box: box) }
                 return
             }
-            if pressed != .idle, box != startBox { host?.imageEdited(box, commit: true) }
+            if pressed != .idle, box != startBox {
+                // 放到別頁（上下、左右的旁頁）：搬過去（v12.16.2）
+                if pressed == .move, let host = host, host.transferImage(box) { return }
+                host?.imageEdited(box, commit: true)
+            }
         default:
             break
         }

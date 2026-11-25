@@ -668,7 +668,7 @@ enum StrokeHitTest {
 /// 選取框：變形後自動出現，或用手指點一下筆跡出現。
 /// 拖四角、四邊中點縮放（線條粗細不變）；拖框內移動；拖右邊的圓鈕旋轉；
 /// 下方操作列：顏色、剪下、拷貝、刪除、更多（複製一份、完成）
-final class SelectionEditorView: UIView, UIGestureRecognizerDelegate {
+final class SelectionEditorView: UIView, UIGestureRecognizerDelegate, EdgeDragging {
     weak var host: NotebookView?
     weak var pageView: NotePageView?
     let indices: [Int]                        // 被選取的筆畫在這一頁的位置（由小到大）

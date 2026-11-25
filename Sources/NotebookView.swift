@@ -1853,7 +1853,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         let vc = UIHostingController(rootView: panel)
         stylePanel = vc
         vc.modalPresentationStyle = .popover
-        vc.preferredContentSize = CGSize(width: 300, height: tidy == nil ? 600 : 650)   // v12.16.2：以前太矮，上下被切掉；放不下時面板裡可以滑
+        vc.preferredContentSize = CGSize(width: 300, height: tidy == nil ? 560 : 610)   // v12.16.2：以前太矮，上下被切掉；放不下時面板裡可以滑
         if let pop = vc.popoverPresentationController {
             pop.sourceView = textBar
             pop.sourceRect = textBar.styleButton.frame
@@ -1969,7 +1969,9 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             var texts = model.texts(of: pageID)
             texts.append(box)
             setTextsRecorded(texts, pageID: pageID)            // 每一句一步復原
-            let frame = PageRenderer.textFrameRect(box, page: pv.page)
+            // 下一句放在這個方塊的外框下面（v12.16.2：有外框樣式時以前算矮了，下一個方塊會疊上來）
+            var frame = PageRenderer.textFrameRect(box, page: pv.page)
+            if let tv = pv.textViews[box.id] { frame = frame.union(tv.linkRect) }
             voiceMode = .notes(pageID: pageID, x: x, y: frame.maxY + 14 * pageScaleFactor(pv.page.spec))
             reveal(pageID: pageID, pageRect: frame)
         }

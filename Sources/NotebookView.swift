@@ -2005,13 +2005,16 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             let gap = 14 * pageScaleFactor(pv.page.spec)
             // v12.16.2：上一句的方塊已經排在畫面上了，用它真正的外框決定這一句放哪（以前用估的，兩行的方塊會被下一個疊到）
             var top = y
+            var below = false                               // 接在上一句下面：位置就是方塊的上緣，不用再往上挪
             if let last = voiceLastBox, let prevBox = model.texts(of: pageID).first(where: { $0.id == last }) {
                 // 剛放上去的方塊會晚一點才換行：估的高度和畫出來的高度取大的，才不會疊到
                 var bottom = PageRenderer.textFrameRect(prevBox, page: pv.page).maxY
                 if let prev = pv.textViews[last] { bottom = max(bottom, prev.linkRect.maxY) }
                 top = max(top, bottom + gap)
+                below = true
             }
-            let box = voiceNoteBox(text, at: CGPoint(x: x, y: top), page: pv.page, maxWidth: bounds.width * 0.5 / s)
+            let box = voiceNoteBox(text, at: CGPoint(x: x, y: top), page: pv.page, maxWidth: bounds.width * 0.5 / s,
+                                   topEdge: below)
             var texts = model.texts(of: pageID)
             texts.append(box)
             setTextsRecorded(texts, pageID: pageID)            // 每一句一步復原
@@ -2023,7 +2026,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     /// 一句話變成一個方塊：字級、顏色、外框跟點兩下新增的一樣；太長的話換行
-    private func voiceNoteBox(_ text: String, at p: CGPoint, page: NotePage, maxWidth: CGFloat) -> TextBox {
+    private func voiceNoteBox(_ text: String, at p: CGPoint, page: NotePage, maxWidth: CGFloat, topEdge: Bool = false) -> TextBox {
         var box = TextBox()
         box.text = text
         box.fontSize = TextDefaults.size(model.meta.id) * pageScaleFactor(page.spec)
@@ -2046,7 +2049,8 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             box.width = natural
         }
         box.x = min(max(p.x, 0), max(page.spec.width - box.width - 10, 0))
-        box.y = min(max(p.y - box.fontSize * 0.7, 0), max(page.spec.height - 30, 0))
+        // 第一句：長按的地方是字的中間，往上挪一點；後面的：p 就是方塊的上緣（v12.16.2：以前也往上挪，吃掉間距、疊到上一個）
+        box.y = min(max(topEdge ? p.y : p.y - box.fontSize * 0.7, 0), max(page.spec.height - 30, 0))
         return box
     }
 

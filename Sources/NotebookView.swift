@@ -3357,7 +3357,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         layoutVoiceBar()
         bringSubviewToFront(voiceBar)
         let count = model.texts(of: pv.page.id).count
-        return "假裝講了三句：白板上有 \(count) 個文字方塊（應該 3）"
+        pv.layoutIfNeeded()
+        let detail = model.texts(of: pv.page.id).map { t -> String in
+            let est = PageRenderer.textFrameRect(t, page: pv.page)
+            let real = pv.textViews[t.id]?.linkRect ?? .zero
+            return String(format: "y%.0f 估h%.0f 實h%.0f w%.0f fix%.0f", t.y, est.height, real.height, t.width, t.fixedWidth ?? -1)
+        }.joined(separator: "｜")
+        return "假裝講了三句：白板上有 \(count) 個文字方塊（應該 3）\n" + detail
     }
 
     /// 自動測試（textedge，v12.16.2）：頁面右邊放一個方塊、打一長句，看有沒有收在頁面裡面；再打開卡片樣式面板

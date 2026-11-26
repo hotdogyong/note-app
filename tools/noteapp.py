@@ -15,6 +15,12 @@ iPad：首頁 → 設定 →「讓 Claude 連進來」打開，看配對碼。iP
   python3 tools/noteapp.py delete <筆記本> <方塊編號>
   python3 tools/noteapp.py outline <筆記本> <標題> [--page 3] [--parent 編號]
   python3 tools/noteapp.py new <名稱> [--board] [--folder 資料夾]
+  python3 tools/noteapp.py batch <筆記本> <JSON 檔或 ->          一次加、改、移、刪很多個（一步上一步）
+  python3 tools/noteapp.py measure <筆記本> [--page 3]           畫面上量到的實際大小（要開著）
+  python3 tools/noteapp.py addimage <筆記本> <圖片檔> [--page 3 --x --y --width]
+  python3 tools/noteapp.py search <字>                          所有筆記本找字
+  python3 tools/noteapp.py open <筆記本> [--page 3] [--rect x,y,w,h]   iPad 打開、跳過去
+  python3 tools/noteapp.py ocr <筆記本> [--page 3] [--x --y --w --h]   手寫變文字
   python3 tools/noteapp.py raw GET /notebooks                   直接呼叫 API
 
 <筆記本> 可以是編號、完整名稱、名稱的一部分（只有一本符合時），或 current（iPad 現在開著的那本）。
@@ -181,6 +187,16 @@ def main():
     p.add_argument("--page"); p.add_argument("--parent")
     p = sub.add_parser("new"); p.add_argument("title"); p.add_argument("--board", action="store_true")
     p.add_argument("--folder")
+    p = sub.add_parser("batch"); p.add_argument("notebook"); p.add_argument("json")
+    p = sub.add_parser("measure"); p.add_argument("notebook"); p.add_argument("--page")
+    p = sub.add_parser("addimage"); p.add_argument("notebook"); p.add_argument("file"); p.add_argument("--page")
+    for k in ("x", "y", "width", "height"):
+        p.add_argument("--" + k, type=float)
+    p = sub.add_parser("search"); p.add_argument("q"); p.add_argument("--limit", type=int)
+    p = sub.add_parser("open"); p.add_argument("notebook"); p.add_argument("--page"); p.add_argument("--rect")
+    p = sub.add_parser("ocr"); p.add_argument("notebook"); p.add_argument("--page")
+    for k in ("x", "y", "w", "h"):
+        p.add_argument("--" + k, type=float)
     p = sub.add_parser("raw"); p.add_argument("method"); p.add_argument("path"); p.add_argument("json", nargs="?")
     a = ap.parse_args()
 
@@ -254,6 +270,38 @@ def main():
         body = {"title": a.title, "board": a.board}
         if a.folder: body["folder"] = a.folder
         out(*call("POST", "/notebooks", body))
+    elif a.cmd == "batch":
+        out(*call("POST", "/notebooks/%s/batch" % nb(a.notebook), read_json(a.json)))
+    elif a.cmd == "measure":
+        q = {"page": a.page} if a.page else {}
+        out(*call("GET", "/notebooks/%s/measure?%s" % (nb(a.notebook), urllib.parse.urlencode(q))))
+    elif a.cmd == "addimage":
+        import base64
+        with open(a.file, "rb") as f:
+            body = {"data": base64.b64encode(f.read()).decode("ascii")}
+        if a.page: body["page"] = int(a.page) if a.page.isdigit() else a.page
+        for k in ("x", "y", "width", "height"):
+            v = getattr(a, k)
+            if v is not None: body[k] = v
+        out(*call("POST", "/notebooks/%s/images" % nb(a.notebook), body))
+    elif a.cmd == "search":
+        q = {"q": a.q}
+        if a.limit: q["limit"] = a.limit
+        out(*call("GET", "/search?%s" % urllib.parse.urlencode(q)))
+    elif a.cmd == "open":
+        body = {"notebook": a.notebook}
+        if a.page: body["page"] = int(a.page) if a.page.isdigit() else a.page
+        if a.rect:
+            x, y, w, h = [float(v) for v in a.rect.split(",")]
+            body["rect"] = {"x": x, "y": y, "w": w, "h": h}
+        out(*call("POST", "/open", body))
+    elif a.cmd == "ocr":
+        q = {}
+        if a.page: q["page"] = a.page
+        for k in ("x", "y", "w", "h"):
+            v = getattr(a, k)
+            if v is not None: q[k] = v
+        out(*call("GET", "/notebooks/%s/ocr?%s" % (nb(a.notebook), urllib.parse.urlencode(q))))
     elif a.cmd == "raw":
         body = read_json(a.json) if a.json else None
         out(*call(a.method.upper(), a.path, body))

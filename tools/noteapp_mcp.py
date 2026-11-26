@@ -19,7 +19,7 @@ sys.dont_write_bytecode = True
 import noteapp  # noqa: E402
 
 SERVER_NAME = "noteapp"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 INSTRUCTIONS = """這個連接器可以讀寫使用者 iPad 上的筆記軟體（自己做的 App，用來準備研究所考試：物理、線性代數、工程數學）。
 條件：iPad 上筆記軟體開在前景、設定裡「讓 Claude 連進來」打開、跟這台 Mac 在同一個網路。連不到時照錯誤訊息請使用者檢查，不要一直重試。
@@ -30,7 +30,12 @@ INSTRUCTIONS = """這個連接器可以讀寫使用者 iPad 上的筆記軟體�
 - 座標是頁面座標：一般 A4 頁 595×842（左上角是 0,0）；白板是一整張很大的頁面，要放在 notes_current 的 visible 範圍裡。
 - size 是字級，跟 App 工具列上的數字一樣（以 A4 為準，平常 16～24）。數學式用 $...$ 或 $$...$$（KaTeX）。
 - frame：none（沒有框）、blue（淡紫藍圓角框）、default（使用者設的預設）、或 "#RRGGBB"（例如使用者喜歡的天藍 #73B8FF）。
-- 加完之後用 notes_image 看一次排版，有疊到或太擠就用 notes_edit_text 調整位置。
+- 加完之後看回傳的 w、h（measured＝true 是畫面上量到的實際大小，含排好的數學式），或用 notes_image 看一次排版；有疊到就調整。
+- 一次動很多個方塊（整排往下移、改一堆字級、刪一批、加一組再連線）一律用 notes_batch，一次完成、使用者按一次上一步就全部還原；不要一個一個呼叫 notes_edit_text。
+- 整區往下挪：notes_batch 的 move 給 rect（範圍裡的方塊和圖片一起動）和 dy。
+- 使用者說「找我寫過的 XX」用 notes_search；要讓使用者看到某個地方用 notes_open（會跳過去，跳之前自動插旗子，使用者可以跳回來）。
+- 手寫內容用 notes_ocr 讀成文字（數學式常認錯，要配合 notes_image 看）。
+- 要放圖（例如畫好的圖表、示意圖）用 notes_add_image，給 Mac 上圖片檔的路徑。
 - 刪除或修改使用者自己寫的方塊之前，一定要先問使用者。加頁在打開中的筆記本會清掉「上一步」的紀錄，要先跟使用者說。
 - 跟使用者講話一律繁體中文（台灣用語）。"""
 
@@ -117,6 +122,44 @@ TOOLS = [
          "notebook": NOTEBOOK, "title": {"type": "string"}, "page": PAGE,
          "parent": {"type": "string", "description": "上一層那項的 id"}},
          "required": ["notebook", "title"]}},
+    {"name": "notes_batch", "description": "同一頁一次做很多事（打開中的筆記本只算一步上一步）。順序：delete → deleteImages → update → move → unlink → add → links。整排移動、大量修改都用這個",
+     "inputSchema": {"type": "object", "properties": {
+         "notebook": NOTEBOOK, "page": dict(PAGE, description="哪一頁；不給就看 update／delete／move 提到的第一個方塊在哪頁"),
+         "delete": {"type": "array", "items": {"type": "string"}, "description": "要刪的方塊 id（使用者同意才刪）"},
+         "deleteImages": {"type": "array", "items": {"type": "string"}},
+         "update": {"type": "array", "items": {"type": "object", "properties": {
+             "id": {"type": "string"}, "text": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"},
+             "width": {"type": "number"}, "size": {"type": "number"}, "bold": {"type": "boolean"},
+             "color": {"type": "string"}, "frame": {}, "align": {"type": "string"}}, "required": ["id"]}},
+         "move": {"type": "object", "description": "ids 或 rect（中心點在範圍裡的方塊和圖片）一起平移 dx、dy", "properties": {
+             "ids": {"type": "array", "items": {"type": "string"}},
+             "rect": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "w": {"type": "number"}, "h": {"type": "number"}}},
+             "dx": {"type": "number"}, "dy": {"type": "number"}}},
+         "unlink": {"type": "array", "items": {"type": "string"}, "description": "要拿掉的連線 id"},
+         "add": {"type": "array", "items": BOX_SCHEMA},
+         "links": {"type": "array", "items": LINK_SCHEMA},
+         "x": {"type": "number"}, "y": {"type": "number"}, "gap": {"type": "number"}},
+         "required": ["notebook"]}},
+    {"name": "notes_measure", "description": "量這頁每個方塊在畫面上的實際大小（含排好的數學式）。筆記本要開著",
+     "inputSchema": {"type": "object", "properties": {"notebook": NOTEBOOK, "page": PAGE}, "required": ["notebook"]}},
+    {"name": "notes_add_image", "description": "把 Mac 上的一張圖（PNG／JPEG）放進某一頁",
+     "inputSchema": {"type": "object", "properties": {
+         "notebook": NOTEBOOK, "page": PAGE, "path": {"type": "string", "description": "Mac 上圖片檔的完整路徑"},
+         "x": {"type": "number"}, "y": {"type": "number"}, "width": {"type": "number"}, "height": {"type": "number"},
+         "above": {"type": "boolean", "description": "true＝蓋在筆跡上面"}},
+         "required": ["notebook", "path"]}},
+    {"name": "notes_search", "description": "在所有筆記本的文字方塊、大綱、名稱裡找字（手寫和課本 PDF 的字找不到）",
+     "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["q"]}},
+    {"name": "notes_open", "description": "讓 iPad 打開某一本筆記，跳到某一頁、把某一塊捲進畫面（跳之前自動插旗子）",
+     "inputSchema": {"type": "object", "properties": {
+         "notebook": NOTEBOOK, "page": PAGE,
+         "rect": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}, "w": {"type": "number"}, "h": {"type": "number"}}}},
+         "required": ["notebook"]}},
+    {"name": "notes_ocr", "description": "把一頁（或一塊）的手寫、課本文字辨識成文字（中英文；數學式常認錯）",
+     "inputSchema": {"type": "object", "properties": {
+         "notebook": NOTEBOOK, "page": PAGE,
+         "x": {"type": "number"}, "y": {"type": "number"}, "w": {"type": "number"}, "h": {"type": "number"}},
+         "required": ["notebook"]}},
     {"name": "notes_new_notebook", "description": "新增一本筆記本或白板",
      "inputSchema": {"type": "object", "properties": {
          "title": {"type": "string"}, "board": {"type": "boolean", "description": "true＝白板"},
@@ -198,6 +241,32 @@ def run_tool(name, args):
     if name == "notes_add_outline":
         body = pick(args, ["title", "page", "parent"])
         return text_result(api("POST", "/notebooks/%s/outline" % nb(args), body))
+    if name == "notes_batch":
+        body = pick(args, ["page", "delete", "deleteImages", "update", "move", "unlink", "add", "links", "x", "y", "gap"])
+        return text_result(api("POST", "/notebooks/%s/batch" % nb(args), body))
+    if name == "notes_measure":
+        q = pick(args, ["page"])
+        return text_result(api("GET", "/notebooks/%s/measure?%s" % (nb(args), urllib.parse.urlencode(q))))
+    if name == "notes_add_image":
+        path = os.path.expanduser(str(args.get("path", "")))
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as e:
+            raise ToolError("讀不到圖片檔：%s" % e)
+        if len(data) > 20_000_000:
+            raise ToolError("圖片太大（超過 20 MB）")
+        body = pick(args, ["page", "x", "y", "width", "height", "above"])
+        body["data"] = base64.b64encode(data).decode("ascii")
+        return text_result(api("POST", "/notebooks/%s/images" % nb(args), body))
+    if name == "notes_search":
+        q = pick(args, ["q", "limit"])
+        return text_result(api("GET", "/search?%s" % urllib.parse.urlencode(q)))
+    if name == "notes_open":
+        return text_result(api("POST", "/open", pick(args, ["notebook", "page", "rect"])))
+    if name == "notes_ocr":
+        q = pick(args, ["page", "x", "y", "w", "h"])
+        return text_result(api("GET", "/notebooks/%s/ocr?%s" % (nb(args), urllib.parse.urlencode(q))))
     if name == "notes_new_notebook":
         return text_result(api("POST", "/notebooks", pick(args, ["title", "board", "folder"])))
     raise ToolError("沒有這個工具：%s" % name)

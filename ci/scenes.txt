@@ -1,5 +1,3 @@
 board
 remote
 remoteboard
-remotesettings
-textstyle

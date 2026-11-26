@@ -2171,20 +2171,27 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
 
     // MARK: Mac 上的 Claude 連進來改東西（v12.17.0；RemoteAccess.swift）
 
-    /// 一頁的文字方塊和連線一起換掉（一步復原），捲過去讓使用者看到，跳一句提示
-    func remoteApply(pageID: UUID, texts: [TextBox], links: [BoxLink], focus: CGRect?, message: String?) {
+    /// 一頁的文字方塊、連線（和圖片）一起換掉（一步復原），捲過去讓使用者看到，跳一句提示
+    func remoteApply(pageID: UUID, texts: [TextBox], links: [BoxLink], images: [ImageBox]? = nil,
+                     focus: CGRect?, message: String?) {
         endTextSelection()
         dismissShapeEditor()
         deselectLink()
         let oldTexts = model.texts(of: pageID)
         let oldLinks = model.links(of: pageID)
-        guard oldTexts != texts || oldLinks != links else { return }
+        let oldImages = model.images(of: pageID)
+        guard oldTexts != texts || oldLinks != links || (images != nil && images != oldImages) else { return }
         model.setTexts(texts, pageID: pageID)
         model.setLinks(links, pageID: pageID)
         pageViews[pageID]?.syncTexts(texts)
         pageViews[pageID]?.syncLinks(links)
+        if let images = images, images != oldImages {
+            model.setImages(images, pageID: pageID)
+            pageViews[pageID]?.syncImages(images)
+        }
+        let restoreImages: [ImageBox]? = images == nil ? nil : oldImages
         history.registerUndo(withTarget: self) { notebook in
-            notebook.remoteApply(pageID: pageID, texts: oldTexts, links: oldLinks, focus: nil, message: nil)
+            notebook.remoteApply(pageID: pageID, texts: oldTexts, links: oldLinks, images: restoreImages, focus: nil, message: nil)
         }
         if let rect = focus, !rect.isNull { reveal(pageID: pageID, pageRect: rect) }
         if let message = message { showMessage("sparkles", message) }
@@ -2209,6 +2216,35 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         updateFocus(force: true)
         showMessage("sparkles", "Claude 加了 \(rows.count) 頁：從第 \(at + 1) 頁開始")
         return at
+    }
+
+    /// 畫面上每個文字方塊實際的範圍（頁面座標，含外框；數學式是排好之後的大小）。只有載入的頁有
+    func remoteMeasured(_ pageID: UUID) -> [UUID: CGRect] {
+        guard let pv = pageViews[pageID] else { return [:] }
+        layoutIfNeeded()
+        var result: [UUID: CGRect] = [:]
+        for (id, tv) in pv.textViews where !tv.isHidden {
+            let r = tv.linkRect
+            if r.width > 0 && r.height > 0 { result[id] = r }
+        }
+        return result
+    }
+
+    /// 捲到某一頁的某一塊（白板：把那一塊放在畫面正中間）
+    func remoteShow(pageID: UUID, rect: CGRect?) {
+        if isBoard {
+            guard let r = rect else { return }
+            rememberPlace(before: nil)
+            _ = showPlace(PlaceMark(page: pageID, x: r.midX, y: r.midY, zoom: nil, auto: true))
+            return
+        }
+        guard let loc = model.location(of: pageID) else { return }
+        navigate(toRow: loc.row, page: loc.page)                 // 跳之前自動插旗，使用者可以跳回來
+        if let r = rect {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.reveal(pageID: pageID, pageRect: r)
+            }
+        }
     }
 
     /// 存下還沒寫進檔案的筆跡（Claude 要看頁面的圖之前）

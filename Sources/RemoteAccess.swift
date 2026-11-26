@@ -370,7 +370,19 @@ enum RemoteAPI {
             case ("GET", 3) where parts[0] == "notebooks" && parts[2] == "image":
                 return try await image(parts[1], query: r.query)
             case ("POST", 3) where parts[0] == "notebooks" && parts[2] == "texts":
-                return .json(try addTexts(parts[1], body))
+                return .json(try await addTexts(parts[1], body))
+            case ("POST", 3) where parts[0] == "notebooks" && parts[2] == "batch":
+                return .json(try await batch(parts[1], body))
+            case ("POST", 3) where parts[0] == "notebooks" && parts[2] == "images":
+                return .json(try addImage(parts[1], body))
+            case ("GET", 3) where parts[0] == "notebooks" && parts[2] == "ocr":
+                return .json(try await ocr(parts[1], query: r.query))
+            case ("GET", 3) where parts[0] == "notebooks" && parts[2] == "measure":
+                return .json(try await measure(parts[1], query: r.query))
+            case ("GET", 1) where parts[0] == "search":
+                return .json(try search(r.query))
+            case ("POST", 1) where parts[0] == "open":
+                return .json(try openNotebook(body))
             case ("PATCH", 4) where parts[0] == "notebooks" && parts[2] == "texts":
                 return .json(try updateText(parts[1], box: parts[3], body))
             case ("DELETE", 4) where parts[0] == "notebooks" && parts[2] == "texts":
@@ -515,8 +527,8 @@ enum RemoteAPI {
         return String(format: "#%02X%02X%02X", Int((c[0] * 255).rounded()), Int((c[1] * 255).rounded()), Int((c[2] * 255).rounded()))
     }
 
-    static func boxDict(_ t: TextBox, page: NotePage) -> [String: Any] {
-        let f = PageRenderer.textFrameRect(t, page: page)
+    static func boxDict(_ t: TextBox, page: NotePage, measured: CGRect? = nil) -> [String: Any] {
+        let f = measured ?? PageRenderer.textFrameRect(t, page: page)
         var d: [String: Any] = ["id": t.id.uuidString, "text": t.text, "x": round1(f.minX), "y": round1(f.minY),
                                 "w": round1(f.width), "h": round1(f.height),
                                 "size": round1(t.fontSize / pageScaleFactor(page.spec)),
@@ -526,6 +538,7 @@ enum RemoteAPI {
         if t.isMarkdown { d["markdown"] = true }
         if t.sticky == true { d["sticky"] = true }
         if t.fixedWidth != nil { d["fixedWidth"] = true }
+        d["measured"] = measured != nil                  // true：畫面上量到的實際大小；false：用字估的
         return d
     }
 
@@ -552,8 +565,10 @@ enum RemoteAPI {
                         d["ink"] = true
                     }
                     if withText {
-                        d["texts"] = (p.texts ?? []).map { boxDict($0, page: p) }
-                        let links = (p.links ?? []).map { ["id": $0.id.uuidString, "from": $0.from.uuidString, "to": $0.to.uuidString] }
+                        let sizes = t.view?.remoteMeasured(p.id) ?? [:]
+                        d["texts"] = (p.texts ?? []).map { boxDict($0, page: p, measured: sizes[$0.id]) }
+                        let links = (p.links ?? []).map { ["id": $0.id.uuidString, "from": $0.from.uuidString, "to": $0.to.uuidString,
+                                                           "fromSide": $0.fromSide, "toSide": $0.toSide] as [String: Any] }
                         if !links.isEmpty { d["links"] = links }
                     } else {
                         d["textCount"] = (p.texts ?? []).count
@@ -592,13 +607,22 @@ enum RemoteAPI {
         let loc = try page(query["page"], in: t)
         let page = t.data.rows[loc.row].pages[loc.index]
         await renderMath(page)
+        let region = try imageRegion(page, query: query, view: t.view, board: t.isBoard)
+        let pixelWidth = CGFloat(min(max(Double(query["width"] ?? "") ?? 1200, 200), 2400))
+        let img = try renderRegion(page, region: region, pixelWidth: pixelWidth)
+        guard let data = img.jpegData(compressionQuality: 0.82) else { throw RemoteError(500, "畫不出來") }
+        return RemoteResponse(status: 200, contentType: "image/jpeg", body: data)
+    }
+
+    /// 要畫哪一塊：給了 x、y、w、h 就用它；筆記本＝整頁；白板＝畫面看得到的那塊（沒開著就是所有方塊的範圍）
+    static func imageRegion(_ page: NotePage, query: [String: String], view: NotebookView?, board: Bool) throws -> CGRect {
         let full = CGRect(x: 0, y: 0, width: page.spec.width, height: page.spec.height)
         var region = full
         if let x = Double(query["x"] ?? ""), let y = Double(query["y"] ?? ""),
            let w = Double(query["w"] ?? ""), let h = Double(query["h"] ?? "") {
             region = CGRect(x: x, y: y, width: w, height: h)
-        } else if t.isBoard {
-            if let seen = t.view?.remoteVisibleRect() {
+        } else if board {
+            if let seen = view?.remoteVisibleRect() {
                 region = seen.rect
             } else {
                 let frames = (page.texts ?? []).map { PageRenderer.textFrameRect($0, page: page) }
@@ -611,7 +635,12 @@ enum RemoteAPI {
         }
         region = region.intersection(full)
         guard !region.isNull, region.width >= 1, region.height >= 1 else { throw RemoteError(400, "範圍不在頁面裡") }
-        let pixelWidth = CGFloat(min(max(Double(query["width"] ?? "") ?? 1200, 200), 2400))
+        return region
+    }
+
+    /// 一頁的一塊畫成圖（寬 pixelWidth 像素）
+    static func renderRegion(_ page: NotePage, region: CGRect, pixelWidth: CGFloat) throws -> UIImage {
+        let full = CGRect(x: 0, y: 0, width: page.spec.width, height: page.spec.height)
         let k = pixelWidth / region.width
         let size = CGSize(width: pixelWidth, height: max(region.height * k, 1))
         guard size.height <= 6000 else { throw RemoteError(400, "範圍太長：把 h 改小或 width 改小") }
@@ -624,8 +653,7 @@ enum RemoteAPI {
             cg.translateBy(x: -region.minX, y: -region.minY)
             PageRenderer.draw(page, in: cg, rect: full, inkScale: k, region: region)
         }
-        guard let data = img.jpegData(compressionQuality: 0.82) else { throw RemoteError(500, "畫不出來") }
-        return RemoteResponse(status: 200, contentType: "image/jpeg", body: data)
+        return img
     }
 
     /// 數學式還沒排好的先排（匯出只畫排好的；最多等 8 秒）
@@ -801,10 +829,10 @@ enum RemoteAPI {
 
     /// 一頁的文字方塊、連線改好之後寫回去：打開中的走畫面（可復原），沒打開的直接存檔
     static func commit(_ t: inout Target, row: Int, index: Int, texts: [TextBox], links: [BoxLink],
-                       focus: CGRect?, message: String) {
+                       images: [ImageBox]? = nil, focus: CGRect?, message: String) {
         let pageID = t.data.rows[row].pages[index].id
         if let view = t.view {
-            view.remoteApply(pageID: pageID, texts: texts, links: links, focus: focus, message: message)
+            view.remoteApply(pageID: pageID, texts: texts, links: links, images: images, focus: focus, message: message)
             t.data = view.model.notebook
         } else {
             var data = Store.loadNotebook(t.meta.id)
@@ -812,6 +840,7 @@ enum RemoteAPI {
                 if let i = data.rows[r].pages.firstIndex(where: { $0.id == pageID }) {
                     data.rows[r].pages[i].texts = texts.isEmpty ? nil : texts
                     data.rows[r].pages[i].links = links.isEmpty ? nil : links
+                    if let images = images { data.rows[r].pages[i].images = images.isEmpty ? nil : images }
                     data.rows[r].pages[i].modified = Date()
                 }
             }
@@ -824,7 +853,7 @@ enum RemoteAPI {
     }
 
     /// POST /notebooks/{id}/texts：{page, boxes:[{key, text, x, y, width, size, color, frame, bold, align, markdown, sticky}], links:[{from, to}]}
-    static func addTexts(_ key: String, _ body: [String: Any]) throws -> [String: Any] {
+    static func addTexts(_ key: String, _ body: [String: Any]) async throws -> [String: Any] {
         var t = try target(key)
         if t.meta.deletedAt != nil { throw RemoteError(400, "這本在最近刪除裡") }
         guard let list = body["boxes"] as? [[String: Any]], !list.isEmpty else { throw RemoteError(400, "要有 boxes") }
@@ -858,14 +887,15 @@ enum RemoteAPI {
         commit(&t, row: loc.row, index: loc.index, texts: texts, links: links, focus: union,
                message: "加了 \(created.count) 個文字方塊")
         let saved = t.data.rows[loc.row].pages[loc.index]
+        let sizes = await measuredAfterChange(t, page: saved)
         let boxes: [[String: Any]] = created.map { key, box in
-            var d = boxDict(box, page: saved)
+            var d = boxDict(box, page: saved, measured: sizes[box.id])
             if let key = key { d["key"] = key }
             return d
         }
         return ["page": loc.row + 1, "pageID": saved.id.uuidString, "boxes": boxes,
                 "overflow": union.maxY > saved.spec.height,
-                "note": "高度是用字估的；數學式排版後實際大小可能不同，要確認請看 image"]
+                "note": sizes.isEmpty ? "這本沒開著：大小是用字估的，數學式排版後可能不同" : "measured＝true 的是畫面上量到的實際大小"]
     }
 
     static func findBox(_ t: Target, _ boxKey: String) throws -> (row: Int, index: Int, box: Int) {
@@ -885,6 +915,17 @@ enum RemoteAPI {
         let page = t.data.rows[loc.row].pages[loc.index]
         var texts = page.texts ?? []
         var box = texts[loc.box]
+        try applyChanges(&box, body, page: page, board: t.isBoard)
+        texts[loc.box] = box
+        var after = page
+        after.texts = texts
+        commit(&t, row: loc.row, index: loc.index, texts: texts, links: page.links ?? [],
+               focus: PageRenderer.textFrameRect(box, page: after), message: "改了 1 個文字方塊")
+        return ["box": boxDict(box, page: after)]
+    }
+
+    /// 改一個方塊：text、x、y、width、size、bold、color、frame、align（PATCH 和 batch 共用）
+    static func applyChanges(_ box: inout TextBox, _ body: [String: Any], page: NotePage, board: Bool) throws {
         let k = pageScaleFactor(page.spec)
         if let s = body["text"] as? String {
             box.text = s
@@ -894,7 +935,7 @@ enum RemoteAPI {
                 let natural = s.components(separatedBy: "\n").map {
                     ceil(($0 as NSString).size(withAttributes: [.font: font]).width) + 2
                 }.max() ?? 40
-                let limit = max(min((t.isBoard ? 520 : 460) * k, page.spec.width - box.x - 20 * k), 120)
+                let limit = max(min((board ? 520 : 460) * k, page.spec.width - box.x - 20 * k), 120)
                 if natural > limit {
                     box.fixedWidth = limit
                     box.width = limit
@@ -913,12 +954,12 @@ enum RemoteAPI {
         if let b = body["bold"] as? Bool { box.bold = b }
         if let c = color(body["color"]) { box.rgba = c }
         if body["frame"] != nil { try applyFrame(body["frame"], to: &box, dark: page.isDarkBackground) }
-        texts[loc.box] = box
-        var after = page
-        after.texts = texts
-        commit(&t, row: loc.row, index: loc.index, texts: texts, links: page.links ?? [],
-               focus: PageRenderer.textFrameRect(box, page: after), message: "改了 1 個文字方塊")
-        return ["box": boxDict(box, page: after)]
+        switch body["align"] as? String {
+        case "left": box.align = 0
+        case "center": box.align = 1
+        case "right": box.align = 2
+        default: break
+        }
     }
 
     /// DELETE /notebooks/{id}/texts/{box}（連到它的線一起拿掉；打開中的可以用「上一步」復原）

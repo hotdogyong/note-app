@@ -621,6 +621,43 @@ enum RemoteSelfTest {
         let pages = (json(d6)["pages"] as? [[String: Any]]) ?? []
         let texts = pages.map { (($0["texts"] as? [Any])?.count ?? 0) }
         lines.append("讀回來：\(s6)，頁數 \(pages.count)，每頁方塊 \(texts)")
+        // v12.17.1：批次（整區往下移＋改字級＋加一個再連線）、實際大小、搜尋、放圖、手寫辨識、跳頁
+        let ids = made.compactMap { $0["id"] as? String }
+        if ids.count >= 3 {
+            let a = ids[1], b = ids[2]
+            let move: [String: Any] = ["rect": ["x": 0, "y": board ? -1 : 0, "w": 9_999_999, "h": 9_999_999] as [String: Any], "dy": 40]
+            let batchBody: [String: Any] = [
+                "page": "current",
+                "update": [["id": b, "size": 18] as [String: Any]],
+                "move": move,
+                "add": [["key": "n", "text": "batch 加的：nullity = 自由變數個數", "frame": "#73B8FF", "size": 16] as [String: Any]],
+                "links": [["from": b, "to": "n", "route": "straight"] as [String: Any]]
+            ]
+            let (sb, db) = await call("POST", "/notebooks/\(id)/batch", batchBody)
+            let done = (json(db)["done"] as? [String])?.joined(separator: "、") ?? String(decoding: db.prefix(120), as: UTF8.self)
+            lines.append("批次：\(sb) \(done)")
+            let (sm, dm) = await call("GET", "/notebooks/\(id)/measure?page=current")
+            let mboxes = (json(dm)["boxes"] as? [[String: Any]]) ?? []
+            let mathBox = mboxes.first { ($0["id"] as? String) == a }
+            lines.append("實際大小：\(sm) 數學式方塊 w=\(mathBox?["w"] ?? "?") measured=\(mathBox?["measured"] ?? "?")")
+        }
+        let (ss, dsr) = await call("GET", "/search?q=nullity")
+        lines.append("搜尋 nullity：\(ss) \((json(dsr)["hits"] as? [Any])?.count ?? -1) 筆")
+        let dot = UIGraphicsImageRenderer(size: CGSize(width: 240, height: 120)).image { ctx in
+            UIColor.systemTeal.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 240, height: 120))
+            UIColor.white.setFill()
+            ctx.cgContext.fillEllipse(in: CGRect(x: 80, y: 20, width: 80, height: 80))
+        }
+        let png = dot.pngData()?.base64EncodedString() ?? ""
+        let (si, di) = await call("POST", "/notebooks/\(id)/images", ["page": "current", "data": png, "width": 120] as [String: Any])
+        lines.append("放圖：\(si) " + String(decoding: di.prefix(60), as: UTF8.self))
+        let (so, dso) = await call("GET", "/notebooks/\(id)/ocr?page=current")
+        let ocrText = ((json(dso)["text"] as? String) ?? "").replacingOccurrences(of: "\n", with: "／")
+        lines.append("辨識：\(so) " + String(ocrText.prefix(60)))
+        let (sop, _) = await call("POST", "/open", ["notebook": id, "page": board ? 1 : 2] as [String: Any])
+        lines.append("打開、跳頁：\(sop)")
+        try? await Task.sleep(nanoseconds: 1_200_000_000)
         let (s7, d7) = await call("GET", "/current")
         let cur = json(d7)
         lines.append("現在：\(s7) 第 \(cur["page"] ?? "?") 頁，看得到 \(cur["visible"] ?? "?")")

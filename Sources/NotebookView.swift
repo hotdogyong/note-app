@@ -2223,7 +2223,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         guard let pv = pageViews[pageID] else { return [:] }
         layoutIfNeeded()
         var result: [UUID: CGRect] = [:]
-        for (id, tv) in pv.textViews where !tv.isHidden {
+        for (id, tv) in pv.textViews where !tv.isHidden && !tv.mathNotShown {
             let r = tv.linkRect
             if r.width > 0 && r.height > 0 { result[id] = r }
         }

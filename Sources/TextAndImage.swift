@@ -1048,6 +1048,8 @@ final class TextBoxView: UIView, UITextViewDelegate {
     private let placeholder = UILabel()
     private let mathView = UIImageView()             // 數學式排好的樣子（不在編輯時）
     private var mathPending: String?                 // 正在等排版的那一份
+    /// 有數學式但畫面上還是原文（還沒排好或排版失敗）：大小不準（v12.17.1，Claude 量實際大小用）
+    var mathNotShown: Bool { MathRenderer.needsRender(box) && mathView.isHidden }
     private var scale: CGFloat = 1
     var onChange: (() -> Void)?
     var onEditingChanged: (() -> Void)?

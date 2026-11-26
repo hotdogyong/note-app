@@ -606,7 +606,7 @@ enum RemoteAPI {
         t.view?.remoteFlush()
         let loc = try page(query["page"], in: t)
         let page = t.data.rows[loc.row].pages[loc.index]
-        await renderMath(page)
+        await renderMath(page, timeout: 4)
         let region = try imageRegion(page, query: query, view: t.view, board: t.isBoard)
         let pixelWidth = CGFloat(min(max(Double(query["width"] ?? "") ?? 1200, 200), 2400))
         let img = try renderRegion(page, region: region, pixelWidth: pixelWidth)

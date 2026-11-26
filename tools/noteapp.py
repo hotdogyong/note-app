@@ -113,7 +113,7 @@ def base_url(cfg):
     return "http://%s:%d" % (cfg["host"], cfg.get("port", DEFAULT_PORT))
 
 
-def request(cfg, method, path, body=None, raw=False, timeout=15):
+def request(cfg, method, path, body=None, raw=False, timeout=45):
     data = None
     headers = {}
     if body is not None:
@@ -141,7 +141,11 @@ def call(method, path, body=None, raw=False):
         sys.exit("還沒配對：python3 tools/noteapp.py pair <iPad 上的配對碼>")
     try:
         return request(cfg, method, path, body, raw)
-    except (urllib.error.URLError, OSError, socket.timeout):
+    except (urllib.error.URLError, OSError, socket.timeout) as e:
+        reason = getattr(e, "reason", e)
+        if isinstance(e, TimeoutError) or isinstance(reason, TimeoutError):
+            # 連上了但太久沒回（大白板畫圖、辨識比較慢）：不要重送，免得做兩次
+            sys.exit("iPad 太久沒回應（超過 45 秒）：可能還在處理，等一下用 current／show 確認結果，不要直接重送")
         found = discover()
         if not found:
             sys.exit("連不到 iPad：筆記軟體要開在前景、「讓 Claude 連進來」打開、跟 Mac 在同一個 Wi-Fi。")

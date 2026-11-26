@@ -17,12 +17,7 @@ extension RemoteAPI {
     static func measuredAfterChange(_ t: Target, page: NotePage) async -> [UUID: CGRect] {
         guard let view = t.view else { return [:] }
         try? await Task.sleep(nanoseconds: 500_000_000)         // 等畫面排好
-        var sizes = view.remoteMeasured(page.id)
-        let width = textWrapWidth(page.spec)
-        for b in page.texts ?? [] where MathRenderer.needsRender(b) {
-            if MathRenderer.shared.cached(MathRenderer.request(for: b, pageWidth: width)) == nil { sizes[b.id] = nil }
-        }
-        return sizes
+        return view.remoteMeasured(page.id)                     // 數學式還是原文的不算量到（TextBoxView.mathNotShown）
     }
 
     /// GET /notebooks/{id}/measure?page=：這頁每個方塊畫面上的實際範圍（要開著）
@@ -323,9 +318,8 @@ extension RemoteAPI {
         t.view?.remoteFlush()
         let loc = try page(query["page"], in: t)
         let page = t.data.rows[loc.row].pages[loc.index]
-        await renderMath(page)
         let region = try imageRegion(page, query: query, view: t.view, board: t.isBoard)
-        let pixelWidth = min(max(region.width * 3, 800), 2400)
+        let pixelWidth = min(max(region.width * 2, 800), 1600)  // 手寫認得出來就好；大白板畫太大很慢
         let image = try renderRegion(page, region: region, pixelWidth: pixelWidth)
         guard var cg = image.cgImage else { throw RemoteError(500, "畫不出來") }
         if page.isDarkBackground, let inverted = invert(cg) { cg = inverted }   // 深色紙白字 → 白底黑字比較好認

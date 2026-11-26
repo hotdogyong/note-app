@@ -549,6 +549,7 @@ enum SelfTest {
 enum RemoteSelfTest {
     static let base = "http://127.0.0.1:\(RemoteAccess.port)"
     static var token = ""
+    static var lastMs = 0                               // 上一個請求花了幾毫秒（v12.17.1：找出哪一步慢）
 
     static func call(_ method: String, _ path: String, _ body: Any? = nil) async -> (Int, Data) {
         guard let url = URL(string: base + path) else { return (0, Data()) }
@@ -560,6 +561,8 @@ enum RemoteSelfTest {
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
+        let start = Date()
+        defer { lastMs = Int(Date().timeIntervalSince(start) * 1000) }
         do {
             let (data, resp) = try await URLSession.shared.data(for: req)
             return ((resp as? HTTPURLResponse)?.statusCode ?? 0, data)
@@ -570,7 +573,7 @@ enum RemoteSelfTest {
 
     /// 加一行結果，馬上更新右下角的面板（逾時的話截圖也看得到做到哪）
     static func step(_ lines: inout [String], _ line: String) {
-        lines.append(line)
+        lines.append(line + "（\(lastMs) ms）")
         overlay(lines.joined(separator: "\n"), image: nil)
     }
 

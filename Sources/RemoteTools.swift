@@ -13,11 +13,16 @@ extension RemoteAPI {
     // MARK: 實際大小
 
     /// 改完之後量畫面上的實際大小（等數學式排好；沒開著的筆記本量不到，回空的）
+    /// 不另外叫數學式排版（排版一次只能排一個，多叫會拖慢畫面上的）；還沒排好的數學式方塊不算量到
     static func measuredAfterChange(_ t: Target, page: NotePage) async -> [UUID: CGRect] {
         guard let view = t.view else { return [:] }
-        await renderMath(page, timeout: 2.5)                    // 最多等 2.5 秒：還沒排好的就用估的（measured＝false 或大小偏差）
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        return view.remoteMeasured(page.id)
+        try? await Task.sleep(nanoseconds: 500_000_000)         // 等畫面排好
+        var sizes = view.remoteMeasured(page.id)
+        let width = textWrapWidth(page.spec)
+        for b in page.texts ?? [] where MathRenderer.needsRender(b) {
+            if MathRenderer.shared.cached(MathRenderer.request(for: b, pageWidth: width)) == nil { sizes[b.id] = nil }
+        }
+        return sizes
     }
 
     /// GET /notebooks/{id}/measure?page=：這頁每個方塊畫面上的實際範圍（要開著）
@@ -29,7 +34,7 @@ extension RemoteAPI {
         let sizes = await measuredAfterChange(t, page: page)
         let boxes = (page.texts ?? []).map { boxDict($0, page: page, measured: sizes[$0.id]) }
         return ["page": loc.row + 1, "pageID": page.id.uuidString, "boxes": boxes,
-                "note": "measured＝false 的方塊不在畫面附近（頁還沒載入），大小是估的"]
+                "note": "measured＝false：不在畫面附近（頁還沒載入）或數學式還沒排好，大小是估的；過一兩秒再量一次"]
     }
 
     // MARK: 批次

@@ -50,6 +50,24 @@ struct TextStyleDefault: Codable, Equatable {
         return builtIn
     }
 
+    /// 右上角設定裡的快速選擇（v12.16.4，使用者：最常用沒框的和藍框的，要能直接按）
+    enum Choice: String { case none, blue, custom }
+
+    static func choice(dark: Bool) -> Choice {
+        let s = load(dark: dark)
+        if s.fill == nil { return .none }
+        if s == builtIn { return .blue }
+        return .custom
+    }
+
+    static func setChoice(_ c: Choice, dark: Bool) {
+        switch c {
+        case .none: save(TextStyleDefault(fill: nil, fillMode: nil, shape: nil), dark: dark)
+        case .blue: save(builtIn, dark: dark)
+        case .custom: break                                  // 自訂的要在卡片樣式面板按「存成預設」
+        }
+    }
+
     static func save(_ style: TextStyleDefault, dark: Bool) {
         if let data = try? JSONEncoder().encode(style) {
             UserDefaults.standard.set(data, forKey: key(dark: dark))
@@ -610,5 +628,30 @@ enum MindFold {
             }
         }
         return out
+    }
+}
+
+/// 新文字方塊的框：沒有框／藍框（自訂的另外顯示）；分深色紙、淺色紙（v12.16.4）
+struct TextFrameDefaultPicker: View {
+    let dark: Bool
+    @State private var tick = 0
+
+    var body: some View {
+        let current: Binding<String> = Binding(get: {
+            _ = tick
+            return TextStyleDefault.choice(dark: dark).rawValue
+        }, set: { value in
+            if let c = TextStyleDefault.Choice(rawValue: value) { TextStyleDefault.setChoice(c, dark: dark) }
+            tick += 1
+        })
+        Picker(selection: current) {
+            Text("沒有框").tag(TextStyleDefault.Choice.none.rawValue)
+            Text("藍框").tag(TextStyleDefault.Choice.blue.rawValue)
+            if TextStyleDefault.choice(dark: dark) == .custom {
+                Text("自訂（卡片樣式存的）").tag(TextStyleDefault.Choice.custom.rawValue)
+            }
+        } label: {
+            Label("框（" + (dark ? "深色紙" : "淺色紙") + "）", systemImage: "rectangle.dashed")
+        }
     }
 }

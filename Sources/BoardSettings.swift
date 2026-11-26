@@ -110,6 +110,17 @@ struct BoardSettingsPanel: View {
                     Divider()
                     textSizeRow
                     Divider()
+                    // 新文字方塊的框（v12.16.4）：沒有框／藍框，直接選
+                    HStack {
+                        Label("新文字方塊的框", systemImage: "rectangle.dashed")
+                        Spacer()
+                        TextFrameDefaultPicker(dark: model.notebook.rows.first?.pages.first?.isDarkBackground ?? true)
+                            .labelsHidden()
+                            .pickerStyle(.segmented)
+                            .frame(width: 230)
+                    }
+                    .padding(.vertical, 8)
+                    Divider()
                     toggleRow("新文字方塊用粗體", symbol: "bold", isOn: boldBinding)
                     Divider()
                     toggleRow("文字方塊輸入時的手寫區", symbol: "pencil.and.scribble", isOn: $handwritingZone)

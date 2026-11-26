@@ -698,6 +698,9 @@ struct NotebookMoreMenu: View {
     /// 新文字方塊的預設：字級、顏色、粗體（已經有的文字方塊不會變）
     private var textDefaultsSection: some View {
         Section("新文字方塊的預設") {
+            // 框（v12.16.4）：照目前這一頁是深色還是淺色的紙；其他樣式在文字方塊的卡片樣式面板按「存成預設」
+            TextFrameDefaultPicker(dark: model.currentPageID.flatMap { model.page($0) }?.isDarkBackground ?? true)
+                .pickerStyle(.menu)
             Picker(selection: textSize) {
                 ForEach(TextDefaults.sizes, id: \.self) { size in
                     Text("\(size)").tag(Double(size))

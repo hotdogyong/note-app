@@ -109,6 +109,7 @@
 - 常用：`list`、`current`（現在開著哪本、哪頁、看得到的範圍）、`show <本> --from 3 --to 5`、`image <本> --page 3 -o /tmp/p.jpg`（再讀圖看排版）、`add <本> <json>`、`pages <本> <json>`、`edit`、`delete`、`outline`、`new`。JSON 格式寫在 `tools/noteapp.py` 開頭。
 - 座標是頁面座標（A4 595×842；白板是整張大頁面，`current` 的 visible 是畫面看得到的那塊）；`size` 跟工具列上的字級一樣。沒給 x、y 會自動往下排。
 - 打開中的那本走畫面改（可以按上一步復原；加頁會清掉復原紀錄）。刪方塊、改別人寫的東西之前先問使用者。
+- **一般 Claude（桌面 App 的聊天）也能用**：連接器 `tools/noteapp_mcp.py`（MCP，stdio，只用內建套件；沿用同一把鑰匙），登記在 `~/Library/Application Support/Claude/claude_desktop_config.json` 的 `mcpServers.筆記軟體`（改之前的設定備份在同資料夾 `.bak-20261126`）。工具 notes_list／current／read／image／add_texts／add_pages／edit_text／delete_text／add_outline／new_notebook；使用規則寫在連接器的 INSTRUCTIONS。iPad、網頁版的 Claude 連不到區網，不能用。
 - 方塊寬度用原始字估：有 LaTeX 的方塊在畫面上框會比排好的式子寬一點，要精準就給 width。
 
 ## 6. 踩過的雷（改之前先看）

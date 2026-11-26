@@ -128,6 +128,7 @@
 
 ## 7. 目前狀態（2026-11-27）
 
+- **v12.17.6 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.6.ipa`**：畫記改成選單（使用者：要像框一樣有選單；藍色不顯眼）：`TextBox.underlineStyle`（0 底線、1 粗、2 雙、3 螢光筆）、`underlineRGB`；`underline` 改成 true／false／nil（nil＝預設：一般方塊沒有、Markdown 標題黃色螢光筆）；`UnderlineMark`（effective、attributes、css、選單色塊）。一般方塊畫整段、Markdown 方塊畫 # ～ ### 標題（藍線拿掉）。螢光筆用網頁畫下半截（`needsRender` 含螢光筆，系統字不畫底色，不然會從圖後面透出整行色塊）；`layoutRevision` 9。Claude 連線 `underline` 收 single／thick／double／marker／none＋`underlineColor`。iEM「拉氏轉換與反轉換」已用連線加過一般底線（underline=true、樣子預設）。
 - **v12.17.5 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.5.ipa`**：標題畫記（使用者：iEM 白板的標題要能加底線）：`TextBox.underline`；文字工具列 B 旁邊多一顆 U（`toggleTextUnderline`）；畫面（`TextBoxView.applyUnderline`）、數學式排版（`Request.underline`、`#box.u` 穿過 KaTeX 的 .base）、匯出都有；Markdown 的 # ～ ### 標題自動天藍 #73B8FF 底線（跟字一樣寬）、`++底線++` 語法（`==螢光==` 本來就有）；`layoutRevision` 改 8。Claude 連線的方塊、batch update、edit 都收 `underline`，連接器說明也寫了。場景 `underline`。
 - **v12.17.4 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.4.ipa`**：使用者說還有很近的（上標那幾行，例如 $e^{-iEt/\hbar}$、$|\Psi|^2$）→ 有上下標的 `.base` 也上下留 0.18em（分數那類維持 0.32em）、Markdown 段落間距 0.35→0.42em；`layoutRevision` 改 7。場景 `mathgap` 放了使用者 griffiths 白板上的兩個方塊。
 - **v12.17.3 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.3.ipa`**：一般行裡（不是 $$）的高的數學式（分數、根號、上下限、矩陣、大括號，含 `$\displaystyle …$`）跟上下行貼太近 → `MathRenderer` 的 CSS 在那一段的 `.base` 上下多 0.32em（加在 .base 不是整個 .katex：長式子還能換行）；`layoutRevision` 改 6，舊的數學式快取都會重排一次。場景 `mathgap`（含使用者 griffiths 白板那一段 Markdown 方塊）。實機要測：白板上那段變不變寬鬆、一般行有分數的方塊高度跟著變。

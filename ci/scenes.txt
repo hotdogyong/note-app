@@ -1,4 +1,3 @@
 board
-dropfile
-dropnote
-outlinedrag
+mathgap
+mathpaste

@@ -204,6 +204,23 @@ enum SelfTest {
                 }
             case "markdown":
                 library.openNotebook = library.addMarkdownNotebook(in: nil)
+            case "mathgap":
+                // v12.17.3：一般行裡有分數，上下行不要貼在一起（使用者截圖那一段）
+                var page = NotePage()
+                var box = TextBox()
+                box.text = "關鍵論證：兩邊都是常數 (2.3)\n代入後同除以 $\\psi\\varphi$：\n$i\\hbar\\frac{1}{\\varphi}\\frac{d\\varphi}{dt} = -\\frac{\\hbar^2}{2m}\\frac{1}{\\psi}\\frac{d^2\\psi}{dx^2} + V$\n左邊只跟 $t$ 有關，右邊只跟 $x$ 有關。唯一的可能是兩邊都等於同一個常數。\n根號 $\\sqrt{2/L}$ 和 $\\sum_{n=1}^{\\infty} c_n$ 也一樣。\n分離常數取名為 $E$，理由在 B② 揭曉。"
+                box.fontSize = 20
+                box.x = 40
+                box.y = 60
+                box.fixedWidth = 500
+                box.width = 500
+                box.fill = TextBoxStyle.linkedFill
+                box.fillMode = 2
+                box.shape = 1
+                page.texts = [box]
+                var row = PageRow()
+                row.pages = [page]
+                library.openNotebook = library.addNotebook(in: nil, title: "行距測試", data: NotebookData(rows: [row]))
             case "dropfile":
                 // v12.17.2：從外面拖 PDF＋圖片進白板（假裝通用控制拖進來：用檔案做 NSItemProvider，走一樣的流程）
                 library.openNotebook = library.addBoard(in: nil, title: "拖放測試白板", width: 100 * 842, height: 100 * 595)

@@ -1577,7 +1577,7 @@ extension TextBoxView: PKCanvasViewDelegate {
 final class MathRenderer: NSObject, WKNavigationDelegate {
     static let shared = MathRenderer()
     static let katexVersion = "0.16.11"
-    static let layoutRevision = "5"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果）
+    static let layoutRevision = "6"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果；6：v12.17.3 行內分數上下留空）
     static let webTop: CGFloat = 160          // 看不到的網頁放在離畫面頂端這麼遠的地方（避開狀態列底下的邊緣效果）
     /// 排版時放大的倍數（圖片比較清楚）：頁面上 1 點 = 網頁裡 2 px
     static let scaleFactor: CGFloat = 2
@@ -1876,6 +1876,10 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
            font-family: -apple-system, "PingFang TC", sans-serif; }
     .katex { font-size: 1.1em; }
     .katex-display { margin: 0.55em 0; }
+    /* v12.17.3（使用者：有分數的那一行跟上下行貼太近）：寫在一般行裡的高的式子（分數、根號、上下限、矩陣、大括號）上下多留一點 */
+    /* 加在每一段（.base）上：長的式子照樣能在行尾換行 */
+    :not(.katex-display) > .katex .base:has(.mfrac, .sqrt, .op-limits, .mtable, .delimsizing, .delimcenter) {
+        margin: 0.32em 0; }
     .katex-html:has(> .tag) { padding-right: 2.6em; }
     #box.md { white-space: normal; line-height: 1.5; }
     #box.md > :first-child { margin-top: 0; }

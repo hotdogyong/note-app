@@ -998,6 +998,17 @@ final class NotebookModel: ObservableObject {
         save()
     }
 
+    /// 改上一層（v12.16.3：升一層、降一層）；不能接到自己底下
+    func setOutlineParent(_ id: UUID, to parent: UUID?) {
+        guard let i = notebook.outline?.firstIndex(where: { $0.id == id }) else { return }
+        if let p = parent, p == id || outlineDescendants(id).contains(p) { return }
+        notebook.outline?[i].parentID = parent
+        if let p = parent, let j = notebook.outline?.firstIndex(where: { $0.id == p }) {
+            notebook.outline?[j].collapsed = nil                // 接過去的那一項展開，看得到剛移進去的
+        }
+        save()
+    }
+
     func renameOutline(_ id: UUID, to title: String) {
         guard let i = notebook.outline?.firstIndex(where: { $0.id == id }) else { return }
         notebook.outline?[i].title = title
@@ -2706,7 +2717,9 @@ struct NotePanel: View {
         .padding(.bottom, 12)
     }
 
-    // 大綱：自己加的 + PDF 自帶的；點一下跳過去
+    // 大綱：自己加的 + PDF 自帶的（打開就併在一起）；點一下跳過去
+    // v12.16.3（使用者：往左滑編輯不了、要能改上下層級）：改用系統的列表（List）和它的滑動按鈕，比自己寫的手勢可靠；
+    // 往左滑：改名、加下一層、刪除；往右滑：升一層（往左縮）、降一層（往右縮）。長按的選單也有同樣的事
     private var outlineTab: some View {
         let mine = outlineTree()
         let mineIndent = mine.contains { $0.hasChildren || $0.depth > 0 }
@@ -2714,81 +2727,127 @@ struct NotePanel: View {
         let fromPDF = (model.notebook.pdfOutlineImported == true && !mine.isEmpty) ? [] : pdfLines()
         let pdfIndent = fromPDF.contains { $0.hasChildren }
         return VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    if mine.isEmpty && fromPDF.isEmpty {
-                        Text("還沒有大綱。按下面的「添加大綱」，把目前這一頁加進來。")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 20)
+            List {
+                if mine.isEmpty && fromPDF.isEmpty {
+                    Text("還沒有大綱。按下面的「添加大綱」，把目前這一頁加進來。")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 20)
+                        .outlineListRow()
+                } else {
+                    sectionTitle("往左滑：改名、加下一層、刪除　往右滑：升一層、降一層")
+                        .outlineListRow()
+                }
+                ForEach(Array(mine.enumerated()), id: \.element.id) { index, line in
+                    let up = outlineCanOutdent(line)
+                    let down = outlinePreviousSibling(mine, index) != nil
+                    outlineRow(title: line.item.title, row: line.row, page: line.page, depth: line.depth,
+                               folded: line.hasChildren ? (line.item.collapsed == true) : nil,
+                               reserveChevron: mineIndent) {
+                        model.toggleOutline(line.id)
                     }
-                    if !mine.isEmpty {
-                        sectionTitle("往左滑：改名、加下一層、刪除")
-                        ForEach(mine) { line in
-                            // v12.11.0：往左滑露出三顆按鈕（照 GUGA）；長按的選單也留著
-                            SwipeRow(id: line.id, openID: $openOutline, actions: [
-                                SwipeRowAction(symbol: "square.and.pencil", tint: Color.primary, background: Color.gray.opacity(0.35)) {
-                                    renameOutline(line.item)
-                                },
-                                SwipeRowAction(symbol: "plus", tint: Color.black, background: Color.yellow) {
-                                    addOutlineChild(line.item)
-                                },
-                                SwipeRowAction(symbol: "trash.fill", tint: Color.white, background: Color.red) {
-                                    deleteOutline(line.item)
-                                }
-                            ]) {
-                                outlineRow(title: line.item.title, row: line.row, page: line.page, depth: line.depth,
-                                           folded: line.hasChildren ? (line.item.collapsed == true) : nil,
-                                           reserveChevron: mineIndent) {
-                                    model.toggleOutline(line.id)
-                                }
+                    .outlineListRow()
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            deleteOutline(line.item)
+                        } label: {
+                            Label("刪除", systemImage: "trash.fill")
+                        }
+                        Button {
+                            addOutlineChild(line.item)
+                        } label: {
+                            Label("加下一層", systemImage: "plus")
+                        }
+                        .tint(.yellow)
+                        Button {
+                            renameOutline(line.item)
+                        } label: {
+                            Label("改名", systemImage: "square.and.pencil")
+                        }
+                        .tint(.gray)
+                    }
+                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                        if up {
+                            Button {
+                                outdentOutline(line)
+                            } label: {
+                                Label("升一層", systemImage: "arrow.left.to.line")
                             }
-                            .contextMenu {
-                                Button {
-                                    renameOutline(line.item)
-                                } label: {
-                                    Label("重新命名", systemImage: "pencil")
-                                }
-                                Button {
-                                    addOutlineChild(line.item)
-                                } label: {
-                                    Label("在底下加一項（目前這一頁）", systemImage: "plus")
-                                }
-                                Button(role: .destructive) {
-                                    deleteOutline(line.item)
-                                } label: {
-                                    Label("刪除", systemImage: "trash")
-                                }
+                            .tint(.blue)
+                        }
+                        if down {
+                            Button {
+                                indentOutline(mine, index)
+                            } label: {
+                                Label("降一層", systemImage: "arrow.right.to.line")
                             }
+                            .tint(.indigo)
                         }
                     }
-                    if !fromPDF.isEmpty {
-                        // v12.11.1：PDF 的目錄也能往左滑。它本來是直接從 PDF 檔讀出來的、不能改；
-                        // 第一次編輯時整份搬進「我的大綱」（之後這一段就不再列），再對那一項做事
-                        if mine.isEmpty { sectionTitle("往左滑：改名、加下一層、刪除") }
-                        ForEach(fromPDF) { line in
-                            SwipeRow(id: line.id, openID: $openOutline, actions: [
-                                SwipeRowAction(symbol: "square.and.pencil", tint: Color.primary, background: Color.gray.opacity(0.35)) {
-                                    editPDFLine(line.id) { renameOutline($0) }
-                                },
-                                SwipeRowAction(symbol: "plus", tint: Color.black, background: Color.yellow) {
-                                    editPDFLine(line.id) { addOutlineChild($0) }
-                                },
-                                SwipeRowAction(symbol: "trash.fill", tint: Color.white, background: Color.red) {
-                                    editPDFLine(line.id) { deleteOutline($0) }
-                                }
-                            ]) {
-                                outlineRow(title: line.title, row: line.row, page: line.page, depth: line.depth,
-                                           folded: line.hasChildren ? pdfFolded.contains(line.id) : nil,
-                                           reserveChevron: pdfIndent) {
-                                    if pdfFolded.contains(line.id) { pdfFolded.remove(line.id) } else { pdfFolded.insert(line.id) }
-                                }
+                    .contextMenu {
+                        Button {
+                            renameOutline(line.item)
+                        } label: {
+                            Label("重新命名", systemImage: "pencil")
+                        }
+                        Button {
+                            addOutlineChild(line.item)
+                        } label: {
+                            Label("在底下加一項（目前這一頁）", systemImage: "plus")
+                        }
+                        if up {
+                            Button {
+                                outdentOutline(line)
+                            } label: {
+                                Label("升一層（往左）", systemImage: "arrow.left.to.line")
                             }
+                        }
+                        if down {
+                            Button {
+                                indentOutline(mine, index)
+                            } label: {
+                                Label("降一層（變成上一項的下一層）", systemImage: "arrow.right.to.line")
+                            }
+                        }
+                        Button(role: .destructive) {
+                            deleteOutline(line.item)
+                        } label: {
+                            Label("刪除", systemImage: "trash")
                         }
                     }
                 }
-                .padding(12)
+                // PDF 的目錄（還沒併進來時）：一編輯就整份搬進大綱，再對那一項做事
+                ForEach(fromPDF) { line in
+                    outlineRow(title: line.title, row: line.row, page: line.page, depth: line.depth,
+                               folded: line.hasChildren ? pdfFolded.contains(line.id) : nil,
+                               reserveChevron: pdfIndent) {
+                        if pdfFolded.contains(line.id) { pdfFolded.remove(line.id) } else { pdfFolded.insert(line.id) }
+                    }
+                    .outlineListRow()
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            editPDFLine(line.id) { deleteOutline($0) }
+                        } label: {
+                            Label("刪除", systemImage: "trash.fill")
+                        }
+                        Button {
+                            editPDFLine(line.id) { addOutlineChild($0) }
+                        } label: {
+                            Label("加下一層", systemImage: "plus")
+                        }
+                        .tint(.yellow)
+                        Button {
+                            editPDFLine(line.id) { renameOutline($0) }
+                        } label: {
+                            Label("改名", systemImage: "square.and.pencil")
+                        }
+                        .tint(.gray)
+                    }
+                }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .environment(\.defaultMinListRowHeight, 10)
             Divider()
             Button {
                 let initial = "第 \(model.focusRow + 1) 頁"
@@ -2801,6 +2860,33 @@ struct NotePanel: View {
                     .padding(.vertical, 14)
             }
         }
+    }
+
+    /// 同一層、排在這一項前面最近的那一項（降一層就變成它的下一層）
+    private func outlinePreviousSibling(_ lines: [OutlineLine], _ index: Int) -> OutlineLine? {
+        let depth = lines[index].depth
+        var i = index - 1
+        while i >= 0 {
+            if lines[i].depth == depth { return lines[i] }
+            if lines[i].depth < depth { return nil }
+            i -= 1
+        }
+        return nil
+    }
+
+    private func outlineCanOutdent(_ line: OutlineLine) -> Bool { line.depth > 0 && line.item.parentID != nil }
+
+    /// 降一層：變成上一項（同一層的）的下一層，底下的項目跟著走
+    private func indentOutline(_ lines: [OutlineLine], _ index: Int) {
+        guard let previous = outlinePreviousSibling(lines, index) else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { model.setOutlineParent(lines[index].id, to: previous.id) }
+    }
+
+    /// 升一層：變成上一層的同一層（排在它後面），底下的項目跟著走
+    private func outdentOutline(_ line: OutlineLine) {
+        guard let parent = line.item.parentID else { return }
+        let grand = model.notebook.outline?.first(where: { $0.id == parent })?.parentID
+        withAnimation(.easeInOut(duration: 0.2)) { model.setOutlineParent(line.id, to: grand) }
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -3070,5 +3156,14 @@ struct BoardToolbarButtons: View {
         } label: {
             Image(systemName: "plus")
         }
+    }
+}
+
+/// 大綱列表的一列：不要系統的分隔線、底色，左右留一點（v12.16.3）
+extension View {
+    func outlineListRow() -> some View {
+        self.listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 }

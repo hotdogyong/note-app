@@ -1,3 +1,3 @@
 board
-mathpaste
-markdown
+outline
+pdfoutline

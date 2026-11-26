@@ -412,11 +412,16 @@ struct TextStylePanel: View {
     private let change: ([Double]?, Int, Int) -> Void
     private let tidy: (() -> Void)?              // 有值：這個方塊有連線，下面多一顆「一鍵整理」
     private let dark: Bool                       // 這一頁是深色的紙（預設分深色、淺色紙各一個；v12.16.2）
+    private let editingDefault: Bool             // 改的是「新文字方塊的預設」（v12.16.5，右上角設定的「其他…」）
+    private let close: (() -> Void)?
     @State private var note = ""
 
     init(fill: [Double]?, mode: Int, shape: Int, dark: Bool, tidy: (() -> Void)? = nil,
+         editingDefault: Bool = false, close: (() -> Void)? = nil,
          change: @escaping ([Double]?, Int, Int) -> Void) {
         self.dark = dark
+        self.editingDefault = editingDefault
+        self.close = close
         _fill = State(initialValue: fill)
         _mode = State(initialValue: mode)
         _shape = State(initialValue: shape)
@@ -436,7 +441,7 @@ struct TextStylePanel: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("卡片樣式")
+            Text(editingDefault ? "新文字方塊的樣式（" + (dark ? "深色紙" : "淺色紙") + "）" : "卡片樣式")
                 .font(.headline)
                 .frame(maxWidth: .infinity)
             Divider()
@@ -463,6 +468,18 @@ struct TextStylePanel: View {
                 choice("capsule.fill", selected: shape == 2) { shape = 2; ensureColor(); push() }
             }
             Divider()
+            if editingDefault {
+                Text("這裡選的就是之後新文字方塊的樣式，選完按完成。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    action("沒有框") {
+                        fill = nil
+                        push()
+                    }
+                    action("完成") { close?() }
+                }
+            } else {
             HStack(spacing: 8) {
                 action("套用預設") {
                     let saved = TextStyleDefault.load(dark: dark)
@@ -485,6 +502,7 @@ struct TextStylePanel: View {
             }
             if let tidy = tidy {
                 action("一鍵整理：跟它連在一起的全部", run: tidy)
+            }
             }
             if !note.isEmpty {
                 Text(note)
@@ -631,8 +649,72 @@ enum MindFold {
     }
 }
 
-/// 新文字方塊的框：沒有框／藍框（自訂的另外顯示）；分深色紙、淺色紙（v12.16.4）
-struct TextFrameDefaultPicker: View {
+/// 新文字方塊的框：沒有框／藍框直接選，其他樣式按「其他…」打開卡片樣式面板來選（v12.16.4；v12.16.5 加「其他…」、改排版）
+extension TextStyleDefault {
+    /// 打開卡片樣式面板，改這種紙的新文字方塊預設樣式
+    @MainActor
+    static func presentEditor(dark: Bool, done: @escaping () -> Void) {
+        let s = load(dark: dark)
+        var holder: UIViewController?
+        let panel = TextStylePanel(fill: s.fill, mode: s.fillMode ?? 2, shape: s.shape ?? 1, dark: dark,
+                                   editingDefault: true, close: {
+                                       holder?.dismiss(animated: true)
+                                       done()
+                                   }) { fill, mode, shape in
+            save(TextStyleDefault(fill: fill, fillMode: mode, shape: shape), dark: dark)
+        }
+        let vc = UIHostingController(rootView: panel)
+        vc.modalPresentationStyle = .formSheet
+        vc.preferredContentSize = CGSize(width: 340, height: 560)
+        holder = vc
+        Presenter.present(vc)
+    }
+}
+
+/// 白板設定面板裡的一列：上面一行字，下面三顆（沒有框、藍框、其他…）
+struct TextFrameDefaultRow: View {
+    let dark: Bool
+    @State private var tick = 0
+
+    var body: some View {
+        let _ = tick
+        let choice = TextStyleDefault.choice(dark: dark)
+        VStack(alignment: .leading, spacing: 10) {
+            Label("新文字方塊的框（" + (dark ? "深色紙" : "淺色紙") + "）", systemImage: "rectangle.dashed")
+            HStack(spacing: 8) {
+                pill("沒有框", selected: choice == .none) {
+                    TextStyleDefault.setChoice(.none, dark: dark)
+                    tick += 1
+                }
+                pill("藍框", selected: choice == .blue) {
+                    TextStyleDefault.setChoice(.blue, dark: dark)
+                    tick += 1
+                }
+                pill(choice == .custom ? "其他（已選）" : "其他…", selected: choice == .custom) {
+                    TextStyleDefault.presentEditor(dark: dark) { tick += 1 }
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func pill(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(selected ? Color.white : Color.primary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+                .background(RoundedRectangle(cornerRadius: 9).fill(selected ? Color.accentColor : Color.gray.opacity(0.18)))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// 筆記本「⋯」選單裡：框的選擇＋「其他樣式…」
+struct TextFrameDefaultMenuItems: View {
     let dark: Bool
     @State private var tick = 0
 
@@ -648,10 +730,16 @@ struct TextFrameDefaultPicker: View {
             Text("沒有框").tag(TextStyleDefault.Choice.none.rawValue)
             Text("藍框").tag(TextStyleDefault.Choice.blue.rawValue)
             if TextStyleDefault.choice(dark: dark) == .custom {
-                Text("自訂（卡片樣式存的）").tag(TextStyleDefault.Choice.custom.rawValue)
+                Text("其他（卡片樣式選的）").tag(TextStyleDefault.Choice.custom.rawValue)
             }
         } label: {
             Label("框（" + (dark ? "深色紙" : "淺色紙") + "）", systemImage: "rectangle.dashed")
+        }
+        .pickerStyle(.menu)
+        Button {
+            TextStyleDefault.presentEditor(dark: dark) { tick += 1 }
+        } label: {
+            Label("其他框的樣式…", systemImage: "paintpalette")
         }
     }
 }

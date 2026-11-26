@@ -26,6 +26,15 @@ struct BoardSettingsButton: View {
         } label: {
             Image(systemName: "gearshape.fill")
         }
+        .onAppear {
+            // 自動測試（v12.16.5）：打開設定面板看「新文字方塊的框」那一列；framedefault：再打開「其他…」
+            if SelfTest.scene == "boardsettings" || SelfTest.scene == "framedefault" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { showPanel = true }
+            }
+            if SelfTest.scene == "framedefault" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { TextStyleDefault.presentEditor(dark: true) { } }
+            }
+        }
         .popover(isPresented: $showPanel) {
             BoardSettingsPanel(model: model, open: { which in
                 showPanel = false
@@ -110,16 +119,8 @@ struct BoardSettingsPanel: View {
                     Divider()
                     textSizeRow
                     Divider()
-                    // 新文字方塊的框（v12.16.4）：沒有框／藍框，直接選
-                    HStack {
-                        Label("新文字方塊的框", systemImage: "rectangle.dashed")
-                        Spacer()
-                        TextFrameDefaultPicker(dark: model.notebook.rows.first?.pages.first?.isDarkBackground ?? true)
-                            .labelsHidden()
-                            .pickerStyle(.segmented)
-                            .frame(width: 230)
-                    }
-                    .padding(.vertical, 8)
+                    // 新文字方塊的框（v12.16.4；v12.16.5：字一行、按鈕一行，多一顆「其他…」）
+                    TextFrameDefaultRow(dark: model.notebook.rows.first?.pages.first?.isDarkBackground ?? true)
                     Divider()
                     toggleRow("新文字方塊用粗體", symbol: "bold", isOn: boldBinding)
                     Divider()

@@ -152,6 +152,9 @@ enum SelfTest {
             case "mathpaste":
                 // v12.16.3：使用者白板上沒排出來的數學式
                 library.openNotebook = library.addBoard(in: nil, title: "數學式測試", width: 100 * 842, height: 100 * 595)
+            case "boardsettings", "framedefault":
+                // v12.16.5：白板設定面板裡「新文字方塊的框」；framedefault 再打開「其他…」的面板
+                library.openNotebook = library.addBoard(in: nil, title: "設定測試", width: 100 * 842, height: 100 * 595)
             case "mindfold", "voice":
                 // v12.16.0：心智圖折疊；語音的膠囊和「一句一個方塊」
                 library.openNotebook = library.addBoard(in: nil, title: "測試白板 " + scene, width: 100 * 842, height: 100 * 595)

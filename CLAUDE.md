@@ -128,7 +128,7 @@
 - **v12.17.0 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.0.ipa`**：
   - 讓 Mac 上的 Claude 連進來（`RemoteAccess.swift`、`tools/noteapp.py`，見 5.1）：NWListener 埠 8765＋Bonjour `_noteapp._tcp`；配對碼換鑰匙（錯 5 次換碼）；進背景關、回前景開。API：GET /ping /notebooks /current /notebooks/{id} /notebooks/{id}/image；POST /pair /notebooks /notebooks/{id}/texts /pages /outline；PATCH、DELETE /notebooks/{id}/texts/{box}。筆記本可用編號、名稱、current。場景 `remote`、`remoteboard`、`remotesettings`。
   - 外框顏色多一格 #73B8FF（`TextBoxStyle.palette` 第 13 個）；字級選單改 16～72。
-  - 實機要測：打開開關時跳「尋找區域網路裝置」要按允許；Mac 配對（Bonjour 找不找得到 iPad）；我加的方塊即時出現、上一步能復原；App 進背景再回來還連得到。
+  - 實機已測（11/26）：配對（Bonjour 自動找到，當時是熱點 172.20.10.x）、讀清單、寫進沒打開的本、開著的本即時出現（使用者：可以）、頁面圖。還沒確認：上一步一次拿掉、App 進背景再回來還連得到。
 - **v12.16.6 已編譯、安裝檔在 `../安裝檔/NoteApp-v12.16.6.ipa`**：文字方塊工具列的字級數字改成按鈕（`TextBar.sizeButton`），點了選常用字級（8～64）或「輸入數字…」（數字鍵盤、可小數，4～200，以 A4 為準；`NotebookView.setTextSize`、`promptTextSize`）。
 - v12.16.5 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.16.5.ipa`：白板設定面板「新文字方塊的框」以前字被擠成直的 → 字一行、按鈕一行（`TextFrameDefaultRow`），多一顆「其他…」打開卡片樣式面板直接改預設（`TextStyleDefault.presentEditor`、`TextStylePanel(editingDefault:)`）；筆記本 ⋯ 選單也有「其他框的樣式…」。場景 `boardsettings`、`framedefault`。
 - v12.16.4 已編譯、安裝檔在 `../安裝檔/NoteApp-v12.16.4.ipa`（使用者沒裝 12.16.2，直接裝 12.16.3，回報白板不能縮放、點兩下新增變難）：

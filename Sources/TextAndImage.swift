@@ -1327,7 +1327,8 @@ final class TextBoxView: UIView, UITextViewDelegate {
         let editing = textView.isFirstResponder
         // 數學式：不在編輯時，有排好的圖片就用圖片的大小
         var mathImage: UIImage?
-        if !editing && (box.isMarkdown || MathRenderer.containsMath(textView.text)) {     // Markdown 方塊也用排好的圖（v12.9）
+        // Markdown 方塊也用排好的圖（v12.9）；螢光筆也是（v12.17.6）
+        if !editing && (MathRenderer.needsRender(box) || MathRenderer.containsMath(textView.text)) {
             let request = MathRenderer.request(for: box, pageWidth: wrapPage)
             if let image = MathRenderer.shared.cached(request) {
                 mathImage = image

@@ -1624,7 +1624,8 @@ enum UnderlineMark {
     /// 一般方塊（畫面、匯出）用的字的屬性
     static func attributes(_ box: TextBox) -> [NSAttributedString.Key: Any] {
         guard let mark = effective(box) else { return [:] }
-        if mark.style == 3 { return [.backgroundColor: uiColor(mark.rgb, box: box, alpha: 0.55)] }   // 只有打字中會看到（平常顯示排好的圖）
+        // 螢光筆：平常顯示排好的圖（只塗下半截）；系統的字只會整行塗滿，而且會從圖後面透出來，所以這裡不畫
+        if mark.style == 3 { return [:] }
         let style: NSUnderlineStyle = mark.style == 1 ? .thick : (mark.style == 2 ? .double : .single)
         var a: [NSAttributedString.Key: Any] = [.underlineStyle: style.rawValue]
         if mark.rgb != nil { a[.underlineColor] = uiColor(mark.rgb, box: box, alpha: 1) }

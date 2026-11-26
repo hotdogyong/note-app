@@ -1913,6 +1913,8 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     #box.md h3 { font-size: 1.2em; margin: 0.45em 0 0.25em; }
     #box.md h4, #box.md h5, #box.md h6 { font-size: 1.05em; margin: 0.4em 0 0.2em; }
     /* v12.17.5（使用者：標題要畫記）：# ～ ### 標題下面一條天藍色的線，跟字一樣寬 */
+    /* 底線穿過數學式（數學式是一塊一塊的，外面的底線進不去） */
+    #box.u .katex-html .base { text-decoration: underline; }
     #box.md h1, #box.md h2, #box.md h3 { display: table; border-bottom: 0.12em solid #73B8FF; padding-bottom: 0.1em; }
     #box.md p { margin: 0.42em 0; }
     #box.md ul, #box.md ol { margin: 0.3em 0; padding-left: 1.5em; }
@@ -1938,6 +1940,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
       b.style.textDecoration = underline ? 'underline' : 'none';
       if (md) { b.className = 'md'; b.innerHTML = mdToHtml(text); }
       else { b.className = ''; b.textContent = text; }
+      if (underline) { b.classList.add('u'); }
       renderMathInElement(b, {
         delimiters: [
           {left: '$$', right: '$$', display: true},

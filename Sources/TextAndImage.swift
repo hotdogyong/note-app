@@ -1624,7 +1624,7 @@ enum UnderlineMark {
     /// 一般方塊（畫面、匯出）用的字的屬性
     static func attributes(_ box: TextBox) -> [NSAttributedString.Key: Any] {
         guard let mark = effective(box) else { return [:] }
-        if mark.style == 3 { return [.backgroundColor: uiColor(mark.rgb, box: box, alpha: 0.42)] }
+        if mark.style == 3 { return [.backgroundColor: uiColor(mark.rgb, box: box, alpha: 0.55)] }   // 只有打字中會看到（平常顯示排好的圖）
         let style: NSUnderlineStyle = mark.style == 1 ? .thick : (mark.style == 2 ? .double : .single)
         var a: [NSAttributedString.Key: Any] = [.underlineStyle: style.rawValue]
         if mark.rgb != nil { a[.underlineColor] = uiColor(mark.rgb, box: box, alpha: 1) }
@@ -1638,7 +1638,7 @@ enum UnderlineMark {
         let r = Int(((c.count > 0 ? c[0] : 1) * 255).rounded())
         let g = Int(((c.count > 1 ? c[1] : 1) * 255).rounded())
         let b = Int(((c.count > 2 ? c[2] : 1) * 255).rounded())
-        let alpha = mark.style == 3 ? 0.45 : 1
+        let alpha = mark.style == 3 ? 0.62 : 1              // 0.45 在深色紙上看起來是暗暗的橄欖色
         return "\(mark.style)|rgba(\(r),\(g),\(b),\(alpha))"
     }
 
@@ -1675,7 +1675,8 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
 
     /// 這個文字方塊要不要用排好的圖片顯示：有數學式，或是 Markdown 方塊（v12.9）
     static func needsRender(_ box: TextBox) -> Bool {
-        box.isMarkdown || containsMath(box.text)
+        // v12.17.6：螢光筆也用排好的圖（網頁才畫得出「只塗下半截」，系統的字只能整行塗滿）
+        box.isMarkdown || containsMath(box.text) || UnderlineMark.effective(box)?.style == 3
     }
 
     /// 有沒有數學式的記號

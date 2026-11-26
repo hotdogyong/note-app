@@ -2876,7 +2876,8 @@ struct NotePanel: View {
                     }
                     .opacity(moving.contains(line.id) ? 0.3 : 1)
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { outlineFrames[line.id] = $0 }
-                    .gesture(outlineDragGesture(line, lines: mine))
+                    // v12.17.2：改用系統的長按（以前 SwiftUI 的長按＋拖曳會把列表的捲動吃掉，長的大綱滑不下去）
+                    .gesture(OutlineLongPress { state, p in outlinePress(state, p, line: line, lines: mine) })
                     .outlineListRow()
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) {
@@ -2990,20 +2991,24 @@ struct NotePanel: View {
 
     // MARK: 大綱的拖曳（v12.16.4）
 
-    private func outlineDragGesture(_ line: OutlineLine, lines: [OutlineLine]) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.35)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
-            .onChanged { value in
-                guard case .second(true, let drag) = value else { return }
-                if outlineDrag == nil {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                    let f = outlineFrames[line.id] ?? .zero
-                    outlineDrag = OutlineDrag(id: line.id, title: line.item.title, depth: line.depth, startX: nil,
-                                              location: CGPoint(x: f.midX, y: f.midY), target: nil)
-                }
-                if let d = drag { updateOutlineDrag(d.location, lines: lines) }
-            }
-            .onEnded { _ in finishOutlineDrag() }
+    /// 長按一項 0.35 秒開始拖（手指先動就是捲動，不會變成拖）；p 是螢幕座標
+    private func outlinePress(_ state: UIGestureRecognizer.State, _ p: CGPoint, line: OutlineLine, lines: [OutlineLine]) {
+        switch state {
+        case .began:
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            let f = outlineFrames[line.id] ?? .zero
+            outlineDrag = OutlineDrag(id: line.id, title: line.item.title, depth: line.depth, startX: nil,
+                                      location: CGPoint(x: f.midX, y: f.midY), target: nil)
+            updateOutlineDrag(p, lines: lines)
+        case .changed:
+            updateOutlineDrag(p, lines: lines)
+        case .ended:
+            finishOutlineDrag()
+        case .cancelled, .failed:
+            outlineDrag = nil
+        default:
+            break
+        }
     }
 
     /// 手指在 p（螢幕座標）：放下會到哪裡
@@ -3426,5 +3431,22 @@ extension View {
         self.listRowInsets(EdgeInsets(top: 3, leading: 12, bottom: 3, trailing: 12))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
+    }
+}
+
+
+/// 大綱一項的長按拖曳（v12.17.2）：系統的長按手勢，手指先移動就失敗、讓列表捲動
+struct OutlineLongPress: UIGestureRecognizerRepresentable {
+    var onChange: (UIGestureRecognizer.State, CGPoint) -> Void
+
+    func makeUIGestureRecognizer(context: Context) -> UILongPressGestureRecognizer {
+        let g = UILongPressGestureRecognizer()
+        g.minimumPressDuration = 0.35
+        g.allowableMovement = 10
+        return g
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UILongPressGestureRecognizer, context: Context) {
+        onChange(recognizer.state, context.converter.location(in: .global))
     }
 }

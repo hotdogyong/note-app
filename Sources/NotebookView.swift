@@ -9113,7 +9113,9 @@ extension NotebookView: UIDropInteractionDelegate {
         insertLocation = point
         let docTypes = Self.dropDocumentTypes
         for (i, provider) in providers.enumerated() {
-            let p = CGPoint(x: point.x + CGFloat(i % 4) * 40, y: point.y + CGFloat(i / 4) * 40)
+            // 好幾樣一起拖進來：白板上一張一張往右排（跟匯入文件的卡片一樣，一列 4 張），筆記本裡稍微錯開
+            let step = isBoard ? PaperRenderer.gridUnit * 8 * scale : 40
+            let p = CGPoint(x: point.x + CGFloat(i % 4) * step, y: point.y + CGFloat(i / 4) * step * (isBoard ? 1.6 : 1))
             let docType = provider.registeredTypeIdentifiers.first { id in
                 guard let t = UTType(id) else { return false }
                 return docTypes.contains { t.conforms(to: $0) } && !t.conforms(to: .image)

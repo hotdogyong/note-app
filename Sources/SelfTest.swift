@@ -239,7 +239,10 @@ enum SelfTest {
                     let named = pdf.deletingLastPathComponent().appendingPathComponent("電磁學講義.pdf")
                     try? FileManager.default.removeItem(at: named)
                     try? FileManager.default.copyItem(at: pdf, to: named)
-                    if let p = NSItemProvider(contentsOf: named) { providers.append(p) }
+                    if let p = NSItemProvider(contentsOf: named) {
+                        p.suggestedName = "電磁學講義"              // 從 Mac 拖過來會帶檔名
+                        providers.append(p)
+                    }
                 }
                 let png = FileManager.default.temporaryDirectory.appendingPathComponent("拖進來的圖.png")
                 try? testImage(320, 200, UIColor.systemOrange).pngData()?.write(to: png)

@@ -15,8 +15,8 @@ extension RemoteAPI {
     /// 改完之後量畫面上的實際大小（等數學式排好；沒開著的筆記本量不到，回空的）
     static func measuredAfterChange(_ t: Target, page: NotePage) async -> [UUID: CGRect] {
         guard let view = t.view else { return [:] }
-        await renderMath(page)
-        try? await Task.sleep(nanoseconds: 400_000_000)
+        await renderMath(page, timeout: 2.5)                    // 最多等 2.5 秒：還沒排好的就用估的（measured＝false 或大小偏差）
+        try? await Task.sleep(nanoseconds: 300_000_000)
         return view.remoteMeasured(page.id)
     }
 

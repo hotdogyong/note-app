@@ -657,7 +657,7 @@ enum RemoteAPI {
     }
 
     /// 數學式還沒排好的先排（匯出只畫排好的；最多等 8 秒）
-    static func renderMath(_ page: NotePage) async {
+    static func renderMath(_ page: NotePage, timeout: Double = 8) async {
         let width = textWrapWidth(page.spec)
         let requests = (page.texts ?? []).filter { MathRenderer.needsRender($0) }
             .map { MathRenderer.request(for: $0, pageWidth: width) }
@@ -670,7 +670,7 @@ enum RemoteAPI {
                     MainActor.assumeIsolated { wait.oneDone() }
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) {
                 MainActor.assumeIsolated { wait.finish() }
             }
         }
@@ -723,6 +723,16 @@ enum RemoteAPI {
     static func autoStart(_ page: NotePage, view: NotebookView?, board: Bool) -> CGPoint {
         let k = pageScaleFactor(page.spec)
         if board, let seen = view?.remoteVisibleRect(), seen.page == page.id {
+            // 白板：接在畫面上看得到的東西下面（v12.17.1：以前一律從左上角放，圖蓋到標題）
+            var bottom: CGFloat?
+            var left = seen.rect.minX + 60
+            let frames = (page.texts ?? []).map { PageRenderer.textFrameRect($0, page: page) }
+                + (page.images ?? []).map { CGRect(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
+            for f in frames where f.intersects(seen.rect) && f.maxY > (bottom ?? -.infinity) {
+                bottom = f.maxY
+                left = max(f.minX, seen.rect.minX + 20)
+            }
+            if let b = bottom, b + 40 < seen.rect.maxY { return CGPoint(x: left, y: b + 24) }
             return CGPoint(x: seen.rect.minX + 60, y: seen.rect.minY + 60)
         }
         var bottom: CGFloat?
@@ -734,8 +744,8 @@ enum RemoteAPI {
                 if board { left = f.minX }
             }
         }
-        if !board {
-            for b in page.images ?? [] { bottom = max(bottom ?? 0, b.y + b.height) }
+        for b in page.images ?? [] where !board || bottom != nil {
+            bottom = max(bottom ?? 0, b.y + b.height)
         }
         if let b = bottom { return CGPoint(x: left, y: b + 24 * k) }
         if board { return CGPoint(x: page.spec.width / 2 - 300, y: page.spec.height / 2 - 200) }

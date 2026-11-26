@@ -554,7 +554,7 @@ enum RemoteSelfTest {
         guard let url = URL(string: base + path) else { return (0, Data()) }
         var req = URLRequest(url: url)
         req.httpMethod = method
-        req.timeoutInterval = 8
+        req.timeoutInterval = 12
         if !token.isEmpty { req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
         if let body = body {
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -568,6 +568,12 @@ enum RemoteSelfTest {
         }
     }
 
+    /// 加一行結果，馬上更新右下角的面板（逾時的話截圖也看得到做到哪）
+    static func step(_ lines: inout [String], _ line: String) {
+        lines.append(line)
+        overlay(lines.joined(separator: "\n"), image: nil)
+    }
+
     static func json(_ d: Data) -> [String: Any] {
         (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] ?? [:]
     }
@@ -577,21 +583,21 @@ enum RemoteSelfTest {
         let access = RemoteAccess.shared
         access.enabled = true
         try? await Task.sleep(nanoseconds: 1_500_000_000)
-        lines.append("服務：" + access.status + "　" + access.address)
+        step(&lines, "服務：" + access.status + "　" + access.address)
         let (s0, _) = await call("GET", "/notebooks")
-        lines.append("沒配對就讀：\(s0)（應該 401）")
+        step(&lines, "沒配對就讀：\(s0)（應該 401）")
         let (s1, d1) = await call("POST", "/pair", ["code": access.pairCode])
         token = json(d1)["token"] as? String ?? ""
-        lines.append("配對：\(s1)，鑰匙 \(token.count) 字")
+        step(&lines, "配對：\(s1)，鑰匙 \(token.count) 字")
         let (s2, d2) = await call("GET", "/notebooks")
         let count = (json(d2)["notebooks"] as? [Any])?.count ?? -1
-        lines.append("列出筆記本：\(s2)，\(count) 本")
+        step(&lines, "列出筆記本：\(s2)，\(count) 本")
         let board = view.model.isBoard
         let id = view.model.meta.id.uuidString
         if !board {
             let page: [String: Any] = ["boxes": [["text": "第二頁：Claude 加的頁", "size": 26, "bold": true, "frame": "none"] as [String: Any]]]
             let (s3, d3) = await call("POST", "/notebooks/\(id)/pages", ["after": 1, "pages": [page]] as [String: Any])
-            lines.append("加一頁：\(s3) " + String(decoding: d3.prefix(80), as: UTF8.self))
+            step(&lines, "加一頁：\(s3) " + String(decoding: d3.prefix(80), as: UTF8.self))
             try? await Task.sleep(nanoseconds: 800_000_000)
         }
         var c: [String: Any] = ["key": "c", "text": "例：3×5 矩陣、rank 2 → nullity 3",
@@ -612,15 +618,15 @@ enum RemoteSelfTest {
             "links": [["from": "a", "to": "b"], ["from": "a", "to": "c", "route": "curve"]] as [[String: Any]]
         ] as [String: Any])
         let made = (json(d4)["boxes"] as? [[String: Any]]) ?? []
-        lines.append("加文字方塊：\(s4)，\(made.count) 個" + (s4 == 200 ? "" : " " + String(decoding: d4.prefix(120), as: UTF8.self)))
+        step(&lines, "加文字方塊：\(s4)，\(made.count) 個" + (s4 == 200 ? "" : " " + String(decoding: d4.prefix(120), as: UTF8.self)))
         if let first = made.first?["id"] as? String {
             let (s5, _) = await call("PATCH", "/notebooks/\(id)/texts/\(first)", ["text": "秩—零度定理（Rank–Nullity Theorem）"])
-            lines.append("改字：\(s5)")
+            step(&lines, "改字：\(s5)")
         }
         let (s6, d6) = await call("GET", "/notebooks/\(id)?from=1&to=2")
         let pages = (json(d6)["pages"] as? [[String: Any]]) ?? []
         let texts = pages.map { (($0["texts"] as? [Any])?.count ?? 0) }
-        lines.append("讀回來：\(s6)，頁數 \(pages.count)，每頁方塊 \(texts)")
+        step(&lines, "讀回來：\(s6)，頁數 \(pages.count)，每頁方塊 \(texts)")
         // v12.17.1：批次（整區往下移＋改字級＋加一個再連線）、實際大小、搜尋、放圖、手寫辨識、跳頁
         let ids = made.compactMap { $0["id"] as? String }
         if ids.count >= 3 {
@@ -635,14 +641,14 @@ enum RemoteSelfTest {
             ]
             let (sb, db) = await call("POST", "/notebooks/\(id)/batch", batchBody)
             let done = (json(db)["done"] as? [String])?.joined(separator: "、") ?? String(decoding: db.prefix(120), as: UTF8.self)
-            lines.append("批次：\(sb) \(done)")
+            step(&lines, "批次：\(sb) \(done)")
             let (sm, dm) = await call("GET", "/notebooks/\(id)/measure?page=current")
             let mboxes = (json(dm)["boxes"] as? [[String: Any]]) ?? []
             let mathBox = mboxes.first { ($0["id"] as? String) == a }
-            lines.append("實際大小：\(sm) 數學式方塊 w=\(mathBox?["w"] ?? "?") measured=\(mathBox?["measured"] ?? "?")")
+            step(&lines, "實際大小：\(sm) 數學式方塊 w=\(mathBox?["w"] ?? "?") measured=\(mathBox?["measured"] ?? "?")")
         }
         let (ss, dsr) = await call("GET", "/search?q=nullity")
-        lines.append("搜尋 nullity：\(ss) \((json(dsr)["hits"] as? [Any])?.count ?? -1) 筆")
+        step(&lines, "搜尋 nullity：\(ss) \((json(dsr)["hits"] as? [Any])?.count ?? -1) 筆")
         let dot = UIGraphicsImageRenderer(size: CGSize(width: 240, height: 120)).image { ctx in
             UIColor.systemTeal.setFill()
             ctx.fill(CGRect(x: 0, y: 0, width: 240, height: 120))
@@ -651,27 +657,30 @@ enum RemoteSelfTest {
         }
         let png = dot.pngData()?.base64EncodedString() ?? ""
         let (si, di) = await call("POST", "/notebooks/\(id)/images", ["page": "current", "data": png, "width": 120] as [String: Any])
-        lines.append("放圖：\(si) " + String(decoding: di.prefix(60), as: UTF8.self))
+        step(&lines, "放圖：\(si) " + String(decoding: di.prefix(60), as: UTF8.self))
         let (so, dso) = await call("GET", "/notebooks/\(id)/ocr?page=current")
         let ocrText = ((json(dso)["text"] as? String) ?? "").replacingOccurrences(of: "\n", with: "／")
-        lines.append("辨識：\(so) " + String(ocrText.prefix(60)))
+        step(&lines, "辨識：\(so) " + String(ocrText.prefix(60)))
         let (sop, _) = await call("POST", "/open", ["notebook": id, "page": board ? 1 : 2] as [String: Any])
-        lines.append("打開、跳頁：\(sop)")
+        step(&lines, "打開、跳頁：\(sop)")
         try? await Task.sleep(nanoseconds: 1_200_000_000)
         let (s7, d7) = await call("GET", "/current")
         let cur = json(d7)
-        lines.append("現在：\(s7) 第 \(cur["page"] ?? "?") 頁，看得到 \(cur["visible"] ?? "?")")
-        try? await Task.sleep(nanoseconds: 2_500_000_000)          // 等數學式排好
+        step(&lines, "現在：\(s7) 第 \(cur["page"] ?? "?") 頁，看得到 \(cur["visible"] ?? "?")")
+        try? await Task.sleep(nanoseconds: 800_000_000)            // 等數學式排好
         let (s8, d8) = await call("GET", "/notebooks/\(id)/image?page=current&width=700")
-        lines.append("頁面圖：\(s8)，\(d8.count / 1024) KB")
+        step(&lines, "頁面圖：\(s8)，\(d8.count / 1024) KB")
         let (s9, d9) = await call("POST", "/notebooks", ["title": "Claude 新增的筆記本"])
-        lines.append("新筆記本：\(s9) " + ((json(d9)["title"] as? String) ?? ""))
+        step(&lines, "新筆記本：\(s9) " + ((json(d9)["title"] as? String) ?? ""))
         overlay(lines.joined(separator: "\n"), image: s8 == 200 ? UIImage(data: d8) : nil)
     }
+
+    private static weak var panelView: UIView?
 
     static func overlay(_ text: String, image: UIImage?) {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
               let window = scene.keyWindow else { return }
+        panelView?.removeFromSuperview()
         let w = window.bounds.width
         let panel = UIView()
         panel.backgroundColor = UIColor(red: 0.05, green: 0.14, blue: 0.32, alpha: 0.95)
@@ -700,5 +709,6 @@ enum RemoteSelfTest {
         }
         panel.frame = CGRect(x: 30, y: window.bounds.height - height - 40, width: w - 60, height: height)
         window.addSubview(panel)
+        panelView = panel
     }
 }

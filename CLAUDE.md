@@ -126,8 +126,9 @@
 - 匯出、縮圖裡的便利貼：展開會擋到課本（看那一塊的像素＋PDF 的字）、筆跡、其他方塊、圖片就畫成小圖示。
 - 模擬器沒辦法用 Pencil，手寫相關的只能測資料流程（例如 `undoink` 場景照 PencilKit 的順序假裝呼叫代理）。
 
-## 7. 目前狀態（2026-11-26）
+## 7. 目前狀態（2026-11-27）
 
+- **v12.17.5 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.5.ipa`**：標題畫記（使用者：iEM 白板的標題要能加底線）：`TextBox.underline`；文字工具列 B 旁邊多一顆 U（`toggleTextUnderline`）；畫面（`TextBoxView.applyUnderline`）、數學式排版（`Request.underline`、`#box.u` 穿過 KaTeX 的 .base）、匯出都有；Markdown 的 # ～ ### 標題自動天藍 #73B8FF 底線（跟字一樣寬）、`++底線++` 語法（`==螢光==` 本來就有）；`layoutRevision` 改 8。Claude 連線的方塊、batch update、edit 都收 `underline`，連接器說明也寫了。場景 `underline`。
 - **v12.17.4 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.4.ipa`**：使用者說還有很近的（上標那幾行，例如 $e^{-iEt/\hbar}$、$|\Psi|^2$）→ 有上下標的 `.base` 也上下留 0.18em（分數那類維持 0.32em）、Markdown 段落間距 0.35→0.42em；`layoutRevision` 改 7。場景 `mathgap` 放了使用者 griffiths 白板上的兩個方塊。
 - **v12.17.3 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.3.ipa`**：一般行裡（不是 $$）的高的數學式（分數、根號、上下限、矩陣、大括號，含 `$\displaystyle …$`）跟上下行貼太近 → `MathRenderer` 的 CSS 在那一段的 `.base` 上下多 0.32em（加在 .base 不是整個 .katex：長式子還能換行）；`layoutRevision` 改 6，舊的數學式快取都會重排一次。場景 `mathgap`（含使用者 griffiths 白板那一段 Markdown 方塊）。實機要測：白板上那段變不變寬鬆、一般行有分數的方塊高度跟著變。
 - **v12.17.2 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.2.ipa`**：

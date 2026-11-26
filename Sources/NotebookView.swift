@@ -3409,6 +3409,50 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         return "講三句中…"
     }
 
+    /// 自動測試（mathpaste，v12.16.3）：使用者白板上沒排出來的兩段數學式（從 AI 貼過來的）原樣放上去，看排不排得出來
+    func selfTestMathPaste(_ done: @escaping (String) -> Void) {
+        guard let pv = boardPV else { done("沒有白板"); return }
+        let a = #"$\text{rank}(A)\le m<n$，所以 $\text{nullity}(A)=n-\text{rank}(A)\ge n-m>0$。一定有方向被壓到 $\vec 0$，永遠不可能一對一，但有可能是滿射。"# + "\n\n"
+            + #"$$B=\begin{pmatrix}1&0&1\\0&1&1\end{pmatrix}$$"# + "\n\n"
+            + #"　　前兩行已經是 $\mathbb R^2$ 的標準基底，所以 $\text{rank}(B)=2=m$，$B$ 是滿射。代價是 $\text{nullity}(B)=3-2=1$：解 $x_1+x_3=0,\ x_2+x_3=0$ 得 $\text{Null}(B)=\text{span}\{(-1,-1,1)^T\}$。"#
+        let b = #"""
+        \begin{aligned}
+        &\text{rank}(A)\le m<n\text{，所以 }\text{nullity}(A)=n-\text{rank}(A)\ge n-m>0\text{。}\\
+        &\text{一定有方向被壓到 }\vec 0\text{，永遠不可能一對一，但有可能是滿射。}\\[1em]
+        &B=\begin{pmatrix}1&0&1\\0&1&1\end{pmatrix}\\[1em]
+        &\text{前兩行已經是 }\mathbb R^2\text{ 的標準基底，所以 }\text{rank}(B)=2=m\text{，}B\text{ 是滿射。}\\
+        &\text{代價是 }\text{nullity}(B)=3-2=1\text{：解 }x_1+x_3=0,\ x_2+x_3=0\\
+        &\text{得 }\text{Null}(B)=\text{span}\{(-1,-1,1)^T\}\text{。}
+        \end{aligned}
+        """#
+        let center = pv.convert(CGPoint(x: bounds.width * 0.08, y: bounds.height * 0.22), from: self)
+        let k = max(pv.bounds.width / max(pv.page.spec.width, 1), 0.0001)
+        var boxes: [TextBox] = []
+        for (i, text) in [a, b].enumerated() {
+            var box = TextBox()
+            box.text = text
+            box.fontSize = 16 / k
+            box.rgba = [1, 1, 1, 1]
+            box.fixedWidth = 640 / k
+            box.width = 640 / k
+            box.x = center.x / k
+            box.y = center.y / k + CGFloat(i) * 380 / k
+            boxes.append(box)
+        }
+        model.setTexts(model.texts(of: pv.page.id) + boxes, pageID: pv.page.id)
+        pv.syncTexts(model.texts(of: pv.page.id))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 9) { [weak pv] in
+            guard let pv = pv else { return }
+            let width = textWrapWidth(pv.page.spec)
+            let result = boxes.enumerated().map { i, box -> String in
+                let req = MathRenderer.request(for: box, pageWidth: width)
+                let ok = MathRenderer.shared.cached(req) != nil
+                return "第 \(i + 1) 段：" + (ok ? "排出來了" : "沒排出來") + (MathRenderer.needsRender(box) ? "" : "（沒被當成數學式）")
+            }
+            done(result.joined(separator: "；"))
+        }
+    }
+
     /// 自動測試（textedge，v12.16.2）：頁面右邊放一個方塊、打一長句，看有沒有收在頁面裡面；再打開卡片樣式面板
     func selfTestTextEdge() -> String {
         guard let page = model.notebook.rows.first?.pages.first, let pv = pageViews[page.id] else { return "沒有頁面" }

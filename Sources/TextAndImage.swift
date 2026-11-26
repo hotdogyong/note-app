@@ -1598,7 +1598,14 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
 
     /// 有沒有數學式的記號
     static func containsMath(_ text: String) -> Bool {
-        text.contains("$") || text.contains("\\(") || text.contains("\\[")
+        text.contains("$") || text.contains("\\(") || text.contains("\\[") || bareEnvironment(text)
+    }
+
+    /// 沒有 $$ 包起來、直接寫 \begin{aligned}…\end{aligned} 的數學式（v12.16.3，使用者：從 AI 貼過來的常常是這樣）
+    static let bareEnvironments = ["aligned", "align", "align*", "equation", "equation*", "gather", "gather*", "gathered",
+                                   "cases", "pmatrix", "bmatrix", "vmatrix", "matrix", "array"]
+    static func bareEnvironment(_ text: String) -> Bool {
+        bareEnvironments.contains { text.contains("\\begin{\($0)}") }
     }
 
     /// 文字方塊要怎麼排（畫面上和匯出用同一套，排出來的圖片才會一樣）
@@ -1901,7 +1908,21 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
           {left: '$$', right: '$$', display: true},
           {left: '\\\\[', right: '\\\\]', display: true},
           {left: '$', right: '$', display: false},
-          {left: '\\\\(', right: '\\\\)', display: false}
+          {left: '\\\\(', right: '\\\\)', display: false},
+          {left: '\\\\begin{aligned}', right: '\\\\end{aligned}', display: true},
+          {left: '\\\\begin{align}', right: '\\\\end{align}', display: true},
+          {left: '\\\\begin{align*}', right: '\\\\end{align*}', display: true},
+          {left: '\\\\begin{equation}', right: '\\\\end{equation}', display: true},
+          {left: '\\\\begin{equation*}', right: '\\\\end{equation*}', display: true},
+          {left: '\\\\begin{gather}', right: '\\\\end{gather}', display: true},
+          {left: '\\\\begin{gather*}', right: '\\\\end{gather*}', display: true},
+          {left: '\\\\begin{gathered}', right: '\\\\end{gathered}', display: true},
+          {left: '\\\\begin{cases}', right: '\\\\end{cases}', display: true},
+          {left: '\\\\begin{pmatrix}', right: '\\\\end{pmatrix}', display: true},
+          {left: '\\\\begin{bmatrix}', right: '\\\\end{bmatrix}', display: true},
+          {left: '\\\\begin{vmatrix}', right: '\\\\end{vmatrix}', display: true},
+          {left: '\\\\begin{matrix}', right: '\\\\end{matrix}', display: true},
+          {left: '\\\\begin{array}', right: '\\\\end{array}', display: true}
         ],
         throwOnError: false,
         macros: {'\\\\arraystretch': '1.35'}

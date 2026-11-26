@@ -149,6 +149,9 @@ enum SelfTest {
                 // 白板匯入文件（Markdown、PDF）、子白板（v12.14.0）：notebookOpened 裡匯入、放卡片、開一個視窗
                 library.openNotebook = library.addBoard(in: nil, title: scene == "subboard" ? "子白板測試" : "匯入文件測試",
                                                         width: 100 * 842, height: 100 * 595)
+            case "mathpaste":
+                // v12.16.3：使用者白板上沒排出來的數學式
+                library.openNotebook = library.addBoard(in: nil, title: "數學式測試", width: 100 * 842, height: 100 * 595)
             case "mindfold", "voice":
                 // v12.16.0：心智圖折疊；語音的膠囊和「一句一個方塊」
                 library.openNotebook = library.addBoard(in: nil, title: "測試白板 " + scene, width: 100 * 842, height: 100 * 595)
@@ -359,6 +362,12 @@ enum SelfTest {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
                 guard let view = view else { return }
                 show(view.selfTestMindFold())
+            }
+            return
+        }
+        if scene == "mathpaste", view.model.isBoard, !view.model.embedded {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                view?.selfTestMathPaste { show($0) }
             }
             return
         }

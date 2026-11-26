@@ -3017,9 +3017,28 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         activate(tv, edit: false)
     }
 
-    /// 底線（v12.17.5）
-    func toggleTextUnderline() {
-        updateActive { $0.underline = $0.underline == true ? nil : true }
+    /// 畫記的樣子（v12.17.6）：nil＝沒有；0 底線、1 粗底線、2 雙底線、3 螢光筆。從預設（Markdown 標題的黃色螢光筆）改的話顏色照舊
+    func setTextUnderline(style: Int?) {
+        updateActive { b in
+            guard let s = style else {
+                b.underline = false
+                return
+            }
+            if b.underline != true { b.underlineRGB = UnderlineMark.effective(b)?.rgb }
+            b.underline = true
+            b.underlineStyle = s == 0 ? nil : s
+        }
+    }
+
+    /// 畫記的顏色（nil＝跟字一樣）；還沒有畫記的話順便打開（一般方塊：底線；Markdown：螢光筆）
+    func setTextUnderlineColor(_ rgb: [Double]?) {
+        updateActive { b in
+            if b.underline != true {
+                b.underlineStyle = UnderlineMark.effective(b)?.style ?? (b.isMarkdown ? 3 : nil)
+                b.underline = true
+            }
+            b.underlineRGB = rgb
+        }
     }
 
     /// Markdown 排版開關（v12.9）：打開後，不在輸入時用標題、條列、粗體、表格、數學式排好顯示

@@ -1084,20 +1084,25 @@ final class TextBoxView: UIView, UITextViewDelegate {
     }
     static let insetY: CGFloat = 3
 
-    /// 底線（v12.17.5）：整段字加或拿掉；之後打的字也照這個
-    private func applyUnderline(_ on: Bool) {
+    /// 底線、螢光筆（v12.17.5／12.17.6）：整段字套上；之後打的字也照這個。Markdown 方塊的畫記只畫在標題上（排好的圖裡），這裡不畫
+    private func applyUnderline(_ box: TextBox) {
+        let attrs = box.isMarkdown ? [:] : UnderlineMark.attributes(box)
         var typing = textView.typingAttributes
-        typing[.underlineStyle] = on ? NSUnderlineStyle.single.rawValue : nil
+        for k in UnderlineMark.keys { typing[k] = attrs[k] }
         textView.typingAttributes = typing
         let text = textView.attributedText ?? NSAttributedString()
         guard text.length > 0 else { return }
-        let now = ((text.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int) ?? 0) != 0
-        guard now != on else { return }
+        let current = text.attributes(at: 0, effectiveRange: nil)
+        let same = UnderlineMark.keys.allSatisfy { k in
+            String(describing: current[k] ?? "-") == String(describing: attrs[k] ?? "-")
+        }
+        guard !same else { return }
         let selection = textView.selectedRange
         let m = NSMutableAttributedString(attributedString: text)
         let all = NSRange(location: 0, length: m.length)
-        if on { m.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: all) }
-        else { m.removeAttribute(.underlineStyle, range: all) }
+        for k in UnderlineMark.keys {
+            if let v = attrs[k] { m.addAttribute(k, value: v, range: all) } else { m.removeAttribute(k, range: all) }
+        }
         textView.attributedText = m
         textView.selectedRange = selection
     }
@@ -1302,7 +1307,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
         textView.font = font
         textView.textColor = box.color
         textView.textAlignment = Self.alignment(box.align)
-        applyUnderline(box.underline == true)
+        applyUnderline(box)
         placeholder.font = font
         // 寬度依內容自動決定；最寬是整頁的寬度（v11.30 起跟位置無關：移動時不會重新換行、越拉越長）
         let maxWidth = Self.maxTextWidth(pageWidth: wrapPage)
@@ -1593,10 +1598,65 @@ extension TextBoxView: PKCanvasViewDelegate {
 /// 第一次用時從網路下載 KaTeX（存在 _App資料/KaTeX，之後離線也能用）；排好的圖片存在 _App資料/數學式快取。
 /// 排版在一個看不到的網頁視圖裡做（放在畫面最底層），一次排一個，排好拍成圖片。
 @MainActor
+/// 底線、螢光筆的畫記（v12.17.6，使用者：要像框一樣有選單選；藍色不顯眼）
+/// 一般方塊：整段字；Markdown 方塊：# ～ ### 標題（沒設定過＝黃色螢光筆）
+enum UnderlineMark {
+    static let styleNames = ["底線", "粗底線", "雙底線", "螢光筆"]
+    static let colors: [(name: String, rgb: [Double]?)] = [
+        ("跟字一樣", nil), ("黃", [0.97, 0.78, 0.31]), ("橘", [0.94, 0.6, 0.29]), ("紅", [0.93, 0.4, 0.4]),
+        ("綠", [0.5, 0.82, 0.42]), ("天藍", [0.451, 0.722, 1.0])
+    ]
+    static let headingDefault: (style: Int, rgb: [Double]?) = (3, [0.97, 0.78, 0.31])
+    static let keys: [NSAttributedString.Key] = [.underlineStyle, .underlineColor, .backgroundColor]
+
+    /// 這個方塊實際的畫記；nil＝沒有
+    static func effective(_ box: TextBox) -> (style: Int, rgb: [Double]?)? {
+        if box.underline == false { return nil }
+        if box.underline == true { return (min(max(box.underlineStyle ?? 0, 0), 3), box.underlineRGB) }
+        return box.isMarkdown ? headingDefault : nil
+    }
+
+    static func uiColor(_ rgb: [Double]?, box: TextBox, alpha: CGFloat) -> UIColor {
+        let c = rgb ?? Array(box.rgba.prefix(3))
+        return UIColor(red: c.count > 0 ? c[0] : 1, green: c.count > 1 ? c[1] : 1, blue: c.count > 2 ? c[2] : 1, alpha: alpha)
+    }
+
+    /// 一般方塊（畫面、匯出）用的字的屬性
+    static func attributes(_ box: TextBox) -> [NSAttributedString.Key: Any] {
+        guard let mark = effective(box) else { return [:] }
+        if mark.style == 3 { return [.backgroundColor: uiColor(mark.rgb, box: box, alpha: 0.42)] }
+        let style: NSUnderlineStyle = mark.style == 1 ? .thick : (mark.style == 2 ? .double : .single)
+        var a: [NSAttributedString.Key: Any] = [.underlineStyle: style.rawValue]
+        if mark.rgb != nil { a[.underlineColor] = uiColor(mark.rgb, box: box, alpha: 1) }
+        return a
+    }
+
+    /// 排版網頁用：「樣子|CSS 顏色」；沒有畫記是空字串
+    static func css(_ box: TextBox) -> String {
+        guard let mark = effective(box) else { return "" }
+        let c = mark.rgb ?? Array(box.rgba.prefix(3))
+        let r = Int(((c.count > 0 ? c[0] : 1) * 255).rounded())
+        let g = Int(((c.count > 1 ? c[1] : 1) * 255).rounded())
+        let b = Int(((c.count > 2 ? c[2] : 1) * 255).rounded())
+        let alpha = mark.style == 3 ? 0.45 : 1
+        return "\(mark.style)|rgba(\(r),\(g),\(b),\(alpha))"
+    }
+
+    /// 選單上的小色塊
+    static func swatch(_ rgb: [Double]?) -> UIImage? {
+        guard let c = rgb else { return UIImage(systemName: "textformat") }
+        let color = UIColor(red: c[0], green: c[1], blue: c[2], alpha: 1)
+        return UIGraphicsImageRenderer(size: CGSize(width: 18, height: 18)).image { ctx in
+            color.setFill()
+            ctx.cgContext.fillEllipse(in: CGRect(x: 1, y: 1, width: 16, height: 16))
+        }.withRenderingMode(.alwaysOriginal)
+    }
+}
+
 final class MathRenderer: NSObject, WKNavigationDelegate {
     static let shared = MathRenderer()
     static let katexVersion = "0.16.11"
-    static let layoutRevision = "8"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果；6：v12.17.3 行內分數上下留空；7：v12.17.4 上下標也留、Markdown 段落間距加大；8：v12.17.5 標題底線）
+    static let layoutRevision = "9"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果；6：v12.17.3 行內分數上下留空；7：v12.17.4 上下標也留、Markdown 段落間距加大；8：v12.17.5 標題底線；9：v12.17.6 畫記選單、標題預設黃色螢光筆）
     static let webTop: CGFloat = 160          // 看不到的網頁放在離畫面頂端這麼遠的地方（避開狀態列底下的邊緣效果）
     /// 排版時放大的倍數（圖片比較清楚）：頁面上 1 點 = 網頁裡 2 px
     static let scaleFactor: CGFloat = 2
@@ -1610,7 +1670,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         var bold: Bool
         var align: String           // left / center / right
         var markdown = false        // Markdown 排版（v12.9）
-        var underline = false       // 整段加底線（v12.17.5）
+        var underline = ""          // 畫記（v12.17.6）：「樣子|顏色」；空字串＝沒有（UnderlineMark.css）
     }
 
     /// 這個文字方塊要不要用排好的圖片顯示：有數學式，或是 Markdown 方塊（v12.9）
@@ -1641,14 +1701,14 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         let align = box.align == 1 ? "center" : (box.align == 2 ? "right" : "left")
         return Request(text: box.text, width: width, fixed: box.fixedWidth != nil, fontSize: box.fontSize,
                        color: "rgb(\(r),\(g),\(b))", bold: box.bold, align: align, markdown: box.isMarkdown,
-                       underline: box.underline == true)
+                       underline: UnderlineMark.css(box))
     }
 
     static func key(_ r: Request) -> String {
         var parts = [katexVersion + "-" + layoutRevision, r.text, "\(Int(r.width * 10))", r.fixed ? "f" : "a", "\(Int(r.fontSize * 10))",
                      r.color, r.bold ? "b" : "n", r.align]
         if r.markdown { parts.append("md2") }
-        if r.underline { parts.append("u") }               // 有底線的另外存（沒底線的快取不受影響）               // Markdown 的另外存（一般的快取不受影響）；md2：v12.9.3 修好長頁空白後重排
+        if !r.underline.isEmpty { parts.append("u" + r.underline) }               // 有底線的另外存（沒底線的快取不受影響）               // Markdown 的另外存（一般的快取不受影響）；md2：v12.9.3 修好長頁空白後重排
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in parts.joined(separator: "\u{1}").utf8 {
             hash ^= UInt64(byte)
@@ -1912,10 +1972,11 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     #box.md h2 { font-size: 1.4em; margin: 0.5em 0 0.3em; }
     #box.md h3 { font-size: 1.2em; margin: 0.45em 0 0.25em; }
     #box.md h4, #box.md h5, #box.md h6 { font-size: 1.05em; margin: 0.4em 0 0.2em; }
-    /* v12.17.5（使用者：標題要畫記）：# ～ ### 標題下面一條天藍色的線，跟字一樣寬 */
-    /* 底線穿過數學式（數學式是一塊一塊的，外面的底線進不去） */
-    #box.u .katex-html .base { text-decoration: underline; }
-    #box.md h1, #box.md h2, #box.md h3 { display: table; border-bottom: 0.12em solid #73B8FF; padding-bottom: 0.1em; }
+    /* v12.17.6 畫記：一般方塊整段（.u）、Markdown 的 # ～ ### 標題（.hm）；樣子、顏色由 renderBox 設的變數決定。
+       數學式是一塊一塊的，外面的底線進不去，所以 .base 也要寫 */
+    #box.u, #box.u .katex-html .base, #box.hm :is(h1, h2, h3), #box.hm :is(h1, h2, h3) .katex-html .base {
+        text-decoration-line: underline; text-decoration-color: var(--uc); text-decoration-style: var(--us);
+        text-decoration-thickness: var(--ut); text-underline-offset: var(--uo); text-decoration-skip-ink: none; }
     #box.md p { margin: 0.42em 0; }
     #box.md ul, #box.md ol { margin: 0.3em 0; padding-left: 1.5em; }
     #box.md li { margin: 0.12em 0; }
@@ -1937,10 +1998,18 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
       b.style.color = color;
       b.style.fontWeight = bold ? 'bold' : 'normal';
       b.style.textAlign = align;
-      b.style.textDecoration = underline ? 'underline' : 'none';
       if (md) { b.className = 'md'; b.innerHTML = mdToHtml(text); }
       else { b.className = ''; b.textContent = text; }
-      if (underline) { b.classList.add('u'); }
+      if (underline) {
+        var parts = underline.split('|');
+        var look = {'0': ['solid', '0.07em', '0.14em'], '1': ['solid', '0.15em', '0.12em'],
+                    '2': ['double', '0.07em', '0.12em'], '3': ['solid', '0.52em', '-0.38em']}[parts[0]] || ['solid', '0.07em', '0.14em'];
+        b.classList.add(md ? 'hm' : 'u');
+        b.style.setProperty('--uc', parts[1]);
+        b.style.setProperty('--us', look[0]);
+        b.style.setProperty('--ut', look[1]);
+        b.style.setProperty('--uo', look[2]);
+      }
       renderMathInElement(b, {
         delimiters: [
           {left: '$$', right: '$$', display: true},
@@ -2168,9 +2237,9 @@ final class TextBar: UIView {
         boldButton.addAction(UIAction { [weak host] _ in host?.toggleTextBold() }, for: .touchUpInside)
         boldButton.setImage(UIImage(systemName: "bold"), for: .normal)
         items.append(boldButton)
-        underlineButton.addAction(UIAction { [weak host] _ in host?.toggleTextUnderline() }, for: .touchUpInside)
         underlineButton.setImage(UIImage(systemName: "underline"), for: .normal)
-        items.append(underlineButton)                              // 底線（v12.17.5）
+        underlineButton.showsMenuAsPrimaryAction = true            // 底線、螢光筆的選單（v12.17.6；選單在 refresh 裡照目前的樣子重做）
+        items.append(underlineButton)
         alignButton.addAction(UIAction { [weak host] _ in host?.cycleTextAlign() }, for: .touchUpInside)
         items.append(alignButton)
         markdownButton.addAction(UIAction { [weak host] _ in host?.toggleTextMarkdown() }, for: .touchUpInside)
@@ -2234,7 +2303,23 @@ final class TextBar: UIView {
     func refresh(_ box: TextBox, size: Int) {
         sizeButton.setTitle("\(size)", for: .normal)
         boldButton.tintColor = box.bold ? .systemYellow : .white
-        underlineButton.tintColor = box.underline == true ? .systemYellow : .white
+        let mark = UnderlineMark.effective(box)
+        underlineButton.tintColor = mark != nil ? .systemYellow : .white
+        let styles: [UIMenuElement] = [UIAction(title: "沒有", state: mark == nil ? .on : .off) { [weak host = self.host] _ in
+            host?.setTextUnderline(style: nil)
+        }] + UnderlineMark.styleNames.enumerated().map { i, name in
+            UIAction(title: name, state: mark?.style == i ? .on : .off) { [weak host = self.host] _ in host?.setTextUnderline(style: i) }
+        }
+        let colors: [UIMenuElement] = UnderlineMark.colors.map { item in
+            UIAction(title: item.name, image: UnderlineMark.swatch(item.rgb),
+                     state: mark != nil && mark?.rgb == item.rgb ? .on : .off) { [weak host = self.host] _ in
+                host?.setTextUnderlineColor(item.rgb)
+            }
+        }
+        underlineButton.menu = UIMenu(title: box.isMarkdown ? "標題的畫記（# ～ ### 標題）" : "底線、螢光筆", children: [
+            UIMenu(title: "樣子", options: .displayInline, children: styles),
+            UIMenu(title: "顏色", options: .displayInline, children: colors)
+        ])
         markdownButton.tintColor = box.isMarkdown ? .systemYellow : .white
         styleButton.tintColor = box.fill != nil ? .systemYellow : .white
         stickyButton.setImage(UIImage(systemName: box.sticky == true ? "arrow.down.right.and.arrow.up.left" : "note.text"),

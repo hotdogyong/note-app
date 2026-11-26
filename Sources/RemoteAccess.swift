@@ -535,7 +535,10 @@ enum RemoteAPI {
                                 "color": hex(t.rgba) ?? "#FFFFFF"]
         if let fill = t.fill { d["frame"] = ["color": hex(fill) ?? "", "mode": t.fillMode ?? 0, "shape": t.shape ?? 1] }
         if t.bold { d["bold"] = true }
-        if t.underline == true { d["underline"] = true }
+        if let mark = UnderlineMark.effective(t) {
+            d["underline"] = ["single", "thick", "double", "marker"][mark.style]
+            d["underlineColor"] = hex(mark.rgb) ?? "text"
+        }
         if t.isMarkdown { d["markdown"] = true }
         if t.sticky == true { d["sticky"] = true }
         if t.fixedWidth != nil { d["fixedWidth"] = true }
@@ -713,6 +716,24 @@ enum RemoteAPI {
         box.shape = style.fill == nil ? nil : style.shape
     }
 
+    /// underline：true／false，或 "single"／"thick"／"double"／"marker"／"none"；underlineColor："#RRGGBB" 或 "text"（跟字一樣）
+    static func applyUnderline(_ d: [String: Any], to box: inout TextBox) {
+        if let on = d["underline"] as? Bool {
+            if on { box.underline = true } else { box.underline = false }
+        } else if let s = d["underline"] as? String {
+            if s == "none" {
+                box.underline = false
+            } else if let i = ["single", "thick", "double", "marker"].firstIndex(of: s) {
+                box.underline = true
+                box.underlineStyle = i == 0 ? nil : i
+            }
+        }
+        if let c = d["underlineColor"] as? String {
+            box.underlineRGB = c == "text" ? nil : color(c).map { Array($0.prefix(3)) }
+            if box.underline == nil { box.underline = true }
+        }
+    }
+
     static func number(_ v: Any?) -> CGFloat? {
         if let d = v as? Double { return CGFloat(d) }
         if let i = v as? Int { return CGFloat(i) }
@@ -760,7 +781,7 @@ enum RemoteAPI {
         box.text = text
         box.fontSize = (number(d["size"]) ?? TextDefaults.size(notebookID)) * k
         box.bold = (d["bold"] as? Bool) ?? TextDefaults.bold(notebookID)
-        if d["underline"] as? Bool == true { box.underline = true }
+        applyUnderline(d, to: &box)
         switch d["align"] as? String {
         case "center": box.align = 1
         case "right": box.align = 2
@@ -964,7 +985,7 @@ enum RemoteAPI {
         }
         if let s = number(body["size"]) { box.fontSize = s * k }
         if let b = body["bold"] as? Bool { box.bold = b }
-        if let u = body["underline"] as? Bool { box.underline = u ? true : nil }
+        applyUnderline(body, to: &box)
         if let c = color(body["color"]) { box.rgba = c }
         if body["frame"] != nil { try applyFrame(body["frame"], to: &box, dark: page.isDarkBackground) }
         switch body["align"] as? String {

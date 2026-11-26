@@ -2127,7 +2127,7 @@ enum PageRenderer {
                 .foregroundColor: t.color,
                 .paragraphStyle: para
             ]
-            if t.underline == true { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+            if !t.isMarkdown { attributes.merge(UnderlineMark.attributes(t)) { _, new in new } }
             let box = CGRect(x: rect.minX + (t.x + TextBoxView.insetX) * k,
                              y: rect.minY + (t.y + TextBoxView.insetY) * k,
                              width: (t.width + 2) * k, height: 100_000)

@@ -212,6 +212,8 @@ enum SelfTest {
                 title.fontSize = 30
                 title.bold = true
                 title.underline = true
+                title.underlineStyle = 3                       // 螢光筆（黃）
+                title.underlineRGB = [0.97, 0.78, 0.31]
                 title.x = 40
                 title.y = 40
                 title.width = 260
@@ -219,6 +221,8 @@ enum SelfTest {
                 mathTitle.text = "$F(s)$ 的性質"
                 mathTitle.fontSize = 22
                 mathTitle.underline = true
+                mathTitle.underlineStyle = 1                   // 粗底線（橘）
+                mathTitle.underlineRGB = [0.94, 0.6, 0.29]
                 mathTitle.x = 40
                 mathTitle.y = 120
                 mathTitle.width = 200

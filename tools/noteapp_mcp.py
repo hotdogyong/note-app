@@ -37,7 +37,7 @@ INSTRUCTIONS = """這個連接器可以讀寫使用者 iPad 上的筆記軟體�
 - 使用者說「找我寫過的 XX」用 notes_search；要讓使用者看到某個地方用 notes_open（會跳過去，跳之前自動插旗子，使用者可以跳回來）。
 - 手寫內容用 notes_ocr 讀成文字（數學式常認錯，要配合 notes_image 看）。
 - 要放圖（例如畫好的圖表、示意圖）用 notes_add_image，給 Mac 上圖片檔的路徑。
-- 標題要醒目：一般方塊用 underline: true；Markdown 方塊用 ### 標題（自動有天藍色底線），句子中間要強調用 ==螢光== 或 ++底線++。
+- 標題要醒目：一般方塊用 underline（marker 螢光筆最顯眼，或 single／thick／double）＋ underlineColor；Markdown 方塊用 ### 標題（預設黃色螢光筆，可用 underline／underlineColor 改），句子中間要強調用 ==螢光== 或 ++底線++。
 - 刪除或修改使用者自己寫的方塊之前，一定要先問使用者。加頁在打開中的筆記本會清掉「上一步」的紀錄，要先跟使用者說。
 - 跟使用者講話一律繁體中文（台灣用語）。"""
 
@@ -51,7 +51,8 @@ BOX_SCHEMA = {
         "width": {"type": "number", "description": "固定寬度（會換行）；不給就照字的長度"},
         "size": {"type": "number", "description": "字級（以 A4 為準）"},
         "bold": {"type": "boolean"},
-        "underline": {"type": "boolean", "description": "整個方塊加底線（標題用）"},
+        "underline": {"description": "畫記：true／false，或 single（底線）、thick（粗底線）、double（雙底線）、marker（螢光筆）、none。一般方塊畫整段；Markdown 方塊畫 # ～ ### 標題（不設＝黃色螢光筆）"},
+        "underlineColor": {"type": "string", "description": "畫記的顏色 #RRGGBB，或 text（跟字一樣）"},
         "color": {"type": "string", "description": "字的顏色 #RRGGBB、white、black；不給照紙的深淺"},
         "frame": {"description": "none、blue、default、#RRGGBB，或 {color, mode: 0 填滿/1 外框＋上面一條/2 只有外框, shape: 0 方/1 圓角/2 圓頭}"},
         "align": {"type": "string", "enum": ["left", "center", "right"]},
@@ -115,7 +116,7 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "notebook": NOTEBOOK, "box": {"type": "string", "description": "方塊的 id"},
          "text": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"}, "width": {"type": "number"},
-         "size": {"type": "number"}, "bold": {"type": "boolean"}, "underline": {"type": "boolean"},
+         "size": {"type": "number"}, "bold": {"type": "boolean"}, "underline": {}, "underlineColor": {"type": "string"},
          "color": {"type": "string"}, "frame": {}},
          "required": ["notebook", "box"]}},
     {"name": "notes_delete_text", "description": "刪一個文字方塊（連到它的線一起刪）。只在使用者明確要求時用",
@@ -133,7 +134,7 @@ TOOLS = [
          "deleteImages": {"type": "array", "items": {"type": "string"}},
          "update": {"type": "array", "items": {"type": "object", "properties": {
              "id": {"type": "string"}, "text": {"type": "string"}, "x": {"type": "number"}, "y": {"type": "number"},
-             "width": {"type": "number"}, "size": {"type": "number"}, "bold": {"type": "boolean"}, "underline": {"type": "boolean"},
+             "width": {"type": "number"}, "size": {"type": "number"}, "bold": {"type": "boolean"}, "underline": {}, "underlineColor": {"type": "string"},
              "color": {"type": "string"}, "frame": {}, "align": {"type": "string"}}, "required": ["id"]}},
          "move": {"type": "object", "description": "ids 或 rect（中心點在範圍裡的方塊和圖片）一起平移 dx、dy", "properties": {
              "ids": {"type": "array", "items": {"type": "string"}},
@@ -236,7 +237,7 @@ def run_tool(name, args):
             body["after"] = int(body["after"])
         return text_result(api("POST", "/notebooks/%s/pages" % nb(args), body))
     if name == "notes_edit_text":
-        body = pick(args, ["text", "x", "y", "width", "size", "bold", "underline", "color", "frame"])
+        body = pick(args, ["text", "x", "y", "width", "size", "bold", "underline", "underlineColor", "color", "frame"])
         box = urllib.parse.quote(str(args.get("box", "")), safe="")
         return text_result(api("PATCH", "/notebooks/%s/texts/%s" % (nb(args), box), body))
     if name == "notes_delete_text":

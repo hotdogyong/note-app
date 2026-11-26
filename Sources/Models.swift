@@ -380,7 +380,9 @@ struct TextBox: Codable, Hashable, Identifiable {
     var folded: Bool? = nil          // 便利貼收起來了
     var ink: Data? = nil             // 便利貼上手寫的字（v12.15.12）：PKDrawing，座標從便利貼左上角算起
     var branchFolded: Bool? = nil    // 心智圖（v12.16.0）：順著線往下的分支收起來了（TextLinks.swift 的 MindFold）
-    var underline: Bool? = nil       // 整個方塊加底線（v12.17.5，使用者：標題要能畫記）
+    var underline: Bool? = nil       // 畫記開關（v12.17.5）：true 有、false 沒有、nil 預設（一般方塊沒有；Markdown 方塊的標題是黃色螢光筆）
+    var underlineStyle: Int? = nil   // 畫記的樣子（v12.17.6）：nil／0 底線、1 粗底線、2 雙底線、3 螢光筆
+    var underlineRGB: [Double]? = nil // 畫記的顏色；nil＝跟字一樣
 
     var isLocked: Bool { locked ?? false }
     var isFolded: Bool { (sticky ?? false) && (folded ?? false) }

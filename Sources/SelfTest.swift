@@ -204,6 +204,39 @@ enum SelfTest {
                 }
             case "markdown":
                 library.openNotebook = library.addMarkdownNotebook(in: nil)
+            case "underline":
+                // v12.17.5：標題畫記：一般方塊的底線、有數學式的方塊底線、Markdown 標題的天藍底線、==螢光==、++底線++
+                var page = NotePage()
+                var title = TextBox()
+                title.text = "拉氏轉換與反轉換"
+                title.fontSize = 30
+                title.bold = true
+                title.underline = true
+                title.x = 40
+                title.y = 40
+                title.width = 260
+                var mathTitle = TextBox()
+                mathTitle.text = "$F(s)$ 的性質"
+                mathTitle.fontSize = 22
+                mathTitle.underline = true
+                mathTitle.x = 40
+                mathTitle.y = 120
+                mathTitle.width = 200
+                var md = TextBox()
+                md.text = "### 存在定理\n\n**1. 敘述（充分條件）**\n\n$f$ 在 $t\\ge0$ ==片段連續== ＋ ++指數階++ $\\Rightarrow$ $\\mathcal{L}\\{f\\}$ 存在\n\n## 二級標題\n\n# 一級標題"
+                md.markdown = true
+                md.fontSize = 16
+                md.x = 40
+                md.y = 200
+                md.fixedWidth = 480
+                md.width = 480
+                md.fill = [0.5, 0.56, 0.65]
+                md.fillMode = 2
+                md.shape = 1
+                page.texts = [title, mathTitle, md]
+                var row = PageRow()
+                row.pages = [page]
+                library.openNotebook = library.addNotebook(in: nil, title: "底線測試", data: NotebookData(rows: [row]))
             case "mathgap":
                 // v12.17.3：一般行裡有分數，上下行不要貼在一起（使用者截圖那一段）
                 var page = NotePage()
@@ -272,6 +305,11 @@ enum SelfTest {
 
     /// 筆記本／白板打開、回到上次位置之後（NotebookView 呼叫）：需要在開著的畫面上做事的場景
     static func notebookOpened(_ view: NotebookView) {
+        if scene == "underline", !view.model.embedded, !sceneDone {
+            sceneDone = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak view] in view?.selfTestSelectFirstText() }
+            return
+        }
         if scene == "dropfile" || scene == "dropnote", !view.model.embedded, !sceneDone {
             sceneDone = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in

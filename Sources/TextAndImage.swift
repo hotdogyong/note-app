@@ -1084,6 +1084,24 @@ final class TextBoxView: UIView, UITextViewDelegate {
     }
     static let insetY: CGFloat = 3
 
+    /// 底線（v12.17.5）：整段字加或拿掉；之後打的字也照這個
+    private func applyUnderline(_ on: Bool) {
+        var typing = textView.typingAttributes
+        typing[.underlineStyle] = on ? NSUnderlineStyle.single.rawValue : nil
+        textView.typingAttributes = typing
+        let text = textView.attributedText ?? NSAttributedString()
+        guard text.length > 0 else { return }
+        let now = ((text.attribute(.underlineStyle, at: 0, effectiveRange: nil) as? Int) ?? 0) != 0
+        guard now != on else { return }
+        let selection = textView.selectedRange
+        let m = NSMutableAttributedString(attributedString: text)
+        let all = NSRange(location: 0, length: m.length)
+        if on { m.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: all) }
+        else { m.removeAttribute(.underlineStyle, range: all) }
+        textView.attributedText = m
+        textView.selectedRange = selection
+    }
+
     static func font(for box: TextBox, scale: CGFloat) -> UIFont {
         let size = max(box.fontSize * scale, 1)
         return box.bold ? UIFont.boldSystemFont(ofSize: size) : UIFont.systemFont(ofSize: size)
@@ -1284,6 +1302,7 @@ final class TextBoxView: UIView, UITextViewDelegate {
         textView.font = font
         textView.textColor = box.color
         textView.textAlignment = Self.alignment(box.align)
+        applyUnderline(box.underline == true)
         placeholder.font = font
         // 寬度依內容自動決定；最寬是整頁的寬度（v11.30 起跟位置無關：移動時不會重新換行、越拉越長）
         let maxWidth = Self.maxTextWidth(pageWidth: wrapPage)
@@ -1577,7 +1596,7 @@ extension TextBoxView: PKCanvasViewDelegate {
 final class MathRenderer: NSObject, WKNavigationDelegate {
     static let shared = MathRenderer()
     static let katexVersion = "0.16.11"
-    static let layoutRevision = "7"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果；6：v12.17.3 行內分數上下留空；7：v12.17.4 上下標也留、Markdown 段落間距加大）
+    static let layoutRevision = "8"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果；6：v12.17.3 行內分數上下留空；7：v12.17.4 上下標也留、Markdown 段落間距加大；8：v12.17.5 標題底線）
     static let webTop: CGFloat = 160          // 看不到的網頁放在離畫面頂端這麼遠的地方（避開狀態列底下的邊緣效果）
     /// 排版時放大的倍數（圖片比較清楚）：頁面上 1 點 = 網頁裡 2 px
     static let scaleFactor: CGFloat = 2
@@ -1591,6 +1610,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         var bold: Bool
         var align: String           // left / center / right
         var markdown = false        // Markdown 排版（v12.9）
+        var underline = false       // 整段加底線（v12.17.5）
     }
 
     /// 這個文字方塊要不要用排好的圖片顯示：有數學式，或是 Markdown 方塊（v12.9）
@@ -1620,13 +1640,15 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         let b = Int(((c.count > 2 ? c[2] : 1) * 255).rounded())
         let align = box.align == 1 ? "center" : (box.align == 2 ? "right" : "left")
         return Request(text: box.text, width: width, fixed: box.fixedWidth != nil, fontSize: box.fontSize,
-                       color: "rgb(\(r),\(g),\(b))", bold: box.bold, align: align, markdown: box.isMarkdown)
+                       color: "rgb(\(r),\(g),\(b))", bold: box.bold, align: align, markdown: box.isMarkdown,
+                       underline: box.underline == true)
     }
 
     static func key(_ r: Request) -> String {
         var parts = [katexVersion + "-" + layoutRevision, r.text, "\(Int(r.width * 10))", r.fixed ? "f" : "a", "\(Int(r.fontSize * 10))",
                      r.color, r.bold ? "b" : "n", r.align]
-        if r.markdown { parts.append("md2") }               // Markdown 的另外存（一般的快取不受影響）；md2：v12.9.3 修好長頁空白後重排
+        if r.markdown { parts.append("md2") }
+        if r.underline { parts.append("u") }               // 有底線的另外存（沒底線的快取不受影響）               // Markdown 的另外存（一般的快取不受影響）；md2：v12.9.3 修好長頁空白後重排
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in parts.joined(separator: "\u{1}").utf8 {
             hash ^= UInt64(byte)
@@ -1799,6 +1821,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
       t = t.replace(/\*([^*\s][^*]*)\*/g,'<em>$1</em>');
       t = t.replace(/~~([^~]+)~~/g,'<del>$1</del>');
       t = t.replace(/==([^=]+)==/g,'<mark>$1</mark>');
+      t = t.replace(/\+\+([^+]+)\+\+/g,'<u>$1</u>');
       t = t.replace(/!\[([^\]]*)\]\(([^)]+)\)/g,'[$1]');
       t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g,'<u>$1</u>');
       t = t.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g,function(m,a,b,c){return '<u>'+(c||a)+'</u>';});
@@ -1889,6 +1912,8 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     #box.md h2 { font-size: 1.4em; margin: 0.5em 0 0.3em; }
     #box.md h3 { font-size: 1.2em; margin: 0.45em 0 0.25em; }
     #box.md h4, #box.md h5, #box.md h6 { font-size: 1.05em; margin: 0.4em 0 0.2em; }
+    /* v12.17.5（使用者：標題要畫記）：# ～ ### 標題下面一條天藍色的線，跟字一樣寬 */
+    #box.md h1, #box.md h2, #box.md h3 { display: table; border-bottom: 0.12em solid #73B8FF; padding-bottom: 0.1em; }
     #box.md p { margin: 0.42em 0; }
     #box.md ul, #box.md ol { margin: 0.3em 0; padding-left: 1.5em; }
     #box.md li { margin: 0.12em 0; }
@@ -1902,7 +1927,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     #box.md mark { background: rgba(255,214,10,0.45); color: inherit; }
     </style></head><body><div id="box"></div>
     <script>
-    async function renderBox(text, width, fixed, size, color, bold, align, md) {
+    async function renderBox(text, width, fixed, size, color, bold, align, md, underline) {
       var b = document.getElementById('box');
       if (fixed) { b.style.display = 'block'; b.style.width = width + 'px'; b.style.maxWidth = ''; }
       else { b.style.display = 'inline-block'; b.style.width = 'auto'; b.style.maxWidth = width + 'px'; }
@@ -1910,6 +1935,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
       b.style.color = color;
       b.style.fontWeight = bold ? 'bold' : 'normal';
       b.style.textAlign = align;
+      b.style.textDecoration = underline ? 'underline' : 'none';
       if (md) { b.className = 'md'; b.innerHTML = mdToHtml(text); }
       else { b.className = ''; b.textContent = text; }
       renderMathInElement(b, {
@@ -2020,7 +2046,8 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         web.scrollView.contentOffset = .zero
         let args: [String: Any] = [
             "text": r.text, "width": Double(layoutWidth), "fixed": r.fixed,
-            "size": Double(r.fontSize * f), "color": r.color, "bold": r.bold, "align": r.align, "md": r.markdown
+            "size": Double(r.fontSize * f), "color": r.color, "bold": r.bold, "align": r.align, "md": r.markdown,
+            "underline": r.underline
         ]
         let token = UUID()
         renderToken = token
@@ -2033,7 +2060,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
             self.busy = false
             self.pump()
         }
-        web.callAsyncJavaScript("return await renderBox(text, width, fixed, size, color, bold, align, md);",
+        web.callAsyncJavaScript("return await renderBox(text, width, fixed, size, color, bold, align, md, underline);",
                                 arguments: args, in: nil, in: .page) { result in
             // 先在這裡把結果換成數字，再回到主執行緒處理
             var w: Double = 0
@@ -2085,6 +2112,7 @@ final class TextBar: UIView {
     private let sizeButton = UIButton(type: .system)      // 字級：點了選常用的、或輸入數字（v12.16.6）
     private let colorButton = UIButton(type: .system)
     private let boldButton = UIButton(type: .system)
+    private let underlineButton = UIButton(type: .system)
     private let alignButton = UIButton(type: .system)
     private let lockButton = UIButton(type: .system)
     private let markdownButton = UIButton(type: .system)     // Markdown 排版（v12.9）
@@ -2137,6 +2165,9 @@ final class TextBar: UIView {
         boldButton.addAction(UIAction { [weak host] _ in host?.toggleTextBold() }, for: .touchUpInside)
         boldButton.setImage(UIImage(systemName: "bold"), for: .normal)
         items.append(boldButton)
+        underlineButton.addAction(UIAction { [weak host] _ in host?.toggleTextUnderline() }, for: .touchUpInside)
+        underlineButton.setImage(UIImage(systemName: "underline"), for: .normal)
+        items.append(underlineButton)                              // 底線（v12.17.5）
         alignButton.addAction(UIAction { [weak host] _ in host?.cycleTextAlign() }, for: .touchUpInside)
         items.append(alignButton)
         markdownButton.addAction(UIAction { [weak host] _ in host?.toggleTextMarkdown() }, for: .touchUpInside)
@@ -2200,6 +2231,7 @@ final class TextBar: UIView {
     func refresh(_ box: TextBox, size: Int) {
         sizeButton.setTitle("\(size)", for: .normal)
         boldButton.tintColor = box.bold ? .systemYellow : .white
+        underlineButton.tintColor = box.underline == true ? .systemYellow : .white
         markdownButton.tintColor = box.isMarkdown ? .systemYellow : .white
         styleButton.tintColor = box.fill != nil ? .systemYellow : .white
         stickyButton.setImage(UIImage(systemName: box.sticky == true ? "arrow.down.right.and.arrow.up.left" : "note.text"),

@@ -3010,6 +3010,18 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         updateActive { $0.bold.toggle() }
     }
 
+    /// 自動測試（underline）：選取第一頁的第一個方塊（看工具列上的按鈕）
+    func selfTestSelectFirstText() {
+        guard let page = model.notebook.rows.first?.pages.first, let first = page.texts?.first,
+              let tv = pageViews[page.id]?.textViews[first.id] else { return }
+        activate(tv, edit: false)
+    }
+
+    /// 底線（v12.17.5）
+    func toggleTextUnderline() {
+        updateActive { $0.underline = $0.underline == true ? nil : true }
+    }
+
     /// Markdown 排版開關（v12.9）：打開後，不在輸入時用標題、條列、粗體、表格、數學式排好顯示
     func toggleTextMarkdown() {
         guard let tv = activeText else { return }

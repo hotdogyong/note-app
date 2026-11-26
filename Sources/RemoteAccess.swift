@@ -535,6 +535,7 @@ enum RemoteAPI {
                                 "color": hex(t.rgba) ?? "#FFFFFF"]
         if let fill = t.fill { d["frame"] = ["color": hex(fill) ?? "", "mode": t.fillMode ?? 0, "shape": t.shape ?? 1] }
         if t.bold { d["bold"] = true }
+        if t.underline == true { d["underline"] = true }
         if t.isMarkdown { d["markdown"] = true }
         if t.sticky == true { d["sticky"] = true }
         if t.fixedWidth != nil { d["fixedWidth"] = true }
@@ -759,6 +760,7 @@ enum RemoteAPI {
         box.text = text
         box.fontSize = (number(d["size"]) ?? TextDefaults.size(notebookID)) * k
         box.bold = (d["bold"] as? Bool) ?? TextDefaults.bold(notebookID)
+        if d["underline"] as? Bool == true { box.underline = true }
         switch d["align"] as? String {
         case "center": box.align = 1
         case "right": box.align = 2
@@ -962,6 +964,7 @@ enum RemoteAPI {
         }
         if let s = number(body["size"]) { box.fontSize = s * k }
         if let b = body["bold"] as? Bool { box.bold = b }
+        if let u = body["underline"] as? Bool { box.underline = u ? true : nil }
         if let c = color(body["color"]) { box.rgba = c }
         if body["frame"] != nil { try applyFrame(body["frame"], to: &box, dark: page.isDarkBackground) }
         switch body["align"] as? String {

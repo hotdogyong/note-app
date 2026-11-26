@@ -380,6 +380,7 @@ struct TextBox: Codable, Hashable, Identifiable {
     var folded: Bool? = nil          // 便利貼收起來了
     var ink: Data? = nil             // 便利貼上手寫的字（v12.15.12）：PKDrawing，座標從便利貼左上角算起
     var branchFolded: Bool? = nil    // 心智圖（v12.16.0）：順著線往下的分支收起來了（TextLinks.swift 的 MindFold）
+    var underline: Bool? = nil       // 整個方塊加底線（v12.17.5，使用者：標題要能畫記）
 
     var isLocked: Bool { locked ?? false }
     var isFolded: Bool { (sticky ?? false) && (folded ?? false) }

@@ -2122,11 +2122,12 @@ enum PageRenderer {
             }
             let para = NSMutableParagraphStyle()
             para.alignment = TextBoxView.alignment(t.align)
-            let attributes: [NSAttributedString.Key: Any] = [
+            var attributes: [NSAttributedString.Key: Any] = [
                 .font: TextBoxView.font(for: t, scale: k),
                 .foregroundColor: t.color,
                 .paragraphStyle: para
             ]
+            if t.underline == true { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
             let box = CGRect(x: rect.minX + (t.x + TextBoxView.insetX) * k,
                              y: rect.minY + (t.y + TextBoxView.insetY) * k,
                              width: (t.width + 2) * k, height: 100_000)

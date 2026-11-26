@@ -257,7 +257,7 @@ final class RemoteConnection: @unchecked Sendable {
             switch parse() {
             case .some(.some(let request)):
                 Task { @MainActor in
-                    let response = RemoteAPI.handle(request)
+                    let response = await RemoteAPI.handle(request)
                     self.send(response)
                 }
             case .some(.none):
@@ -340,7 +340,7 @@ struct RemoteError: Error {
 enum RemoteAPI {
     static weak var library: LibraryModel?
 
-    static func handle(_ r: RemoteRequest) -> RemoteResponse {
+    static func handle(_ r: RemoteRequest) async -> RemoteResponse {
         let parts = r.path.split(separator: "/").map(String.init)
         let access = RemoteAccess.shared
         guard access.enabled else { return .error(403, "iPad 上「讓 Claude 連進來」是關的") }
@@ -368,7 +368,7 @@ enum RemoteAPI {
             case ("GET", 2) where parts[0] == "notebooks":
                 return .json(try detail(parts[1], query: r.query))
             case ("GET", 3) where parts[0] == "notebooks" && parts[2] == "image":
-                return try image(parts[1], query: r.query)
+                return try await image(parts[1], query: r.query)
             case ("POST", 3) where parts[0] == "notebooks" && parts[2] == "texts":
                 return .json(try addTexts(parts[1], body))
             case ("PATCH", 4) where parts[0] == "notebooks" && parts[2] == "texts":
@@ -586,11 +586,12 @@ enum RemoteAPI {
     }
 
     /// 一頁（或白板的一塊）畫成 JPEG：Claude 用來看排版
-    static func image(_ key: String, query: [String: String]) throws -> RemoteResponse {
+    static func image(_ key: String, query: [String: String]) async throws -> RemoteResponse {
         let t = try target(key)
         t.view?.remoteFlush()
         let loc = try page(query["page"], in: t)
         let page = t.data.rows[loc.row].pages[loc.index]
+        await renderMath(page)
         let full = CGRect(x: 0, y: 0, width: page.spec.width, height: page.spec.height)
         var region = full
         if let x = Double(query["x"] ?? ""), let y = Double(query["y"] ?? ""),
@@ -625,6 +626,26 @@ enum RemoteAPI {
         }
         guard let data = img.jpegData(compressionQuality: 0.82) else { throw RemoteError(500, "畫不出來") }
         return RemoteResponse(status: 200, contentType: "image/jpeg", body: data)
+    }
+
+    /// 數學式還沒排好的先排（匯出只畫排好的；最多等 8 秒）
+    static func renderMath(_ page: NotePage) async {
+        let width = textWrapWidth(page.spec)
+        let requests = (page.texts ?? []).filter { MathRenderer.needsRender($0) }
+            .map { MathRenderer.request(for: $0, pageWidth: width) }
+            .filter { MathRenderer.shared.cached($0) == nil }
+        guard !requests.isEmpty else { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            let wait = MathWait(count: requests.count, cont: cont)
+            for req in requests {
+                MathRenderer.shared.render(req) { _ in
+                    MainActor.assumeIsolated { wait.oneDone() }
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
+                MainActor.assumeIsolated { wait.finish() }
+            }
+        }
     }
 
     // MARK: 寫：文字方塊
@@ -814,7 +835,7 @@ enum RemoteAPI {
         var cursor = autoStart(page, view: t.view, board: board)
         if let x = number(body["x"]) { cursor.x = x }
         if let y = number(body["y"]) { cursor.y = y }
-        let gap = number(body["gap"]) ?? 14 * k
+        let gap = number(body["gap"]) ?? 20 * k
         var texts = page.texts ?? []
         var keys: [String: UUID] = [:]
         var created: [(String?, TextBox)] = []
@@ -865,7 +886,23 @@ enum RemoteAPI {
         var texts = page.texts ?? []
         var box = texts[loc.box]
         let k = pageScaleFactor(page.spec)
-        if let s = body["text"] as? String { box.text = s }
+        if let s = body["text"] as? String {
+            box.text = s
+            if box.fixedWidth == nil {
+                // 自動寬度的方塊：照新的字重算寬度（太長就固定寬度換行）
+                let font = TextBoxView.font(for: box, scale: 1)
+                let natural = s.components(separatedBy: "\n").map {
+                    ceil(($0 as NSString).size(withAttributes: [.font: font]).width) + 2
+                }.max() ?? 40
+                let limit = max(min((t.isBoard ? 520 : 460) * k, page.spec.width - box.x - 20 * k), 120)
+                if natural > limit {
+                    box.fixedWidth = limit
+                    box.width = limit
+                } else {
+                    box.width = max(natural, 20)
+                }
+            }
+        }
         if let x = number(body["x"]) { box.x = x }
         if let y = number(body["y"]) { box.y = y }
         if let w = number(body["width"]) {
@@ -942,7 +979,7 @@ enum RemoteAPI {
                     page.texts = (page.texts ?? []) + [box]
                     if let key = d["key"] as? String { keys[key] = box.id }
                     let f = PageRenderer.textFrameRect(box, page: page)
-                    if d["x"] == nil && d["y"] == nil { cursor.y = f.maxY + 14 * pageScaleFactor(spec) }
+                    if d["x"] == nil && d["y"] == nil { cursor.y = f.maxY + 20 * pageScaleFactor(spec) }
                     boxCount += 1
                 }
                 if let ls = contents[n]["links"] as? [[String: Any]] {
@@ -1006,6 +1043,28 @@ enum RemoteAPI {
         }
         RemoteAccess.shared.note("新增了「\(meta.title)」")
         return ["id": meta.id.uuidString, "title": meta.title]
+    }
+}
+
+/// 等幾個數學式排好（全部好了或時間到，只繼續一次）
+@MainActor
+final class MathWait {
+    private var left: Int
+    private var cont: CheckedContinuation<Void, Never>?
+
+    init(count: Int, cont: CheckedContinuation<Void, Never>) {
+        left = count
+        self.cont = cont
+    }
+
+    func oneDone() {
+        left -= 1
+        if left <= 0 { finish() }
+    }
+
+    func finish() {
+        cont?.resume()
+        cont = nil
     }
 }
 

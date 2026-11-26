@@ -1577,7 +1577,7 @@ extension TextBoxView: PKCanvasViewDelegate {
 final class MathRenderer: NSObject, WKNavigationDelegate {
     static let shared = MathRenderer()
     static let katexVersion = "0.16.11"
-    static let layoutRevision = "6"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果；6：v12.17.3 行內分數上下留空）
+    static let layoutRevision = "7"           // 排版方式改了就換：舊的快取圖片不再使用（4、5：v12.14.0 等字型、等畫完才拍，避開頂端的邊緣效果；6：v12.17.3 行內分數上下留空；7：v12.17.4 上下標也留、Markdown 段落間距加大）
     static let webTop: CGFloat = 160          // 看不到的網頁放在離畫面頂端這麼遠的地方（避開狀態列底下的邊緣效果）
     /// 排版時放大的倍數（圖片比較清楚）：頁面上 1 點 = 網頁裡 2 px
     static let scaleFactor: CGFloat = 2
@@ -1877,7 +1877,8 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     .katex { font-size: 1.1em; }
     .katex-display { margin: 0.55em 0; }
     /* v12.17.3（使用者：有分數的那一行跟上下行貼太近）：寫在一般行裡的高的式子（分數、根號、上下限、矩陣、大括號）上下多留一點 */
-    /* 加在每一段（.base）上：長的式子照樣能在行尾換行 */
+    /* 加在每一段（.base）上：長的式子照樣能在行尾換行。v12.17.4：有上標、下標的也留（少一點），e^{-iEt/ℏ} 那種行以前也貼太近 */
+    :not(.katex-display) > .katex .base:has(.msupsub) { margin: 0.18em 0; }
     :not(.katex-display) > .katex .base:has(.mfrac, .sqrt, .op-limits, .mtable, .delimsizing, .delimcenter) {
         margin: 0.32em 0; }
     .katex-html:has(> .tag) { padding-right: 2.6em; }
@@ -1888,7 +1889,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     #box.md h2 { font-size: 1.4em; margin: 0.5em 0 0.3em; }
     #box.md h3 { font-size: 1.2em; margin: 0.45em 0 0.25em; }
     #box.md h4, #box.md h5, #box.md h6 { font-size: 1.05em; margin: 0.4em 0 0.2em; }
-    #box.md p { margin: 0.35em 0; }
+    #box.md p { margin: 0.42em 0; }
     #box.md ul, #box.md ol { margin: 0.3em 0; padding-left: 1.5em; }
     #box.md li { margin: 0.12em 0; }
     #box.md blockquote { margin: 0.4em 0; padding-left: 0.8em; border-left: 3px solid currentColor; opacity: 0.8; }

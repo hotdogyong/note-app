@@ -229,7 +229,20 @@ enum SelfTest {
                 md.fill = [0.5, 0.56, 0.65]
                 md.fillMode = 2
                 md.shape = 1
-                page.texts = [box, md]
+                // v12.17.4：使用者另一個方塊（上標那幾行也貼太近）
+                var sup = TextBox()
+                sup.text = "**① 它們是定態（stationary states）**\n\n$\\Psi(x,t)=\\psi(x)e^{-iEt/\\hbar}$ 本身含 $t$，但機率密度：\n\n$|\\Psi|^2=\\psi^*e^{+iEt/\\hbar}\\psi e^{-iEt/\\hbar}=|\\psi(x)|^2$\n\n時間相依性互相抵消了。任何力學量的期望值也一樣：\n\n$\\displaystyle \\langle Q(x,p)\\rangle=\\int\\psi^*\\left[Q\\left(x,-i\\hbar\\frac{d}{dx}\\right)\\right]\\psi\\,dx$\n\n不隨時間改變，所以可以直接拿 $\\psi$ 代替 $\\Psi$ 來算。\n\n特別是 $\\langle x\\rangle$ 為常數，因此 $\\langle p\\rangle=0$。"
+                sup.markdown = true
+                sup.fontSize = 16
+                sup.x = 40
+                sup.y = 30
+                sup.fixedWidth = 500
+                sup.width = 500
+                sup.fill = [0.29, 0.56, 0.89]
+                sup.fillMode = 2
+                sup.shape = 1
+                md.y = 450
+                page.texts = [sup, md]
                 var row = PageRow()
                 row.pages = [page]
                 library.openNotebook = library.addNotebook(in: nil, title: "行距測試", data: NotebookData(rows: [row]))

@@ -217,7 +217,19 @@ enum SelfTest {
                 box.fill = TextBoxStyle.linkedFill
                 box.fillMode = 2
                 box.shape = 1
-                page.texts = [box]
+                // 使用者白板上那一個：Markdown 方塊、一般行裡用 \displaystyle 的分數
+                var md = TextBox()
+                md.text = "**關鍵論證：兩邊都是常數**\n\n代入後同除以 $\\psi\\varphi$：\n\n$\\displaystyle i\\hbar\\frac{1}{\\varphi}\\frac{d\\varphi}{dt}=-\\frac{\\hbar^2}{2m}\\frac{1}{\\psi}\\frac{d^2\\psi}{dx^2}+V$\n\n左邊只跟 $t$ 有關，右邊只跟 $x$ 有關。唯一的可能是兩邊都等於常數。\n\n分離常數取名為 $E$，理由在 B② 揭曉。"
+                md.markdown = true
+                md.fontSize = 16
+                md.x = 40
+                md.y = 470
+                md.fixedWidth = 500
+                md.width = 500
+                md.fill = [0.5, 0.56, 0.65]
+                md.fillMode = 2
+                md.shape = 1
+                page.texts = [box, md]
                 var row = PageRow()
                 row.pages = [page]
                 library.openNotebook = library.addNotebook(in: nil, title: "行距測試", data: NotebookData(rows: [row]))

@@ -568,9 +568,13 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         return PKToolPicker()
     }
 
+    /// 開著的筆記本畫面（v12.17.0：Mac 上的 Claude 連進來時，改打開中的那本要走畫面，不然會被畫面存檔蓋掉）
+    static let openViews = NSHashTable<NotebookView>.weakObjects()
+
     init(model: NotebookModel) {
         self.model = model
         super.init(frame: .zero)
+        Self.openViews.add(self)
         applyBackdrop()
 
         outer.delegate = self
@@ -2163,6 +2167,72 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         updateLoadedPages()
         updateFocus(force: true)
         showMessage("doc.badge.plus", "放進來了：第 \(at + 1) 頁")
+    }
+
+    // MARK: Mac 上的 Claude 連進來改東西（v12.17.0；RemoteAccess.swift）
+
+    /// 一頁的文字方塊和連線一起換掉（一步復原），捲過去讓使用者看到，跳一句提示
+    func remoteApply(pageID: UUID, texts: [TextBox], links: [BoxLink], focus: CGRect?, message: String?) {
+        endTextSelection()
+        dismissShapeEditor()
+        deselectLink()
+        let oldTexts = model.texts(of: pageID)
+        let oldLinks = model.links(of: pageID)
+        guard oldTexts != texts || oldLinks != links else { return }
+        model.setTexts(texts, pageID: pageID)
+        model.setLinks(links, pageID: pageID)
+        pageViews[pageID]?.syncTexts(texts)
+        pageViews[pageID]?.syncLinks(links)
+        history.registerUndo(withTarget: self) { notebook in
+            notebook.remoteApply(pageID: pageID, texts: oldTexts, links: oldLinks, focus: nil, message: nil)
+        }
+        if let rect = focus, !rect.isNull { reveal(pageID: pageID, pageRect: rect) }
+        if let message = message { showMessage("sparkles", message) }
+    }
+
+    /// 插幾列新的頁（這一步不能用「上一步」復原，跟隨手記整頁放進來一樣）
+    func remoteInsertRows(_ rows: [PageRow], at index: Int) -> Int {
+        endTextSelection()
+        dismissShapeEditor()
+        flushAll()
+        let at = min(max(index, 0), model.notebook.rows.count)
+        model.notebook.rows.insert(contentsOf: rows, at: at)
+        model.save()
+        for row in rows { for page in row.pages { ActivityLog.touch(pageID: page.id) } }
+        history.removeAllActions()
+        model.canUndo = false
+        model.canRedo = false
+        rebuild()
+        layoutDocument()
+        jump(toRow: at, page: 0)
+        updateLoadedPages()
+        updateFocus(force: true)
+        showMessage("sparkles", "Claude 加了 \(rows.count) 頁：從第 \(at + 1) 頁開始")
+        return at
+    }
+
+    /// 存下還沒寫進檔案的筆跡（Claude 要看頁面的圖之前）
+    func remoteFlush() {
+        flushAll()
+        Store.finishPendingSaves()
+    }
+
+    /// 畫面上看得到的範圍（頁面座標）：白板是看得到的那一塊；筆記本是目前那頁看得到的部分
+    func remoteVisibleRect() -> (page: UUID, rect: CGRect)? {
+        let rows = model.notebook.rows
+        let r = isBoard ? 0 : model.focusRow
+        guard rows.indices.contains(r), let rv = rowViews[rows[r].id] else { return nil }
+        let index = isBoard ? 0 : rv.currentIndex
+        guard rows[r].pages.indices.contains(index), rv.pageFrames.indices.contains(index) else { return nil }
+        let page = rows[r].pages[index]
+        let pf = rv.pageFrames[index]
+        let k = max(pf.width / max(page.spec.width, 1), 0.0001)
+        let left = (rv.contentOffset.x - pf.minX) / k
+        let top = (outer.contentOffset.y - rv.frame.minY - pf.minY) / k
+        let view = CGRect(x: left, y: top, width: rv.bounds.width / k, height: outer.bounds.height / k)
+        let full = CGRect(x: 0, y: 0, width: page.spec.width, height: page.spec.height)
+        let seen = view.intersection(full)
+        return (page.id, seen.isNull ? full : seen)
     }
 
     // MARK: 心智圖的折疊（v12.16.0；TextLinks.swift 的 MindFold、NotePageView 的圓圈）

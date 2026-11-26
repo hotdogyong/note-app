@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 // 版本：v12.7（首頁最下方也會顯示，用來確認跑的是哪一版）
-let appVersion = "v12.16.6"
+let appVersion = "v12.17.0"
 //
 // v12.0 起，程式拆成下面這些檔案（同一個 App 專案裡，檔案之間可以直接互相使用，不用另外 import）：
 //   ContentView.swift     最外層：版本號、側邊欄＋首頁的外框（ContentView）、側邊欄的資料夾列與排列順序
@@ -35,6 +35,7 @@ let appVersion = "v12.16.6"
 //   SelfTest.swift          自動測試的場景（雲端模擬器截圖用；平常不會執行）
 //   BoardCards.swift        白板上的筆記本（v12.12.0）：卡片（帶連結的圖片）、浮動視窗、匯入現有筆記本的選單、首頁「白板裡的檔案」
 //   TextLinks.swift         文字方塊的外框樣式（顏色、填滿／上面一條／外框、形狀、存成預設）、方塊之間的連線（v12.13.0）
+//   RemoteAccess.swift      讓 Mac 上的 Claude 透過區網讀寫筆記（v12.17.0）：區網服務、配對、API、設定裡的開關；Mac 那邊是 tools/noteapp.py
 // 每一版只要換有改到的檔案，再加上這個檔案（版本號在這裡）。
 
 enum LibraryRoute: Hashable {
@@ -130,6 +131,7 @@ struct ContentView: View {
         }
         .environmentObject(library)
         .onAppear {
+            RemoteAccess.shared.boot(library: library)  // 讓 Mac 上的 Claude 連進來（v12.17.0；打開過才會開服務）
             SelfTest.run(library)                      // 自動測試的場景（v12.9.9）；平常不會做任何事
             checkSpace()
         }

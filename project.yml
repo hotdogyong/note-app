@@ -7,7 +7,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: 12.16.6
+    MARKETING_VERSION: 12.17.0
     CURRENT_PROJECT_VERSION: "1"
     CODE_SIGNING_ALLOWED: "NO"
 targets:
@@ -41,6 +41,11 @@ targets:
         NSMicrophoneUsageDescription: 語音轉文字：把你講的話變成文字方塊（不存錄音檔）
         NSSpeechRecognitionUsageDescription: 語音轉文字：把你講的話變成文字方塊
         ITSAppUsesNonExemptEncryption: false
+        NSLocalNetworkUsageDescription: 讓同一個 Wi-Fi 上的 Mac（Claude）連進來讀寫筆記（要在設定裡打開、輸入配對碼）
+        NSBonjourServices:
+          - _noteapp._tcp
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.yuan.noteapp

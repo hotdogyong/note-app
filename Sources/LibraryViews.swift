@@ -1127,6 +1127,7 @@ struct SettingsSheet: View {
                     Text("筆記本裡右上角「⋯ → 檢視」也可以切換。")
                 }
                 StorageCheckSection()                            // 儲存空間（檢查用，v12.9.6）
+                RemoteAccessSection()                            // 讓 Mac 上的 Claude 連進來（v12.17.0）
                 Section {
                     NavigationLink {
                         Form {

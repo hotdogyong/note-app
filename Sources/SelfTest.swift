@@ -204,6 +204,19 @@ enum SelfTest {
                 }
             case "markdown":
                 library.openNotebook = library.addMarkdownNotebook(in: nil)
+            case "remote":
+                // v12.17.0：App 自己連自己的區網服務（跟 Mac 上的 noteapp.py 走一樣的路）：配對、加頁、加文字方塊、拿頁面的圖
+                library.openNotebook = library.addNotebook(in: nil, title: "Claude 連線測試")
+            case "remoteboard":
+                library.openNotebook = library.addBoard(in: nil, title: "Claude 白板測試", width: 100 * 842, height: 100 * 595)
+            case "remotesettings":
+                RemoteAccess.shared.enabled = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    let vc = UIHostingController(rootView: SettingsSheet().environmentObject(library))
+                    vc.modalPresentationStyle = .formSheet
+                    let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+                    scene?.keyWindow?.rootViewController?.present(vc, animated: false)
+                }
             default:
                 break
             }
@@ -212,6 +225,14 @@ enum SelfTest {
 
     /// 筆記本／白板打開、回到上次位置之後（NotebookView 呼叫）：需要在開著的畫面上做事的場景
     static func notebookOpened(_ view: NotebookView) {
+        if scene == "remote" || scene == "remoteboard", !view.model.embedded, !sceneDone {
+            sceneDone = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                Task { @MainActor in await RemoteSelfTest.run(view) }
+            }
+            return
+        }
         if scene == "cards", view.model.isBoard, let library = library {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
                 guard let view = view else { return }
@@ -520,5 +541,127 @@ enum SelfTest {
         label.frame = CGRect(x: 14, y: 12, width: width - 28, height: size.height)
         box.addSubview(label)
         window.addSubview(box)
+    }
+}
+
+/// 區網服務的自動測試（v12.17.0）：用 URLSession 連 127.0.0.1，結果和拿回來的頁面圖顯示在右下角
+@MainActor
+enum RemoteSelfTest {
+    static let base = "http://127.0.0.1:\(RemoteAccess.port)"
+    static var token = ""
+
+    static func call(_ method: String, _ path: String, _ body: Any? = nil) async -> (Int, Data) {
+        guard let url = URL(string: base + path) else { return (0, Data()) }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.timeoutInterval = 8
+        if !token.isEmpty { req.setValue("Bearer " + token, forHTTPHeaderField: "Authorization") }
+        if let body = body {
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            return ((resp as? HTTPURLResponse)?.statusCode ?? 0, data)
+        } catch {
+            return (-1, Data(error.localizedDescription.utf8))
+        }
+    }
+
+    static func json(_ d: Data) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] ?? [:]
+    }
+
+    static func run(_ view: NotebookView) async {
+        var lines: [String] = []
+        let access = RemoteAccess.shared
+        access.enabled = true
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        lines.append("服務：" + access.status + "　" + access.address)
+        let (s0, _) = await call("GET", "/notebooks")
+        lines.append("沒配對就讀：\(s0)（應該 401）")
+        let (s1, d1) = await call("POST", "/pair", ["code": access.pairCode])
+        token = json(d1)["token"] as? String ?? ""
+        lines.append("配對：\(s1)，鑰匙 \(token.count) 字")
+        let (s2, d2) = await call("GET", "/notebooks")
+        let count = (json(d2)["notebooks"] as? [Any])?.count ?? -1
+        lines.append("列出筆記本：\(s2)，\(count) 本")
+        let board = view.model.isBoard
+        let id = view.model.meta.id.uuidString
+        if !board {
+            let page: [String: Any] = ["boxes": [["text": "第二頁：Claude 加的頁", "size": 26, "bold": true, "frame": "none"] as [String: Any]]]
+            let (s3, d3) = await call("POST", "/notebooks/\(id)/pages", ["after": 1, "pages": [page]] as [String: Any])
+            lines.append("加一頁：\(s3) " + String(decoding: d3.prefix(80), as: UTF8.self))
+            try? await Task.sleep(nanoseconds: 800_000_000)
+        }
+        var c: [String: Any] = ["key": "c", "text": "例：3×5 矩陣、rank 2 → nullity 3",
+                                "frame": ["color": "#F2C74F", "mode": 0, "shape": 2] as [String: Any]]
+        if !board {
+            c["x"] = 330
+            c["y"] = 230
+        }
+        let boxes: [[String: Any]] = [
+            ["key": "t", "text": "秩—零度定理（Rank–Nullity）", "size": 24, "bold": true, "frame": "none"],
+            ["key": "a", "text": "$\\operatorname{rank}(A)+\\operatorname{nullity}(A)=n$", "frame": "#73B8FF"],
+            ["key": "b", "text": "映射前的維度 = 像的維度 + 被壓到 0 的維度", "frame": "blue"],
+            c
+        ]
+        let (s4, d4) = await call("POST", "/notebooks/current/texts", [
+            "page": "current",
+            "boxes": boxes,
+            "links": [["from": "a", "to": "b"], ["from": "a", "to": "c", "route": "curve"]] as [[String: Any]]
+        ] as [String: Any])
+        let made = (json(d4)["boxes"] as? [[String: Any]]) ?? []
+        lines.append("加文字方塊：\(s4)，\(made.count) 個" + (s4 == 200 ? "" : " " + String(decoding: d4.prefix(120), as: UTF8.self)))
+        if let first = made.first?["id"] as? String {
+            let (s5, _) = await call("PATCH", "/notebooks/\(id)/texts/\(first)", ["text": "秩—零度定理（Rank–Nullity Theorem）"])
+            lines.append("改字：\(s5)")
+        }
+        let (s6, d6) = await call("GET", "/notebooks/\(id)?from=1&to=2")
+        let pages = (json(d6)["pages"] as? [[String: Any]]) ?? []
+        let texts = pages.map { (($0["texts"] as? [Any])?.count ?? 0) }
+        lines.append("讀回來：\(s6)，頁數 \(pages.count)，每頁方塊 \(texts)")
+        let (s7, d7) = await call("GET", "/current")
+        let cur = json(d7)
+        lines.append("現在：\(s7) 第 \(cur["page"] ?? "?") 頁，看得到 \(cur["visible"] ?? "?")")
+        try? await Task.sleep(nanoseconds: 2_500_000_000)          // 等數學式排好
+        let (s8, d8) = await call("GET", "/notebooks/\(id)/image?page=current&width=700")
+        lines.append("頁面圖：\(s8)，\(d8.count / 1024) KB")
+        let (s9, d9) = await call("POST", "/notebooks", ["title": "Claude 新增的筆記本"])
+        lines.append("新筆記本：\(s9) " + ((json(d9)["title"] as? String) ?? ""))
+        overlay(lines.joined(separator: "\n"), image: s8 == 200 ? UIImage(data: d8) : nil)
+    }
+
+    static func overlay(_ text: String, image: UIImage?) {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.keyWindow else { return }
+        let w = window.bounds.width
+        let panel = UIView()
+        panel.backgroundColor = UIColor(red: 0.05, green: 0.14, blue: 0.32, alpha: 0.95)
+        panel.layer.cornerRadius = 12
+        panel.isUserInteractionEnabled = false
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .white
+        label.text = text
+        let textWidth: CGFloat = image == nil ? w - 80 : w * 0.55
+        let size = label.sizeThatFits(CGSize(width: textWidth, height: .greatestFiniteMagnitude))
+        label.frame = CGRect(x: 12, y: 10, width: textWidth, height: size.height)
+        panel.addSubview(label)
+        var height = size.height + 20
+        if let img = image {
+            let iw = w - textWidth - 60
+            let ih = min(iw * img.size.height / max(img.size.width, 1), 420)
+            let iv = UIImageView(image: img)
+            iv.contentMode = .scaleAspectFit
+            iv.layer.borderColor = UIColor.white.cgColor
+            iv.layer.borderWidth = 1
+            iv.frame = CGRect(x: textWidth + 24, y: 10, width: iw, height: ih)
+            panel.addSubview(iv)
+            height = max(height, ih + 20)
+        }
+        panel.frame = CGRect(x: 30, y: window.bounds.height - height - 40, width: w - 60, height: height)
+        window.addSubview(panel)
     }
 }

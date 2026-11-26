@@ -2116,7 +2116,7 @@ final class TextBar: UIView {
         sizeButton.tintColor = .white
         sizeButton.titleLabel?.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
         // v12.16.6（使用者：字級要能點數字選、也能輸入）：點一下跳出常用字級，最下面「輸入數字…」
-        let presets: [Int] = [8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64]
+        let presets: [Int] = [16, 18, 20, 22, 24, 28, 32, 36, 40, 48, 56, 64, 72]
         sizeButton.menu = UIMenu(title: "字級（以 A4 為準）", children: [
             UIMenu(options: .displayInline, children: presets.map { n in
                 UIAction(title: "\(n)") { [weak host] _ in host?.setTextSize(CGFloat(n)) }

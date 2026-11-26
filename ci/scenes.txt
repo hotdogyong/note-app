@@ -1,2 +1,5 @@
 board
-textedge
+remote
+remoteboard
+remotesettings
+textstyle

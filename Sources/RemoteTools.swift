@@ -319,7 +319,7 @@ extension RemoteAPI {
         let loc = try page(query["page"], in: t)
         let page = t.data.rows[loc.row].pages[loc.index]
         let region = try imageRegion(page, query: query, view: t.view, board: t.isBoard)
-        let pixelWidth = min(max(region.width * 2, 800), 1600)  // 手寫認得出來就好；大白板畫太大很慢
+        let pixelWidth = min(max(region.width * 1.6, 800), 1200)  // 手寫認得出來就好；大白板畫太大很慢（模擬器裡 1600 要 20 幾秒）
         let image = try renderRegion(page, region: region, pixelWidth: pixelWidth)
         guard var cg = image.cgImage else { throw RemoteError(500, "畫不出來") }
         if page.isDarkBackground, let inverted = invert(cg) { cg = inverted }   // 深色紙白字 → 白底黑字比較好認

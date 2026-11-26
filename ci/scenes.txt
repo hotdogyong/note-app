@@ -1,3 +1,2 @@
 board
-boardsettings
-framedefault
+textedge

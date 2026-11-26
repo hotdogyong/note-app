@@ -2860,6 +2860,35 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         updateActive { $0.fontSize = min(max($0.fontSize + delta * k, 8 * k), 96 * k) }
     }
 
+    /// 直接設成某個字級（以 A4 為準；v12.16.6）
+    func setTextSize(_ size: CGFloat) {
+        guard let tv = activeText, let page = model.page(tv.pageID) else { return }
+        let k = pageScaleFactor(page.spec)
+        updateActive { $0.fontSize = min(max(size, 4), 200) * k }
+    }
+
+    /// 字級「輸入數字…」：數字鍵盤，可以有小數（v12.16.6）
+    func promptTextSize() {
+        guard let tv = activeText else { return }
+        let current = displaySize(tv)
+        let alert = UIAlertController(title: "字級", message: "以 A4 的大小為準，4～200", preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = "\(current)"
+            field.keyboardType = .decimalPad
+            field.clearButtonMode = .whileEditing
+        }
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+        alert.addAction(UIAlertAction(title: "確定", style: .default) { [weak self, weak alert] _ in
+            let text = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespaces) ?? ""
+            guard let value = Double(text.replacingOccurrences(of: "，", with: ".")), value > 0 else {
+                self?.showMessage("textformat.size", "請輸入數字")
+                return
+            }
+            self?.setTextSize(CGFloat(value))
+        })
+        Presenter.present(alert)
+    }
+
     /// 工具列上顯示的字級（以 A4 為準）
     private func displaySize(_ tv: TextBoxView) -> Int {
         let k = model.page(tv.pageID).map { pageScaleFactor($0.spec) } ?? 1

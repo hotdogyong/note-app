@@ -2075,7 +2075,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
 final class TextBar: UIView {
     private weak var host: NotebookView?
     private var items: [UIView] = []
-    private let sizeLabel = UILabel()
+    private let sizeButton = UIButton(type: .system)      // 字級：點了選常用的、或輸入數字（v12.16.6）
     private let colorButton = UIButton(type: .system)
     private let boldButton = UIButton(type: .system)
     private let alignButton = UIButton(type: .system)
@@ -2113,10 +2113,18 @@ final class TextBar: UIView {
         items.append(colorButton)
 
         items.append(button("textformat.size.smaller") { [weak host] in host?.changeTextSize(-2) })
-        sizeLabel.textColor = .white
-        sizeLabel.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
-        sizeLabel.textAlignment = .center
-        items.append(sizeLabel)
+        sizeButton.tintColor = .white
+        sizeButton.titleLabel?.font = .monospacedDigitSystemFont(ofSize: 15, weight: .semibold)
+        // v12.16.6（使用者：字級要能點數字選、也能輸入）：點一下跳出常用字級，最下面「輸入數字…」
+        let presets: [Int] = [8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 64]
+        sizeButton.menu = UIMenu(title: "字級（以 A4 為準）", children: [
+            UIMenu(options: .displayInline, children: presets.map { n in
+                UIAction(title: "\(n)") { [weak host] _ in host?.setTextSize(CGFloat(n)) }
+            }),
+            UIAction(title: "輸入數字…", image: UIImage(systemName: "number")) { [weak host] _ in host?.promptTextSize() }
+        ])
+        sizeButton.showsMenuAsPrimaryAction = true
+        items.append(sizeButton)
         items.append(button("textformat.size.larger") { [weak host] in host?.changeTextSize(2) })
 
         boldButton.addAction(UIAction { [weak host] _ in host?.toggleTextBold() }, for: .touchUpInside)
@@ -2183,7 +2191,7 @@ final class TextBar: UIView {
 
     /// 依目前文字方塊的樣式更新按鈕（size：以 A4 為準的字級）
     func refresh(_ box: TextBox, size: Int) {
-        sizeLabel.text = "\(size)"
+        sizeButton.setTitle("\(size)", for: .normal)
         boldButton.tintColor = box.bold ? .systemYellow : .white
         markdownButton.tintColor = box.isMarkdown ? .systemYellow : .white
         styleButton.tintColor = box.fill != nil ? .systemYellow : .white

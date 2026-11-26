@@ -116,7 +116,8 @@
 
 ## 7. 目前狀態（2026-11-23）
 
-- **v12.16.5 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.16.5.ipa`**：白板設定面板「新文字方塊的框」以前字被擠成直的 → 字一行、按鈕一行（`TextFrameDefaultRow`），多一顆「其他…」打開卡片樣式面板直接改預設（`TextStyleDefault.presentEditor`、`TextStylePanel(editingDefault:)`）；筆記本 ⋯ 選單也有「其他框的樣式…」。場景 `boardsettings`、`framedefault`。
+- **v12.16.6 已編譯、安裝檔在 `../安裝檔/NoteApp-v12.16.6.ipa`**：文字方塊工具列的字級數字改成按鈕（`TextBar.sizeButton`），點了選常用字級（8～64）或「輸入數字…」（數字鍵盤、可小數，4～200，以 A4 為準；`NotebookView.setTextSize`、`promptTextSize`）。
+- v12.16.5 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.16.5.ipa`：白板設定面板「新文字方塊的框」以前字被擠成直的 → 字一行、按鈕一行（`TextFrameDefaultRow`），多一顆「其他…」打開卡片樣式面板直接改預設（`TextStyleDefault.presentEditor`、`TextStylePanel(editingDefault:)`）；筆記本 ⋯ 選單也有「其他框的樣式…」。場景 `boardsettings`、`framedefault`。
 - v12.16.4 已編譯、安裝檔在 `../安裝檔/NoteApp-v12.16.4.ipa`（使用者沒裝 12.16.2，直接裝 12.16.3，回報白板不能縮放、點兩下新增變難）：
   - 手掌防誤觸改成只擋長按的一圈按鈕（使用者原意）：Pencil 寫字中、放開 0.8 秒內、觸碰面積大（majorRadius > 32，長按跳出那一刻再看一次）不跳；手掌先按著再下筆會取消。縮放、捲動、點兩下都不再擋。以前白板程式載入筆跡也被當成 Pencil 在寫（`silent` 的筆跡變化現在不算）。
   - 大綱長按拖曳（使用者選「拖到哪就停在哪」）：`NotebookData.outlineManual`＝true 後照陣列順序顯示（第一次拖時把照頁碼的順序存下來）；新加的插在照頁碼該在的位置；`moveOutline(id, parent:, before:)`；放到一項中間＝下一層，放到兩項之間＝插入（手指左右移 36 點換一層）；拖到上下緣自動捲；長按選單拿掉。場景 `outlinedrag`。

@@ -102,6 +102,7 @@
 | `ActivityLog.swift` | 修改紀錄（每天改了哪些頁；只打開看不算） |
 | `SelfTest.swift` | 模擬器自動測試的場景（`RemoteSelfTest`：App 自己連自己的區網服務） |
 | `RemoteAccess.swift` | 讓 Mac 上的 Claude 透過區網讀寫筆記：服務、配對、API、設定裡的開關（Mac 端 `tools/noteapp.py`） |
+| `RemoteTools.swift` | 進階工具：批次 batch、實際大小 measure、放圖 images、搜尋 search、打開跳頁 open、手寫辨識 ocr |
 
 ## 5.1 直接讀寫使用者 iPad 上的筆記（v12.17.0 起）
 
@@ -110,6 +111,7 @@
 - 座標是頁面座標（A4 595×842；白板是整張大頁面，`current` 的 visible 是畫面看得到的那塊）；`size` 跟工具列上的字級一樣。沒給 x、y 會自動往下排。
 - 打開中的那本走畫面改（可以按上一步復原；加頁會清掉復原紀錄）。刪方塊、改別人寫的東西之前先問使用者。
 - **一般 Claude（桌面 App 的聊天）也能用**：連接器 `tools/noteapp_mcp.py`（MCP，stdio，只用內建套件；沿用同一把鑰匙），登記在 `~/Library/Application Support/Claude/claude_desktop_config.json` 的 `mcpServers.筆記軟體`（改之前的設定備份在同資料夾 `.bak-20261126`）。工具 notes_list／current／read／image／add_texts／add_pages／edit_text／delete_text／add_outline／new_notebook；使用規則寫在連接器的 INSTRUCTIONS。iPad、網頁版的 Claude 連不到區網，不能用。
+- v12.17.1 加的（實務上常用）：`batch`（同一頁一次 delete／update／move（ids 或 rect＋dx、dy）／unlink／add／links，一步上一步；**整排移動、大量修改一律用這個**）、`measure`（畫面上量到的實際大小，數學式排好才算 measured）、`addimage`（Mac 上的 PNG／JPEG）、`search`（文字方塊、大綱、名稱）、`open`（iPad 打開某本、跳到某頁某塊，跳前自動插旗）、`ocr`（手寫變文字，數學式常認錯）。連接器 1.1.0 共 16 個工具。Mac 端逾時 45 秒、逾時不重送。
 - 方塊寬度用原始字估：有 LaTeX 的方塊在畫面上框會比排好的式子寬一點，要精準就給 width。
 
 ## 6. 踩過的雷（改之前先看）
@@ -126,6 +128,7 @@
 
 ## 7. 目前狀態（2026-11-26）
 
+- **v12.17.1 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.1.ipa`**：Claude 連進來的進階工具（`RemoteTools.swift`，見 5.1）；白板自動排接在畫面上的東西下面（以前圖蓋到標題）；改字重算寬度。模擬器：筆記本每一步都 1.3 秒內；白板的 ocr 在模擬器很慢（沒有顯示卡，畫大白板 20 幾秒）→ 已降到最寬 1200 像素，實機要測。
 - **v12.17.0 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.0.ipa`**：
   - 讓 Mac 上的 Claude 連進來（`RemoteAccess.swift`、`tools/noteapp.py`，見 5.1）：NWListener 埠 8765＋Bonjour `_noteapp._tcp`；配對碼換鑰匙（錯 5 次換碼）；進背景關、回前景開。API：GET /ping /notebooks /current /notebooks/{id} /notebooks/{id}/image；POST /pair /notebooks /notebooks/{id}/texts /pages /outline；PATCH、DELETE /notebooks/{id}/texts/{box}。筆記本可用編號、名稱、current。場景 `remote`、`remoteboard`、`remotesettings`。
   - 外框顏色多一格 #73B8FF（`TextBoxStyle.palette` 第 13 個）；字級選單改 16～72。

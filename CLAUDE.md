@@ -128,6 +128,11 @@
 
 ## 7. 目前狀態（2026-11-26）
 
+- **v12.17.2 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.2.ipa`**：
+  - 從外面拖進來（使用者：Mac 上用通用控制把 PDF 拖進白板；`NotebookView` 的 `UIDropInteractionDelegate`、`receiveDropped`）：白板收 PDF／Markdown／文字檔 → 家在這張白板的筆記本＋卡片放在放手處（`NotebookModel.importDocument`），圖片 → 貼在放手處；筆記本收圖片，PDF 先問再插在目前這頁後面（`insertDroppedPDF`，不能復原）。好幾樣一起拖進白板一列 4 張排開。場景 `dropfile`、`dropnote`（用檔案做 NSItemProvider 走一樣的流程）。
+  - 大綱滑不下去（使用者回報，白板浮動視窗裡看不到第五章之後）：每一項的 SwiftUI 長按＋拖曳把 List 的捲動吃掉 → 改用 `OutlineLongPress`（UIGestureRecognizerRepresentable 包 UILongPressGestureRecognizer，0.35 秒、移動超過 10 點就失敗讓列表捲）。
+  - 連接器說明加上：可以直接改沒打開的筆記本、白板（不用切過去），iPad 上的 App 要開在前景。
+  - 實機要測：Mac 通用控制拖 PDF、圖片進白板／筆記本；大綱長的時候滑得動、長按拖曳還能用、往左右滑沒壞。
 - **v12.17.1 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.1.ipa`**：Claude 連進來的進階工具（`RemoteTools.swift`，見 5.1）；白板自動排接在畫面上的東西下面（以前圖蓋到標題）；改字重算寬度。模擬器：筆記本每一步都 1.3 秒內；白板的 ocr 在模擬器很慢（沒有顯示卡，畫大白板 20 幾秒）→ 已降到最寬 1200 像素，實機要測。
 - **v12.17.0 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.0.ipa`**：
   - 讓 Mac 上的 Claude 連進來（`RemoteAccess.swift`、`tools/noteapp.py`，見 5.1）：NWListener 埠 8765＋Bonjour `_noteapp._tcp`；配對碼換鑰匙（錯 5 次換碼）；進背景關、回前景開。API：GET /ping /notebooks /current /notebooks/{id} /notebooks/{id}/image；POST /pair /notebooks /notebooks/{id}/texts /pages /outline；PATCH、DELETE /notebooks/{id}/texts/{box}。筆記本可用編號、名稱、current。場景 `remote`、`remoteboard`、`remotesettings`。
@@ -169,7 +174,6 @@
 - 等 CI 的注意事項：`gh run list`／`gh run watch` 的狀態不可靠（會比工作本身先顯示 completed）。一律以 `ci-results`、`ci-shots` 的 `status.txt` 的 commit 等於這次 commit 為準。sim 的 concurrency 會取消前一次，所以上一版截圖沒出來前不要推。
 - 實機要測（v12.16.4）：白板縮放、點兩下新增恢復；手掌碰到不跳圓盤；大綱長按拖曳順不順、會不會跟往左右滑打架；右上角選框。（v12.16.3 的：白板上那兩段數學式重開後排不排得出來、大綱往左／往右滑。）（v12.16.2 的：語音點兩下＋麥克風打進方塊、詞庫、手掌防誤觸會不會擋到正常操作、圖片拖到旁頁、文字方塊收進頁邊、拉角不跳圓盤。）（v12.16.1 的：抽屜跟手拉出、左邊那條往右收回順不順；兩邊交替寫字會不會搶筆；「−」好不好點；旗子；白板的旗子；首頁右緣滑出日誌。）v12.16.0 已測過：恢復 App 可以、跳回記號好用、抽屜標題列沒問題。
 - 還沒做／待確認：
-  - 檔案拖曳（使用者說暫緩）。
   - 隨手記之後可能要：看別本的隨手記、紙張樣式選擇、抽屜預設寬度。
   - 日誌右上角的鈴鐺（提醒）沒做。
   - 浮動視窗開著時卡片顯示「正以浮窗模式打開」、心智圖交叉線、Markdown 鍵盤編輯。

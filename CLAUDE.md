@@ -128,6 +128,7 @@
 
 ## 7. 目前狀態（2026-11-26）
 
+- **v12.17.3 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.3.ipa`**：一般行裡（不是 $$）的高的數學式（分數、根號、上下限、矩陣、大括號，含 `$\displaystyle …$`）跟上下行貼太近 → `MathRenderer` 的 CSS 在那一段的 `.base` 上下多 0.32em（加在 .base 不是整個 .katex：長式子還能換行）；`layoutRevision` 改 6，舊的數學式快取都會重排一次。場景 `mathgap`（含使用者 griffiths 白板那一段 Markdown 方塊）。實機要測：白板上那段變不變寬鬆、一般行有分數的方塊高度跟著變。
 - **v12.17.2 已編譯、截圖看過、安裝檔在 `../安裝檔/NoteApp-v12.17.2.ipa`**：
   - 從外面拖進來（使用者：Mac 上用通用控制把 PDF 拖進白板；`NotebookView` 的 `UIDropInteractionDelegate`、`receiveDropped`）：白板收 PDF／Markdown／文字檔 → 家在這張白板的筆記本＋卡片放在放手處（`NotebookModel.importDocument`），圖片 → 貼在放手處；筆記本收圖片，PDF 先問再插在目前這頁後面（`insertDroppedPDF`，不能復原）。好幾樣一起拖進白板一列 4 張排開。場景 `dropfile`、`dropnote`（用檔案做 NSItemProvider 走一樣的流程）。
   - 大綱滑不下去（使用者回報，白板浮動視窗裡看不到第五章之後）：每一項的 SwiftUI 長按＋拖曳把 List 的捲動吃掉 → 改用 `OutlineLongPress`（UIGestureRecognizerRepresentable 包 UILongPressGestureRecognizer，0.35 秒、移動超過 10 點就失敗讓列表捲）。

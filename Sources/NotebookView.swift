@@ -575,6 +575,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         self.model = model
         super.init(frame: .zero)
         Self.openViews.add(self)
+        addInteraction(UIDropInteraction(delegate: self))        // 從 Mac（通用控制）、檔案 App 拖 PDF、圖片進來（v12.17.2）
         applyBackdrop()
 
         outer.delegate = self
@@ -2198,7 +2199,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
     }
 
     /// 插幾列新的頁（這一步不能用「上一步」復原，跟隨手記整頁放進來一樣）
-    func remoteInsertRows(_ rows: [PageRow], at index: Int) -> Int {
+    func remoteInsertRows(_ rows: [PageRow], at index: Int, message: String? = nil) -> Int {
         endTextSelection()
         dismissShapeEditor()
         flushAll()
@@ -2214,7 +2215,11 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         jump(toRow: at, page: 0)
         updateLoadedPages()
         updateFocus(force: true)
-        showMessage("sparkles", "Claude 加了 \(rows.count) 頁：從第 \(at + 1) 頁開始")
+        if let m = message {
+            showMessage("doc.badge.plus", m)
+        } else {
+            showMessage("sparkles", "Claude 加了 \(rows.count) 頁：從第 \(at + 1) 頁開始")
+        }
         return at
     }
 
@@ -9080,4 +9085,146 @@ protocol EdgeDragging: AnyObject {
     func scrolled(by dy: CGFloat)
     func scrolledSideways(by dx: CGFloat)
     func prepareForRelayout()
+}
+
+// MARK: - 從外面拖進來（v12.17.2，使用者：在 Mac 上用通用控制把 PDF 拖進白板）
+// 白板：PDF、Markdown、純文字 → 一本「家在這張白板裡」的筆記本，卡片放在放手的地方（跟「檔案」選的一樣）；圖片 → 貼在放手的地方
+// 筆記本：圖片 → 貼在放手的地方；PDF → 問一下，插在目前這頁後面（每一頁 PDF 一張課本頁；這一步不能復原）
+
+extension NotebookView: UIDropInteractionDelegate {
+    private static var dropDocumentTypes: [UTType] { importableDocumentTypes }
+
+    func dropInteraction(_ interaction: UIDropInteraction, canHandle session: UIDropSession) -> Bool {
+        guard !readOnly, session.localDragSession == nil else { return false }   // App 裡面自己的拖曳不收
+        let ids = ([UTType.image] + Self.dropDocumentTypes).map { $0.identifier }
+        return session.hasItemsConforming(toTypeIdentifiers: ids)
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: UIDropSession) -> UIDropProposal {
+        UIDropProposal(operation: .copy)
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, performDrop session: UIDropSession) {
+        receiveDropped(session.items.map { $0.itemProvider }, at: session.location(in: self))
+    }
+
+    /// 拖進來的每一樣東西：文件先存一份到暫存（系統給的檔案在回呼結束就會刪掉），回到主執行緒再放
+    func receiveDropped(_ providers: [NSItemProvider], at point: CGPoint) {
+        insertLocation = point
+        let docTypes = Self.dropDocumentTypes
+        for (i, provider) in providers.enumerated() {
+            let p = CGPoint(x: point.x + CGFloat(i % 4) * 40, y: point.y + CGFloat(i / 4) * 40)
+            let docType = provider.registeredTypeIdentifiers.first { id in
+                guard let t = UTType(id) else { return false }
+                return docTypes.contains { t.conforms(to: $0) } && !t.conforms(to: .image)
+            }
+            if let type = docType {
+                let suggested = provider.suggestedName
+                provider.loadFileRepresentation(forTypeIdentifier: type) { [weak self] url, _ in
+                    let copy = url.flatMap { Self.keepDroppedFile($0, name: suggested) }
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            guard let self = self else { return }
+                            if let copy = copy {
+                                self.placeDroppedDocument(copy, at: p)
+                            } else {
+                                self.showMessage("exclamationmark.triangle", "這份文件讀不進來")
+                            }
+                        }
+                    }
+                }
+            } else if provider.canLoadObject(ofClass: UIImage.self) {
+                provider.loadObject(ofClass: UIImage.self) { [weak self] object, _ in
+                    let image = object as? UIImage
+                    DispatchQueue.main.async {
+                        MainActor.assumeIsolated {
+                            guard let self = self else { return }
+                            if let image = image {
+                                self.pasteImage(Self.downscaled(image, maxSide: 2400), at: p)
+                            } else {
+                                self.showMessage("exclamationmark.triangle", "這張圖讀不進來")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// 系統給的暫存檔複製一份到自己的暫存資料夾（保留原本的檔名，筆記本才會用它當名稱）
+    nonisolated private static func keepDroppedFile(_ url: URL, name: String?) -> URL? {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("拖進來-" + UUID().uuidString, isDirectory: true)
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            var fileName = url.lastPathComponent
+            if let n = name, !n.isEmpty {
+                fileName = (n as NSString).pathExtension.isEmpty ? n + "." + url.pathExtension : n
+            }
+            let target = folder.appendingPathComponent(fileName)
+            try fm.copyItem(at: url, to: target)
+            return target
+        } catch {
+            return nil
+        }
+    }
+
+    private func placeDroppedDocument(_ url: URL, at p: CGPoint) {
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }   // 匯入完暫存的不要了
+        if isBoard {
+            guard let meta = model.importDocument?(url) else {
+                showMessage("exclamationmark.triangle", "「\(url.lastPathComponent)」讀不進來")
+                return
+            }
+            placeCard(for: meta, at: p)
+            showMessage("doc.badge.plus", "已匯入「\(meta.title)」：點卡片選取，再按左上角打開")
+            return
+        }
+        guard url.pathExtension.lowercased() == "pdf" else {
+            showMessage("doc.text", "Markdown、文字檔請拖到白板（會變成一本筆記），筆記本裡只收 PDF 和圖片")
+            return
+        }
+        guard let document = PDFDocument(url: url), document.pageCount > 0 else {
+            showMessage("exclamationmark.triangle", "這份 PDF 打不開")
+            return
+        }
+        let count = document.pageCount
+        let at = min(focusRow + 1, model.notebook.rows.count)
+        // PDF 要先存進筆記本的資料夾，問完再存（取消就不留檔）：先把暫存檔多複製一份給 alert 之後用
+        guard let keep = Self.keepDroppedFile(url, name: url.lastPathComponent) else { return }
+        let alert = UIAlertController(title: "插入「\(url.deletingPathExtension().lastPathComponent)」？",
+                                      message: "\(count) 頁會插在第 \(at) 頁後面，每一頁 PDF 一張課本頁。這一步不能用「上一步」復原。",
+                                      preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "取消", style: .cancel) { _ in
+            try? FileManager.default.removeItem(at: keep.deletingLastPathComponent())
+        })
+        alert.addAction(UIAlertAction(title: "插入", style: .default) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.insertDroppedPDF(keep, at: at)
+                try? FileManager.default.removeItem(at: keep.deletingLastPathComponent())
+            }
+        })
+        Presenter.present(alert)
+    }
+
+    /// PDF 存進這本的資料夾，每一頁變成一列（尺寸照 PDF；轉過的頁寬高對調）
+    private func insertDroppedPDF(_ url: URL, at index: Int) {
+        guard let file = Store.importPDF(from: url, notebook: model.meta.id),
+              let document = PDFDocument(url: Store.pdfURL(file)) else {
+            showMessage("exclamationmark.triangle", "PDF 存不進去（空間不夠？）")
+            return
+        }
+        var rows: [PageRow] = []
+        for i in 0 ..< document.pageCount {
+            guard let page = document.page(at: i) else { continue }
+            let box = page.bounds(for: .mediaBox)
+            let rotated = page.rotation % 180 != 0
+            var row = PageRow()
+            row.pages = [NotePage(spec: PageSpec(width: rotated ? box.height : box.width, height: rotated ? box.width : box.height),
+                                  pdf: PDFRef(file: file, index: i))]
+            rows.append(row)
+        }
+        guard !rows.isEmpty else { return }
+        _ = remoteInsertRows(rows, at: index, message: "插入了 \(rows.count) 頁：從第 \(index + 1) 頁開始")
+    }
 }

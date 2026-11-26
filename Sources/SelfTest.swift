@@ -204,6 +204,11 @@ enum SelfTest {
                 }
             case "markdown":
                 library.openNotebook = library.addMarkdownNotebook(in: nil)
+            case "dropfile":
+                // v12.17.2：從外面拖 PDF＋圖片進白板（假裝通用控制拖進來：用檔案做 NSItemProvider，走一樣的流程）
+                library.openNotebook = library.addBoard(in: nil, title: "拖放測試白板", width: 100 * 842, height: 100 * 595)
+            case "dropnote":
+                library.openNotebook = library.addNotebook(in: nil, title: "拖放測試筆記本")
             case "remote":
                 // v12.17.0：App 自己連自己的區網服務（跟 Mac 上的 noteapp.py 走一樣的路）：配對、加頁、加文字方塊、拿頁面的圖
                 library.openNotebook = library.addNotebook(in: nil, title: "Claude 連線測試")
@@ -225,6 +230,25 @@ enum SelfTest {
 
     /// 筆記本／白板打開、回到上次位置之後（NotebookView 呼叫）：需要在開著的畫面上做事的場景
     static func notebookOpened(_ view: NotebookView) {
+        if scene == "dropfile" || scene == "dropnote", !view.model.embedded, !sceneDone {
+            sceneDone = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in
+                guard let view = view else { return }
+                var providers: [NSItemProvider] = []
+                if let pdf = makeOutlinePDF() {
+                    let named = pdf.deletingLastPathComponent().appendingPathComponent("電磁學講義.pdf")
+                    try? FileManager.default.removeItem(at: named)
+                    try? FileManager.default.copyItem(at: pdf, to: named)
+                    if let p = NSItemProvider(contentsOf: named) { providers.append(p) }
+                }
+                let png = FileManager.default.temporaryDirectory.appendingPathComponent("拖進來的圖.png")
+                try? testImage(320, 200, UIColor.systemOrange).pngData()?.write(to: png)
+                if let p = NSItemProvider(contentsOf: png) { providers.append(p) }
+                view.receiveDropped(providers, at: CGPoint(x: view.bounds.width * 0.3, y: view.bounds.height * 0.35))
+                show("拖進來 \(providers.count) 樣：" + providers.map { $0.registeredTypeIdentifiers.first ?? "?" }.joined(separator: "、"))
+            }
+            return
+        }
         if scene == "remote" || scene == "remoteboard", !view.model.embedded, !sceneDone {
             sceneDone = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak view] in

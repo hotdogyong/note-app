@@ -915,6 +915,8 @@ final class NotebookModel: ObservableObject {
     weak var documentView: NotebookView?
     /// 刪掉的頁放進最近刪除（v12.9.2）：由編輯畫面接到首頁的資料（NotebookView 拿不到首頁）
     var trashPages: (@MainActor ([PageRow]) -> Void)?
+    /// 白板：一份文件變成「家在這張白板裡」的筆記本（拖進來用，v12.17.2）：由編輯畫面接到首頁的資料
+    var importDocument: (@MainActor (URL) -> NotebookMeta?)?
 
     init(meta: NotebookMeta) {
         self.meta = meta
@@ -1963,6 +1965,12 @@ struct NotebookEditorView: View {
                 let folder = model.meta.folderID
                 model.trashPages = { [weak lib] rows in
                     lib?.trashDeletedPages(rows, title: title, folder: folder)
+                }
+                let boardID = model.meta.id
+                model.importDocument = { [weak lib] url in
+                    guard let lib = lib, let meta = lib.importDocument(from: url, into: folder) else { return nil }
+                    lib.setBoardHome(meta.id, board: boardID)
+                    return lib.notebook(meta.id) ?? meta
                 }
             }
             .onChange(of: penBox.version) { _, _ in

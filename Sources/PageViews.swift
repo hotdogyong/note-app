@@ -29,12 +29,6 @@ final class PageRowView: UIScrollView, UIScrollViewDelegate, UIGestureRecognizer
     private let leftPull = PullIndicator(text: "新增旁頁", width: 100)
     private let rightPull = PullIndicator(text: "新增旁頁", width: 100)
 
-    /// Pencil 寫字時手掌碰到不要左右滑（v12.16.2）
-    override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-        if g === panGestureRecognizer, host?.pencilBusy == true { return false }
-        return super.gestureRecognizerShouldBegin(g)
-    }
-
     init(rowID: UUID, host: NotebookView) {
         self.rowID = rowID
         self.host = host
@@ -1369,7 +1363,7 @@ final class NotePageView: UIView, PKCanvasViewDelegate {
     }
 
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
-        if toolActive { host?.pencilActivity(down: nil) }
+        if toolActive && !silent { host?.pencilActivity(down: nil) }   // 程式自己改筆跡（白板載入）不算 Pencil 在寫
         if !silent { restoreDroppedStrokes(canvasView) }
         syncOverlay()
         scheduleSave()

@@ -410,6 +410,7 @@ struct NotebookData: Codable {
     var rows: [PageRow] = [PageRow()]
     var bookmarks: [UUID]? = nil          // 加了書籤的頁面
     var outline: [OutlineItem]? = nil     // 自己加的大綱
+    var outlineManual: Bool? = nil       // true：大綱照使用者拖的順序（v12.16.4）；沒有：同一層照頁碼排
     var lastPage: UUID? = nil             // 上次看到的那一頁（下次打開直接回到這裡）
     var board: Bool? = nil                // true：這是白板（v12.3）：只有一張大頁面，不能加頁，可以自由捲動
     var pins: [BoardPin]? = nil           // 白板的圖釘（v12.7）

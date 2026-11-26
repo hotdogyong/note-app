@@ -984,7 +984,16 @@ final class NotebookModel: ObservableObject {
         var items = notebook.outline ?? []
         var item = OutlineItem(title: title, pageID: id)
         item.parentID = parent
-        items.append(item)
+        // 照拖的順序排的大綱（v12.16.4）：新加的還是插在照頁碼該在的位置（同一層裡第一個頁碼比它後面的前面）
+        if notebook.outlineManual == true, let here = location(of: id),
+           let at = items.firstIndex(where: { other in
+               guard other.parentID == parent, let loc = location(of: other.pageID) else { return false }
+               return (loc.row, loc.page) > (here.row, here.page)
+           }) {
+            items.insert(item, at: at)
+        } else {
+            items.append(item)
+        }
         if let parent = parent, let i = items.firstIndex(where: { $0.id == parent }) { items[i].collapsed = nil }   // 上一層打開，才看得到剛加的
         notebook.outline = items
         save()
@@ -996,6 +1005,72 @@ final class NotebookModel: ObservableObject {
         let folded = notebook.outline?[i].collapsed == true
         notebook.outline?[i].collapsed = folded ? nil : true
         save()
+    }
+
+    // MARK: 大綱的拖曳（v12.16.4，使用者：要像資料夾那樣拖；選了「拖到哪就停在哪」）
+    // 以前同一層永遠照頁碼排。第一次拖（或升降一層）時，先把現在看到的順序存成大綱本身的順序，之後就照這個順序顯示
+
+    /// 照頁碼排好的大綱（同一層照頁碼，同一頁照原本的先後）
+    private func outlinePageOrder() -> [OutlineItem] {
+        let items = notebook.outline ?? []
+        let keys = items.indices.map { i -> (Int, Int, Int) in
+            let loc = location(of: items[i].pageID)
+            return (loc?.row ?? Int.max, loc?.page ?? 0, i)
+        }
+        return items.indices.sorted { keys[$0] < keys[$1] }.map { items[$0] }
+    }
+
+    func ensureOutlineManual() {
+        guard notebook.outlineManual != true else { return }
+        notebook.outline = outlinePageOrder()
+        notebook.outlineManual = true
+    }
+
+    /// 拖曳放下：這一項（連同底下全部）搬到 parent 底下，排在 before 前面（nil：排在那一層最後）
+    func moveOutline(_ id: UUID, parent: UUID?, before: UUID?) {
+        if let p = parent, p == id || outlineDescendants(id).contains(p) { return }   // 不能拖進自己底下
+        if before == id { return }
+        ensureOutlineManual()
+        guard var items = notebook.outline, items.contains(where: { $0.id == id }) else { return }
+        var moving = outlineDescendants(id)
+        moving.insert(id)
+        var block = items.filter { moving.contains($0.id) }
+        items.removeAll { moving.contains($0.id) }
+        if let i = block.firstIndex(where: { $0.id == id }) { block[i].parentID = parent }
+        var at = items.count
+        if let b = before, let i = items.firstIndex(where: { $0.id == b }) {
+            at = i
+        } else if let p = parent {
+            // 那一層的最後：上一層那一項、和它底下全部的後面
+            let parentOf = Dictionary(items.map { ($0.id, $0.parentID) }, uniquingKeysWith: { a, _ in a })
+            func under(_ x: UUID) -> Bool {
+                var cur: UUID? = x
+                var steps = 0
+                while let c = cur, steps < 64 {
+                    if c == p { return true }
+                    cur = parentOf[c] ?? nil
+                    steps += 1
+                }
+                return false
+            }
+            if let last = items.lastIndex(where: { under($0.id) }) { at = last + 1 }
+        }
+        items.insert(contentsOf: block, at: min(at, items.count))
+        if let p = parent, let j = items.firstIndex(where: { $0.id == p }) { items[j].collapsed = nil }   // 拖進去的那一項打開
+        notebook.outline = items
+        save()
+    }
+
+    /// 升一層：排在原本上一層那一項的後面
+    func outdentOutline(_ id: UUID) {
+        let items = notebook.outline ?? []
+        guard let item = items.first(where: { $0.id == id }), let p = item.parentID,
+              let parentItem = items.first(where: { $0.id == p }) else { return }
+        ensureOutlineManual()
+        let ordered = notebook.outline ?? []
+        let siblings = ordered.filter { $0.parentID == parentItem.parentID }
+        let next = siblings.firstIndex(where: { $0.id == p }).flatMap { i in i + 1 < siblings.count ? siblings[i + 1].id : nil }
+        moveOutline(id, parent: parentItem.parentID, before: next)
     }
 
     /// 改上一層（v12.16.3：升一層、降一層）；不能接到自己底下
@@ -1835,7 +1910,7 @@ struct NotebookEditorView: View {
                     let id = model.notebook.rows[3].pages[0].id
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { moveRequest = MoveRequest(pageIDs: [id], within: true) }
                 }
-                if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
+                if SelfTest.scene == "outline" || SelfTest.scene == "pdfoutline" || SelfTest.scene == "outlinedrag" {   // 自動測試：打開左邊面板（NotePanel 會自己切到大綱）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3) { showPanel = true }
                 }
                 if !embedded && model.meta.draftOf == nil {
@@ -2168,6 +2243,21 @@ final class ThumbStore: ObservableObject {
 }
 
 /// 大綱面板上的一列（我的大綱；v12.11.0）
+/// 大綱的拖曳（v12.16.4）
+struct OutlineDrag: Equatable {
+    var id: UUID
+    var title: String
+    var depth: Int
+    var startX: CGFloat?
+    var location: CGPoint          // 手指，螢幕座標
+    var target: OutlineDrop?
+}
+
+enum OutlineDrop: Equatable {
+    case into(UUID)                                                     // 放到這一項上面：變成它的下一層（排最後）
+    case between(parent: UUID?, before: UUID?, lineY: CGFloat, depth: Int)   // 放到兩項中間
+}
+
 struct OutlineLine: Identifiable {
     let item: OutlineItem
     let row: Int
@@ -2368,6 +2458,9 @@ struct NotePanel: View {
     @State private var pdfOutline: [PDFOutlineEntry] = []
     @State private var pdfFolded: Set<UUID> = []      // PDF 目錄收合起來的項目（v12.11.0；只記到面板關掉）
     @State private var openOutline: UUID?             // 往左滑開、露出按鈕的那一項
+    @State private var outlineDrag: OutlineDrag?      // 大綱正在拖的那一項（v12.16.4）
+    @State private var outlineFrames: [UUID: CGRect] = [:]   // 每一列在螢幕上的位置
+    @State private var outlineListFrame = CGRect.zero
     @State private var pendingDelete: (row: Int, page: Int)?
     @State private var showDelete = false
     @State private var sideRowID: UUID?               // 「旁頁」分頁要看哪一列；沒指定＝目前這一列
@@ -2413,6 +2506,29 @@ struct NotePanel: View {
             if SelfTest.scene == "outline" {                     // 自動測試：直接看大綱，第一項滑開
                 tab = 2
                 openOutline = model.notebook.outline?.first?.id
+            }
+            if SelfTest.scene == "outlinedrag" {
+                // 自動測試（v12.16.4）：「沒有下一層的一項」拖進「1.2 電荷守恆」；「1.2」拖到「1.1」前面；
+                // 再假裝正拖著「第二章」停在「1.1 電荷」上面（應該亮起來）
+                tab = 2
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    let items = model.notebook.outline ?? []
+                    func id(_ prefix: String) -> UUID? { items.first { $0.title.hasPrefix(prefix) }?.id }
+                    if let g = id("沒有下一層"), let d = id("1.2") { model.moveOutline(g, parent: d, before: nil) }
+                    if let d = id("1.2"), let a = id("第一章"), let b = id("1.1 ") { model.moveOutline(d, parent: a, before: b) }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        let lines = outlineTree()
+                        let text = lines.map { String(repeating: "　", count: $0.depth) + $0.item.title }.joined(separator: " / ")
+                        SelfTest.show("大綱：" + text + "\n（應該：第一章 / 　1.2 / 　　沒有下一層 / 　1.1 / 　　1.1.1 / 第二章）")
+                        if let e = lines.first(where: { $0.item.title.hasPrefix("第二章") }),
+                           let target = lines.first(where: { $0.item.title.hasPrefix("1.1 ") }),
+                           let f = outlineFrames[target.id] {
+                            outlineDrag = OutlineDrag(id: e.id, title: e.item.title, depth: e.depth, startX: f.midX,
+                                                      location: CGPoint(x: f.midX, y: f.midY), target: nil)
+                            updateOutlineDrag(CGPoint(x: f.midX, y: f.midY), lines: lines)
+                        }
+                    }
+                }
             }
             if SelfTest.scene == "pdfoutline" {                  // 自動測試：等於在 PDF 目錄的「1.2」那一列按改名
                 tab = 2
@@ -2726,7 +2842,9 @@ struct NotePanel: View {
         // PDF 的目錄已經搬進我的大綱的話不再列一份（我的大綱全部刪光了才會再出現）
         let fromPDF = (model.notebook.pdfOutlineImported == true && !mine.isEmpty) ? [] : pdfLines()
         let pdfIndent = fromPDF.contains { $0.hasChildren }
+        let moving: Set<UUID> = outlineDrag.map { model.outlineDescendants($0.id).union([$0.id]) } ?? []
         return VStack(spacing: 0) {
+            ScrollViewReader { proxy in
             List {
                 if mine.isEmpty && fromPDF.isEmpty {
                     Text("還沒有大綱。按下面的「添加大綱」，把目前這一頁加進來。")
@@ -2735,7 +2853,7 @@ struct NotePanel: View {
                         .padding(.top, 20)
                         .outlineListRow()
                 } else {
-                    sectionTitle("往左滑：改名、加下一層、刪除　往右滑：升一層、降一層")
+                    sectionTitle("長按拖曳：放到一項上面＝變成它的下一層，放到兩項中間＝插在那裡（往左右移決定哪一層）。往左滑：改名、加下一層、刪除；往右滑：升一層、降一層")
                         .outlineListRow()
                 }
                 ForEach(Array(mine.enumerated()), id: \.element.id) { index, line in
@@ -2746,6 +2864,9 @@ struct NotePanel: View {
                                reserveChevron: mineIndent) {
                         model.toggleOutline(line.id)
                     }
+                    .opacity(moving.contains(line.id) ? 0.3 : 1)
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { outlineFrames[line.id] = $0 }
+                    .gesture(outlineDragGesture(line, lines: mine))
                     .outlineListRow()
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         Button(role: .destructive) {
@@ -2784,37 +2905,7 @@ struct NotePanel: View {
                             .tint(.indigo)
                         }
                     }
-                    .contextMenu {
-                        Button {
-                            renameOutline(line.item)
-                        } label: {
-                            Label("重新命名", systemImage: "pencil")
-                        }
-                        Button {
-                            addOutlineChild(line.item)
-                        } label: {
-                            Label("在底下加一項（目前這一頁）", systemImage: "plus")
-                        }
-                        if up {
-                            Button {
-                                outdentOutline(line)
-                            } label: {
-                                Label("升一層（往左）", systemImage: "arrow.left.to.line")
-                            }
-                        }
-                        if down {
-                            Button {
-                                indentOutline(mine, index)
-                            } label: {
-                                Label("降一層（變成上一項的下一層）", systemImage: "arrow.right.to.line")
-                            }
-                        }
-                        Button(role: .destructive) {
-                            deleteOutline(line.item)
-                        } label: {
-                            Label("刪除", systemImage: "trash")
-                        }
-                    }
+                    // 長按改成拖曳（v12.16.4），原本長按的選單拿掉；同樣的事在往左、往右滑的按鈕裡
                 }
                 // PDF 的目錄（還沒併進來時）：一編輯就整份搬進大綱，再對那一項做事
                 ForEach(fromPDF) { line in
@@ -2848,6 +2939,17 @@ struct NotePanel: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 10)
+            .scrollDisabled(outlineDrag != nil)                // 拖著的時候列表不要跟著捲
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { outlineListFrame = $0 }
+            .overlay(alignment: .topLeading) { outlineDragOverlay }
+            .task(id: outlineDrag?.id) {
+                // 拖到列表上下緣：手指不動也一直捲
+                while outlineDrag != nil {
+                    outlineAutoScroll(mine, proxy: proxy)
+                    try? await Task.sleep(nanoseconds: 220_000_000)
+                }
+            }
+            }
             Divider()
             Button {
                 let initial = "第 \(model.focusRow + 1) 頁"
@@ -2876,17 +2978,164 @@ struct NotePanel: View {
 
     private func outlineCanOutdent(_ line: OutlineLine) -> Bool { line.depth > 0 && line.item.parentID != nil }
 
+    // MARK: 大綱的拖曳（v12.16.4）
+
+    private func outlineDragGesture(_ line: OutlineLine, lines: [OutlineLine]) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.35)
+            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .global))
+            .onChanged { value in
+                guard case .second(true, let drag) = value else { return }
+                if outlineDrag == nil {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    let f = outlineFrames[line.id] ?? .zero
+                    outlineDrag = OutlineDrag(id: line.id, title: line.item.title, depth: line.depth, startX: nil,
+                                              location: CGPoint(x: f.midX, y: f.midY), target: nil)
+                }
+                if let d = drag { updateOutlineDrag(d.location, lines: lines) }
+            }
+            .onEnded { _ in finishOutlineDrag() }
+    }
+
+    /// 手指在 p（螢幕座標）：放下會到哪裡
+    private func updateOutlineDrag(_ p: CGPoint, lines: [OutlineLine]) {
+        guard var drag = outlineDrag else { return }
+        drag.location = p
+        if drag.startX == nil { drag.startX = p.x }
+        drag.target = outlineTarget(p, lines: lines, drag: drag)
+        outlineDrag = drag
+    }
+
+    private func outlineTarget(_ p: CGPoint, lines: [OutlineLine], drag: OutlineDrag) -> OutlineDrop? {
+        let moving = model.outlineDescendants(drag.id).union([drag.id])
+        let order = lines.filter { !moving.contains($0.id) }
+        let visible = order.indices.filter { i in
+            guard let f = outlineFrames[order[i].id] else { return false }
+            return f.intersects(outlineListFrame)
+        }
+        guard let firstVisible = visible.first, let lastVisible = visible.last else {
+            return .between(parent: nil, before: nil, lineY: p.y, depth: 0)
+        }
+        var aIdx: Int?
+        var bIdx: Int?
+        if let i = visible.first(where: { i in
+            guard let f = outlineFrames[order[i].id] else { return false }
+            return p.y >= f.minY - 3 && p.y <= f.maxY + 3
+        }), let f = outlineFrames[order[i].id] {
+            let rel = (p.y - f.minY) / max(f.height, 1)
+            if rel > 0.28 && rel < 0.72 { return .into(order[i].id) }
+            if rel <= 0.28 {
+                aIdx = i > 0 ? i - 1 : nil
+                bIdx = i
+            } else {
+                aIdx = i
+                bIdx = i + 1 < order.count ? i + 1 : nil
+            }
+        } else if let f = outlineFrames[order[firstVisible].id], p.y < f.minY {
+            aIdx = firstVisible > 0 ? firstVisible - 1 : nil
+            bIdx = firstVisible
+        } else {
+            aIdx = lastVisible
+            bIdx = lastVisible + 1 < order.count ? lastVisible + 1 : nil
+        }
+        let a = aIdx.map { order[$0] }
+        let b = bIdx.map { order[$0] }
+        // 可以放的層級：最深＝上面那一項的下一層，最淺＝下面那一項的那一層；手指往右移一格（36 點）深一層
+        let maxDepth = a.map { $0.depth + 1 } ?? 0
+        let minDepth = min(b?.depth ?? 0, maxDepth)
+        let want = drag.depth + Int(((p.x - (drag.startX ?? p.x)) / 36).rounded())
+        let depth = min(max(want, minDepth), maxDepth)
+        var parent: UUID?
+        let before: UUID? = (b?.depth == depth) ? b?.id : nil
+        if let a = a, let ai = aIdx {
+            if depth == a.depth + 1 {
+                parent = a.id
+            } else {
+                var k = ai
+                while k >= 0 && order[k].depth != depth { k -= 1 }
+                parent = (depth == 0 || k < 0) ? nil : order[k].item.parentID
+            }
+        }
+        let fa = a.flatMap { outlineFrames[$0.id] }
+        let fb = b.flatMap { outlineFrames[$0.id] }
+        let y: CGFloat
+        if let fa = fa, let fb = fb { y = (fa.maxY + fb.minY) / 2 } else { y = fa?.maxY ?? fb?.minY ?? p.y }
+        return .between(parent: parent, before: before, lineY: y, depth: depth)
+    }
+
+    private func finishOutlineDrag() {
+        guard let drag = outlineDrag else { return }
+        outlineDrag = nil
+        guard let target = drag.target else { return }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            switch target {
+            case .into(let id):
+                model.moveOutline(drag.id, parent: id, before: nil)
+            case .between(let parent, let before, _, _):
+                model.moveOutline(drag.id, parent: parent, before: before)
+            }
+        }
+    }
+
+    /// 拖到列表上下緣：往那邊捲
+    private func outlineAutoScroll(_ lines: [OutlineLine], proxy: ScrollViewProxy) {
+        guard let drag = outlineDrag else { return }
+        let p = drag.location
+        let visible = lines.indices.filter { i in outlineFrames[lines[i].id].map { $0.intersects(outlineListFrame) } ?? false }
+        if p.y < outlineListFrame.minY + 50, let v = visible.first, v > 0 {
+            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(lines[v - 1].id, anchor: .top) }
+        } else if p.y > outlineListFrame.maxY - 50, let w = visible.last, w + 1 < lines.count {
+            withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(lines[w + 1].id, anchor: .bottom) }
+        }
+    }
+
+    /// 拖曳中：手指下面浮著那一項；放到一項上面＝那一項亮起來；放到中間＝一條藍線（往右縮＝更深一層）
+    @ViewBuilder
+    private var outlineDragOverlay: some View {
+        if let drag = outlineDrag {
+            let o = outlineListFrame.origin
+            ZStack(alignment: .topLeading) {
+                if case .into(let id)? = drag.target, let f = outlineFrames[id] {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.accentColor.opacity(0.14))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor, lineWidth: 2.5))
+                        .frame(width: f.width, height: f.height)
+                        .offset(x: f.minX - o.x, y: f.minY - o.y)
+                }
+                if case .between(_, _, let y, let depth)? = drag.target {
+                    let x0 = 12 + CGFloat(depth) * 14 + 6
+                    HStack(spacing: 0) {
+                        Circle()
+                            .stroke(Color.accentColor, lineWidth: 2.5)
+                            .frame(width: 10, height: 10)
+                        Rectangle()
+                            .fill(Color.accentColor)
+                            .frame(height: 3)
+                    }
+                    .frame(width: max(outlineListFrame.width - x0 - 12, 40), height: 10)
+                    .offset(x: x0, y: y - o.y - 5)
+                }
+                Text(drag.title.isEmpty ? "（沒有標題）" : drag.title)
+                    .lineLimit(1)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(uiColor: .systemBackground))
+                        .shadow(color: .black.opacity(0.3), radius: 8, y: 3))
+                    .fixedSize()
+                    .offset(x: max(drag.location.x - o.x - 40, 4), y: drag.location.y - o.y - 22)
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
     /// 降一層：變成上一項（同一層的）的下一層，底下的項目跟著走
     private func indentOutline(_ lines: [OutlineLine], _ index: Int) {
         guard let previous = outlinePreviousSibling(lines, index) else { return }
-        withAnimation(.easeInOut(duration: 0.2)) { model.setOutlineParent(lines[index].id, to: previous.id) }
+        withAnimation(.easeInOut(duration: 0.2)) { model.moveOutline(lines[index].id, parent: previous.id, before: nil) }
     }
 
     /// 升一層：變成上一層的同一層（排在它後面），底下的項目跟著走
     private func outdentOutline(_ line: OutlineLine) {
-        guard let parent = line.item.parentID else { return }
-        let grand = model.notebook.outline?.first(where: { $0.id == parent })?.parentID
-        withAnimation(.easeInOut(duration: 0.2)) { model.setOutlineParent(line.id, to: grand) }
+        withAnimation(.easeInOut(duration: 0.2)) { model.outdentOutline(line.id) }
     }
 
     private func sectionTitle(_ text: String) -> some View {
@@ -2911,25 +3160,24 @@ struct NotePanel: View {
                 }
                 .buttonStyle(.plain)
             }
-            Button {
+            // v12.16.4：點一下跳過去用點按手勢（不是按鈕），長按才能拖曳
+            HStack {
+                Text(title.isEmpty ? "（沒有標題）" : title)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer()
+                Text(model.label(row: r, page: p))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 10)
+            .padding(.leading, folded != nil ? 0 : (reserveChevron ? 30 : 12))
+            .padding(.trailing, 12)
+            .contentShape(Rectangle())
+            .onTapGesture {
                 model.documentView?.navigate(toRow: r, page: p)
                 close()                                        // v12.16.0：跳過去之後收起四方格面板
-            } label: {
-                HStack {
-                    Text(title.isEmpty ? "（沒有標題）" : title)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    Spacer()
-                    Text(model.label(row: r, page: p))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 10)
-                .padding(.leading, folded != nil ? 0 : (reserveChevron ? 30 : 12))
-                .padding(.trailing, 12)
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
         }
         .padding(.leading, CGFloat(depth) * 14)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.gray.opacity(0.1)))
@@ -2984,7 +3232,10 @@ struct NotePanel: View {
         var out: [OutlineLine] = []
         var seen = Set<UUID>()
         func visit(_ parent: UUID?, _ depth: Int) {
-            let list = (children[parent] ?? []).sorted { a, b in (a.row, a.page, a.order) < (b.row, b.page, b.order) }
+            let manual = model.notebook.outlineManual == true    // 照拖的順序（v12.16.4）
+            let list = (children[parent] ?? []).sorted { a, b in
+                manual ? a.order < b.order : (a.row, a.page, a.order) < (b.row, b.page, b.order)
+            }
             for entry in list where !seen.contains(entry.item.id) {
                 seen.insert(entry.item.id)
                 let has = !(children[entry.item.id] ?? []).isEmpty

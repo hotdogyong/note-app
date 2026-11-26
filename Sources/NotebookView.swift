@@ -948,31 +948,52 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
         return false
     }
 
-    // MARK: 手掌防誤觸（v12.16.2，使用者要求）
-    // Pencil 寫字的時候、剛放開的一下子（0.5 秒內），手指的點、點兩下、長按、雙指點（上一步）、縮放、捲動都不算：
-    // 那時碰到畫面的多半是手掌。另外很大一片的觸碰（手掌、手側）任何時候都不算點。
+    // MARK: 手掌防誤觸（v12.16.2；v12.16.4 改成只管一圈按鈕）
+    // 使用者真正要的是：手掌碰到時不要跳出長按的一圈按鈕。v12.16.2 擋太多（縮放、捲動、點兩下都擋），白板還一直被當成
+    // 「Pencil 正在寫」，結果白板不能縮放、點兩下新增文字方塊變難。現在只擋長按：
+    // ・Pencil 正在寫、剛放開 0.8 秒內：長按不跳一圈按鈕
+    // ・很大一片的觸碰（手掌、手側）：長按不跳
+    // ・手掌先放著、接著用 Pencil 寫：正在等的長按取消
     private var pencilDown = false
     private var pencilLastActivity: CFTimeInterval = 0
+    private var pencilUpAt: CFTimeInterval = 0
 
-    /// Pencil 開始寫、寫的時候、放開（NotePageView 的畫布叫）
+    /// Pencil 開始寫（true）、寫的時候（nil）、放開（false）（NotePageView 的畫布叫；程式自己改筆跡的時候不叫）
     func pencilActivity(down: Bool?) {
-        if let d = down { pencilDown = d }
-        pencilLastActivity = CACurrentMediaTime()
+        let now = CACurrentMediaTime()
+        if let d = down {
+            if !d && pencilDown { pencilUpAt = now }
+            if d && radialMenu == nil && selectPress.isEnabled {
+                selectPress.isEnabled = false                  // 手掌先按著在等長按：取消
+                selectPress.isEnabled = true
+            }
+            pencilDown = d
+        }
+        pencilLastActivity = now
     }
 
-    /// 現在碰到的手指可能是手掌（沒收到「放開」時最多算 2 秒，不會一直擋住）
+    /// Pencil 正在寫（沒收到「放開」時最多算 1 秒，不會一直擋住）
     var pencilBusy: Bool {
-        let since = CACurrentMediaTime() - pencilLastActivity
-        return (pencilDown && since < 2) || since < 0.5
+        pencilDown && CACurrentMediaTime() - pencilLastActivity < 1
     }
 
-    private func isPalm(_ touch: UITouch) -> Bool {
-        guard touch.type == .direct else { return false }
-        return touch.majorRadius > 40 || pencilBusy
+    private weak var pressTouch: UITouch?              // 長按的那一隻手指（跳出來那一刻再看一次是不是手掌）
+
+    private func isPalm(_ touch: UITouch, for g: UIGestureRecognizer) -> Bool {
+        guard g === selectPress, touch.type == .direct else { return false }
+        pressTouch = touch
+        return pencilBusy || CACurrentMediaTime() - pencilUpAt < 0.8 || touch.majorRadius > 32
+    }
+
+    /// 長按就要跳一圈按鈕的那一刻：手掌一開始碰到的面積常常很小、之後才變大，所以再看一次
+    private var pressLooksLikePalm: Bool {
+        if pencilBusy || CACurrentMediaTime() - pencilUpAt < 0.8 { return true }
+        if let t = pressTouch, t.majorRadius > 32 { return true }
+        return false
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
-        if isPalm(touch) { return false }                       // 手掌（v12.16.2）
+        if isPalm(touch, for: gestureRecognizer) { return false }   // 手掌（v12.16.2）
         if gestureRecognizer === pinchGesture { return true }   // 縮放：手指按在哪都算
         // 白板的圖釘、區塊標題、區塊的把手和工具列：自己處理觸控（v12.7）
         if let v = touch.view, sequence(first: v, next: { $0.superview }).contains(where: { $0 is BoardMarkView }) {
@@ -3028,6 +3049,7 @@ final class NotebookView: UIView, UIScrollViewDelegate, UIGestureRecognizerDeleg
             return
         }
         guard g.state == .began, g.numberOfTouches == 1 else { return }    // 只認單指長按
+        if pressLooksLikePalm { return }                                   // 手掌（v12.16.4）
         if readOnly {
             showMessage("lock", "最近刪除裡的筆記本只能看，要改請先復原")
             return
@@ -8912,8 +8934,7 @@ final class PalmScrollView: UIScrollView {
     weak var host: NotebookView?
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-        if g === panGestureRecognizer, host?.pencilBusy == true { return false }
-        return super.gestureRecognizerShouldBegin(g)
+        return super.gestureRecognizerShouldBegin(g)       // v12.16.4：捲動不再因為 Pencil 擋住
     }
 }
 

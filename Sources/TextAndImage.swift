@@ -1638,7 +1638,9 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
     private var readyMarker: URL { dir.appendingPathComponent("ok-\(Self.katexVersion)") }
 
     private var memory: [String: UIImage] = [:]
-    private var failed: Set<String> = []
+    // v12.16.3：失敗的不再永遠記著（以前排版失敗一次，那一段就一直顯示原文，要重開 App 才會再排）；30 秒後可以再試
+    private var failedAt: [String: Date] = [:]
+    private var renderToken = UUID()               // 這一次排版的編號：逾時或網頁當掉之後，舊的回覆不要再算
     private var waiting: [String: [(UIImage?) -> Void]] = [:]
     private var queue: [(key: String, request: Request)] = []
     private var busy = false
@@ -1681,7 +1683,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
             return
         }
         let k = Self.key(r)
-        if failed.contains(k) {
+        if let t = failedAt[k], Date().timeIntervalSince(t) < 30 {
             done(nil)
             return
         }
@@ -1702,7 +1704,7 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
                 try? data.write(to: cacheDir.appendingPathComponent(k + ".png"), options: .atomic)
             }
         } else {
-            failed.insert(k)
+            failedAt[k] = Date()
         }
         let callbacks = waiting.removeValue(forKey: k) ?? []
         for c in callbacks { c(image) }
@@ -1982,6 +1984,25 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         Task { @MainActor in self.failAll() }
     }
 
+    /// iPadOS 在記憶體不夠、App 放到背景時會把網頁關掉（v12.16.3）：以前之後每一段都排不出來、只顯示原文。
+    /// 現在丟掉這個網頁，下一段重開一個新的
+    nonisolated func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        Task { @MainActor in
+            self.resetWebView()
+            if self.busy {
+                self.busy = false
+                self.renderToken = UUID()
+            }
+            self.pump()
+        }
+    }
+
+    private func resetWebView() {
+        webView?.removeFromSuperview()
+        webView = nil
+        pageLoaded = false
+    }
+
     private func renderNow(_ k: String, _ r: Request, in web: WKWebView) {
         let f = Self.scaleFactor
         let layoutWidth = r.width * f
@@ -1994,6 +2015,17 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
             "text": r.text, "width": Double(layoutWidth), "fixed": r.fixed,
             "size": Double(r.fontSize * f), "color": r.color, "bold": r.bold, "align": r.align, "md": r.markdown
         ]
+        let token = UUID()
+        renderToken = token
+        // 逾時（v12.16.3）：12 秒還沒排好（網頁卡住、被系統關掉），這一段先放棄、換一個新的網頁，排隊的繼續排
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
+            guard let self = self, self.busy, self.renderToken == token else { return }
+            self.renderToken = UUID()
+            self.resetWebView()
+            self.finish(k, nil)
+            self.busy = false
+            self.pump()
+        }
         web.callAsyncJavaScript("return await renderBox(text, width, fixed, size, color, bold, align, md);",
                                 arguments: args, in: nil, in: .page) { result in
             // 先在這裡把結果換成數字，再回到主執行緒處理
@@ -2006,13 +2038,16 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
             let width = w
             let height = h
             Task { @MainActor in
-                self.snapshot(k, web: web, width: width, height: height)
+                guard self.renderToken == token else { return }      // 已經逾時放棄了
+                self.snapshot(k, web: web, width: width, height: height, token: token)
             }
         }
     }
 
-    private func snapshot(_ k: String, web: WKWebView, width w: Double, height h: Double) {
+    private func snapshot(_ k: String, web: WKWebView, width w: Double, height h: Double, token: UUID) {
         guard w > 0, h > 0 else {
+            resetWebView()                                   // 多半是網頁出問題了：下一段換一個新的
+            renderToken = UUID()
             finish(k, nil)
             busy = false
             pump()
@@ -2026,6 +2061,8 @@ final class MathRenderer: NSObject, WKNavigationDelegate {
         config.afterScreenUpdates = true
         web.takeSnapshot(with: config) { image, _ in
             Task { @MainActor in
+                guard self.renderToken == token else { return }
+                self.renderToken = UUID()
                 self.finish(k, image)
                 self.busy = false
                 self.pump()
